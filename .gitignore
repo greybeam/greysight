@@ -2,14 +2,19 @@
 
 # dependencies
 /node_modules
+**/node_modules/
+**/.venv/
 /.pnp
 .pnp.js
 
 # testing
 /coverage
+**/coverage/
+**/.pytest_cache/
 
 # next.js
 /.next/
+**/.next/
 /out/
 
 # production
@@ -18,6 +23,11 @@
 # misc
 .DS_Store
 *.pem
+*.p8
+*.key
+*.py[cod]
+__pycache__/
+**/__pycache__/
 
 # debug
 npm-debug.log*
@@ -26,6 +36,7 @@ yarn-error.log*
 
 # local env files
 .env*.local
+.env.local
 .env
 
 # vercel
