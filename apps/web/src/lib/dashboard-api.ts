@@ -19,6 +19,7 @@ export async function fetchDemoDashboardDatasets(): Promise<DashboardData> {
   return fetchDashboardDataPath("/api/dashboard-runs/demo/datasets");
 }
 
+// Run-specific helpers below are reserved for the future Snowflake execution path; Phase 3 is demo-backed.
 export async function fetchDashboardDatasets(
   runId: string,
 ): Promise<DashboardData> {

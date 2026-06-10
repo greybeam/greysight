@@ -25,7 +25,6 @@ import RunStatus from "./run-status";
 
 type CostDashboardProps = {
   data?: DashboardData;
-  dataSource?: "demo" | "snowflake";
 };
 
 type LoadState = {

@@ -120,6 +120,19 @@ def test_create_run_requires_all_dashboard_datasets() -> None:
     assert response.status_code == 422
 
 
+def test_create_run_accepts_empty_aggregate_dataset_rows() -> None:
+    dashboard_run_repository.clear()
+    client = TestClient(app)
+    payload = _complete_create_payload()
+    datasets = payload["datasets"]
+    assert isinstance(datasets, dict)
+    datasets["query_compute_by_user_daily"] = []
+
+    response = client.post("/api/dashboard-runs", json=payload)
+
+    assert response.status_code == 201
+
+
 def test_expired_persisted_datasets_are_unavailable_and_mark_run_expired() -> None:
     dashboard_run_repository.clear()
     client = TestClient(app)

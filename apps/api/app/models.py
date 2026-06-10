@@ -72,8 +72,6 @@ class DashboardRunCreateRequest(BaseModel):
             raise ValueError("; ".join(problems))
 
         for dataset_key, rows in self.datasets.items():
-            if not rows:
-                raise ValueError(f"Dataset {dataset_key} must contain rows")
             safe_fields = SAFE_DATASET_ROW_FIELDS[dataset_key]
             for row_index, row in enumerate(rows):
                 row_fields = set(row)
