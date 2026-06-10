@@ -139,3 +139,29 @@ def test_snowflake_validation_audits_unexpected_validation_errors(monkeypatch) -
         }
     ]
     assert "raw private backend detail" not in str(audit_event_recorder.list_events())
+
+
+def test_snowflake_validation_error_returns_403_and_non_error_audit(
+    monkeypatch,
+) -> None:
+    audit_event_recorder.clear()
+
+    def fail_validation() -> None:
+        raise SnowflakeValidationError("Could not validate Snowflake connection.")
+
+    monkeypatch.setattr(
+        "app.routes.snowflake.validate_snowflake_connection",
+        fail_validation,
+    )
+
+    response = TestClient(app).post("/api/snowflake/validate")
+
+    events = audit_event_recorder.list_events()
+    assert response.status_code == 403
+    assert len(events) == 1
+    assert events[0] == {
+        "event_name": "snowflake.validation_attempted",
+        "organization_id": None,
+        "payload": {"outcome": "failed"},
+    }
+    assert events[0]["payload"]["outcome"] != "error"

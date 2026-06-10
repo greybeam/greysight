@@ -160,3 +160,24 @@ def test_supabase_validation_derives_memberships_from_verified_claims(
     context = anyio.run(validate_supabase_session, "opaque-token")
 
     assert context.memberships == frozenset({"org_123", "org_456", "org_789"})
+
+
+def test_supabase_validation_ignores_malformed_membership_items(monkeypatch) -> None:
+    async def verifier(token: str) -> dict[str, object]:
+        assert token == "opaque-token"
+        return {
+            "sub": "user_123",
+            "app_metadata": {
+                "organization_ids": [" org_123 ", 123, "", "   "],
+                "organizations": [None, "org_456"],
+            },
+            "memberships": ["org_789", {"malformed": True}, " org_999 "],
+        }
+
+    monkeypatch.setattr("app.auth.supabase_session_verifier", verifier)
+
+    context = anyio.run(validate_supabase_session, "opaque-token")
+
+    assert context.memberships == frozenset(
+        {"org_123", "org_456", "org_789", "org_999"}
+    )

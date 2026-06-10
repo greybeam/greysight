@@ -104,10 +104,17 @@ def _extract_memberships(claims: Mapping[str, object]) -> frozenset[str]:
 
 
 def _string_list_claim(value: object) -> frozenset[str]:
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+    if not isinstance(value, list):
         return frozenset()
 
-    return frozenset(item.strip() for item in value if item.strip())
+    items: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        stripped_item = item.strip()
+        if stripped_item:
+            items.add(stripped_item)
+    return frozenset(items)
 
 
 def _authentication_required() -> HTTPException:
