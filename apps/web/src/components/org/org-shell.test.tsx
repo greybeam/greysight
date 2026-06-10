@@ -28,6 +28,19 @@ const sessionWithoutOrganization: AuthSession = {
   user: { email: "owner@example.com", appMetadata: {} },
 };
 
+const sessionWithMultipleOrganizations: AuthSession = {
+  accessToken: "test-access-token",
+  user: {
+    email: "owner@example.com",
+    appMetadata: {
+      organization_ids: [
+        "22222222-2222-4222-8222-222222222222",
+        "33333333-3333-4333-8333-333333333333",
+      ],
+    },
+  },
+};
+
 function authClientWithSession(activeSession: AuthSession | null): BrowserAuthClient {
   return {
     getSession: vi.fn().mockResolvedValue({ session: activeSession, error: null }),
@@ -118,6 +131,27 @@ describe("OrgShell", () => {
 
     expect(
       await screen.findByText("No organization membership is available for this session."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create organization" })).toBeDisabled();
+    expect(organizationSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not bind a typed name to an arbitrary membership when multiple orgs exist", async () => {
+    const organizationSpy = vi.fn();
+    render(
+      <OrgShell
+        authClient={authClientWithSession(sessionWithMultipleOrganizations)}
+        authRequired
+        onOrganizationChange={organizationSpy}
+      >
+        <p>Dashboard body</p>
+      </OrgShell>,
+    );
+
+    expect(
+      await screen.findByText(
+        "Multiple organization memberships are available for this session.",
+      ),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create organization" })).toBeDisabled();
     expect(organizationSpy).not.toHaveBeenCalled();

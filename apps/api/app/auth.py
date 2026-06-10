@@ -2,6 +2,7 @@ import inspect
 from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from typing import Annotated
+from uuid import UUID
 
 import httpx
 from fastapi import Depends, HTTPException, status
@@ -94,7 +95,7 @@ def require_org_membership(
     ):
         return None
 
-    if organization_id in context.memberships:
+    if _normalize_membership_id(organization_id) in context.memberships:
         return None
 
     raise HTTPException(status_code=403, detail="Organization access denied")
@@ -173,10 +174,20 @@ def _string_list_claim(value: object) -> frozenset[str]:
     for item in value:
         if not isinstance(item, str):
             continue
-        stripped_item = item.strip()
-        if stripped_item:
-            items.add(stripped_item)
+        normalized_item = _normalize_membership_id(item)
+        if normalized_item:
+            items.add(normalized_item)
     return frozenset(items)
+
+
+def _normalize_membership_id(value: str) -> str:
+    stripped_value = value.strip()
+    if not stripped_value:
+        return ""
+    try:
+        return str(UUID(stripped_value))
+    except ValueError:
+        return stripped_value
 
 
 def _authentication_required() -> HTTPException:

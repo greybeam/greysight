@@ -189,7 +189,7 @@ def create_dashboard_run(
     if settings.data_source == "snowflake":
         run = _create_snowflake_dashboard_run(request, settings)
     else:
-        run = dashboard_run_repository.create_completed_run(request)
+        run = _create_demo_dashboard_run(request)
     _record_dashboard_run_created(run)
     return run
 
@@ -315,6 +315,21 @@ def _create_snowflake_dashboard_run(
         window_days=request.window_days,
         summary=summary,
         datasets=json_ready_datasets,
+        retention_days=request.retention_days,
+    )
+
+
+def _create_demo_dashboard_run(request: DashboardRunCreateRequest) -> DashboardRun:
+    if request.datasets:
+        return dashboard_run_repository.create_completed_run(request)
+
+    demo_payload = build_demo_dashboard_dataset()
+    return dashboard_run_repository.create_completed_snapshot(
+        organization_id=request.organization_id,
+        source=request.source,
+        window_days=request.window_days,
+        summary=demo_payload.summary.model_dump(mode="json"),
+        datasets=demo_payload.datasets,
         retention_days=request.retention_days,
     )
 

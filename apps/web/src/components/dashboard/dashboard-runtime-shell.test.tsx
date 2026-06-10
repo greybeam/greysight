@@ -23,10 +23,7 @@ vi.mock("../org/org-shell", () => ({
         type="button"
         onClick={() => {
           onAccessTokenChange?.("test-access-token");
-          onOrganizationChange?.({
-            id: "org-123",
-            name: "Acme Analytics",
-          });
+          onOrganizationChange?.({ id: "org-123", name: "Acme Analytics" });
         }}
       >
         Select organization
@@ -75,7 +72,7 @@ describe("DashboardRuntimeShell", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Select organization" }));
 
-    await waitFor(() => {
+    await waitFor(() =>
       expect(screen.getByTestId("dashboard-props")).toHaveTextContent(
         JSON.stringify({
           demoMode: false,
@@ -85,7 +82,26 @@ describe("DashboardRuntimeShell", () => {
             organizationName: "Acme Analytics",
           },
         }),
-      );
-    });
+      ),
+    );
+  });
+
+  it("uses the authenticated runtime for auth-required demo data", async () => {
+    render(<DashboardRuntimeShell authRequired />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Select organization" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("dashboard-props")).toHaveTextContent(
+        JSON.stringify({
+          demoMode: false,
+          runtime: {
+            accessToken: "test-access-token",
+            organizationId: "org-123",
+            organizationName: "Acme Analytics",
+          },
+        }),
+      ),
+    );
   });
 });

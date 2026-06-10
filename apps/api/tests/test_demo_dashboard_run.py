@@ -77,6 +77,37 @@ def test_create_dashboard_run_rejects_non_member_organization(monkeypatch) -> No
     assert response.json()["detail"] == "Organization access denied"
 
 
+def test_auth_required_demo_source_creates_complete_org_scoped_datasets(
+    monkeypatch,
+) -> None:
+    dashboard_run_repository.clear()
+    monkeypatch.setenv("DATA_SOURCE", "demo")
+    headers = _verified_token_for_org(monkeypatch, ORG_ONE)
+
+    create_response = TestClient(app).post(
+        "/api/dashboard-runs",
+        json={
+            "organization_id": ORG_ONE,
+            "source": "snowflake",
+            "window_days": 30,
+        },
+        headers=headers,
+    )
+
+    assert create_response.status_code == 201
+    run_id = create_response.json()["id"]
+
+    datasets_response = TestClient(app).get(
+        f"/api/dashboard-runs/{run_id}/datasets",
+        headers=headers,
+    )
+
+    assert datasets_response.status_code == 200
+    datasets = datasets_response.json()["datasets"]
+    assert len(datasets["service_spend_daily"]) > 0
+    assert len(datasets["warehouse_spend_daily"]) > 0
+
+
 def test_persisted_run_routes_reject_non_member_organization(monkeypatch) -> None:
     dashboard_run_repository.clear()
     payload = _complete_create_payload()

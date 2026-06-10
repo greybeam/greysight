@@ -268,3 +268,57 @@ def test_configure_supabase_session_verifier_clears_missing_config(
     configure_supabase_session_verifier(Settings())
 
     assert auth.supabase_session_verifier is None
+
+
+def test_supabase_validation_normalizes_uuid_membership_claims(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def verifier(token: str) -> dict[str, object]:
+        assert token == "opaque-token"
+        return {
+            "sub": "user_123",
+            "app_metadata": {
+                "organization_ids": ["22222222-2222-4222-8222-ABCDEFABCDEF"]
+            },
+        }
+
+    monkeypatch.setattr("app.auth.supabase_session_verifier", verifier)
+
+    context = anyio.run(validate_supabase_session, "opaque-token")
+
+    assert "22222222-2222-4222-8222-abcdefabcdef" in context.memberships
+    assert (
+        require_org_membership(context, "22222222-2222-4222-8222-abcdefabcdef") is None
+    )
+
+
+def test_supabase_auth_server_verifier_rejects_malformed_json() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"not-json")
+
+    verifier = SupabaseAuthServerVerifier(
+        supabase_url="https://project.supabase.co",
+        supabase_anon_key="anon-key",
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        anyio.run(validate_supabase_session, "opaque-token", verifier)
+
+    assert exc_info.value.status_code == 401
+
+
+def test_supabase_auth_server_verifier_rejects_non_mapping_payload() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=["not", "a", "user"])
+
+    verifier = SupabaseAuthServerVerifier(
+        supabase_url="https://project.supabase.co",
+        supabase_anon_key="anon-key",
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        anyio.run(validate_supabase_session, "opaque-token", verifier)
+
+    assert exc_info.value.status_code == 401

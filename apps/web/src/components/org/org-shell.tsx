@@ -87,7 +87,14 @@ export default function OrgShell({
     useState<SelectedOrganization | null>(null);
   const accessToken = session?.accessToken ?? null;
   const membershipOrganizationIds = getMembershipOrganizationIds(session);
-  const canSelectOrganization = !authRequired || membershipOrganizationIds.length > 0;
+  // Authenticated MVP supports one seeded org until backend org provisioning
+  // can return named memberships for a real selector.
+  const canSelectOrganization =
+    !authRequired || membershipOrganizationIds.length === 1;
+  const organizationSelectionMessage =
+    authRequired && membershipOrganizationIds.length === 0
+      ? "No organization membership is available for this session."
+      : "Multiple organization memberships are available for this session.";
 
   useEffect(() => {
     if (!authRequired || !authClient) return;
@@ -123,7 +130,7 @@ export default function OrgShell({
     const organizationId = authRequired
       ? membershipOrganizationIds[0]
       : organizationIdGenerator();
-    if (!organizationId) return;
+    if (!canSelectOrganization || !organizationId) return;
 
     const organization = { id: organizationId, name: trimmedName };
     setSelectedOrganization(organization);
@@ -215,7 +222,7 @@ export default function OrgShell({
       </form>
       {!canSelectOrganization ? (
         <p className="text-sm text-amber-700">
-          No organization membership is available for this session.
+          {organizationSelectionMessage}
         </p>
       ) : null}
         </div>

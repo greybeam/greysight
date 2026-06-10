@@ -49,7 +49,10 @@ export default function DashboardRuntimeShell({
       onAccessTokenChange={setAccessToken}
       onOrganizationChange={setOrganization}
     >
-      <CostDashboard demoMode={dataSource !== "snowflake"} runtime={runtime} />
+      <CostDashboard
+        demoMode={!authRequired && dataSource !== "snowflake"}
+        runtime={runtime}
+      />
     </OrgShell>
   );
 }
