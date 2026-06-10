@@ -4,19 +4,36 @@ from uuid import UUID
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.models import DashboardRunCreateRequest
 from app.routes.dashboard_runs import dashboard_run_repository
 from app.services.demo_data import build_demo_dashboard_dataset
+
+ORG_ONE = "00000000-0000-0000-0000-000000000001"
+ORG_TWO = "00000000-0000-0000-0000-000000000002"
 
 
 def _complete_create_payload() -> dict[str, object]:
     demo_payload = build_demo_dashboard_dataset()
     return {
-        "organization_id": "00000000-0000-0000-0000-000000000001",
+        "organization_id": ORG_ONE,
         "source": "snowflake",
         "window_days": 30,
         "summary": demo_payload.summary.model_dump(mode="json"),
         "datasets": deepcopy(demo_payload.datasets),
     }
+
+
+def _verified_token_for_org(monkeypatch, organization_id: str) -> dict[str, str]:
+    def verifier(token: str) -> dict[str, object]:
+        assert token == "valid-token"
+        return {
+            "sub": "user-1",
+            "app_metadata": {"organization_ids": [organization_id]},
+        }
+
+    monkeypatch.setattr("app.auth.supabase_session_verifier", verifier)
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
+    return {"Authorization": "Bearer valid-token"}
 
 
 def test_demo_run_returns_completed_run_and_datasets() -> None:
@@ -42,6 +59,49 @@ def test_create_dashboard_run_requires_auth_when_enabled(monkeypatch) -> None:
 
     assert response.status_code in {401, 403}
     assert response.json()["detail"] == "Authentication required"
+
+
+def test_create_dashboard_run_rejects_non_member_organization(monkeypatch) -> None:
+    dashboard_run_repository.clear()
+    headers = _verified_token_for_org(monkeypatch, ORG_ONE)
+    payload = _complete_create_payload()
+    payload["organization_id"] = ORG_TWO
+
+    response = TestClient(app).post(
+        "/api/dashboard-runs",
+        json=payload,
+        headers=headers,
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Organization access denied"
+
+
+def test_persisted_run_routes_reject_non_member_organization(monkeypatch) -> None:
+    dashboard_run_repository.clear()
+    payload = _complete_create_payload()
+    payload["organization_id"] = ORG_TWO
+    created_run = dashboard_run_repository.create_completed_run(
+        DashboardRunCreateRequest.model_validate(payload)
+    )
+    headers = _verified_token_for_org(monkeypatch, ORG_ONE)
+
+    run_response = TestClient(app).get(
+        f"/api/dashboard-runs/{created_run.id}",
+        headers=headers,
+    )
+    datasets_response = TestClient(app).get(
+        f"/api/dashboard-runs/{created_run.id}/datasets",
+        headers=headers,
+    )
+    delete_response = TestClient(app).delete(
+        f"/api/dashboard-runs/{created_run.id}",
+        headers=headers,
+    )
+
+    assert run_response.status_code == 403
+    assert datasets_response.status_code == 403
+    assert delete_response.status_code == 403
 
 
 def test_persisted_run_round_trips_aggregate_datasets() -> None:

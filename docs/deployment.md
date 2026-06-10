@@ -70,10 +70,10 @@ STORAGE_PRICE_USD_PER_TB_MONTH=
 Backend values must be exported, sourced, or injected by the backend hosting
 environment. A root `.env.local` file is not automatically loaded by FastAPI.
 
-The frontend passwordless flow can be configured with public Supabase variables,
-but authenticated backend API calls also require a concrete Supabase JWT verifier.
-With `AUTH_REQUIRED=true` and no verifier configured, bearer-token API calls are
-rejected fail-closed.
+The frontend passwordless flow can be configured with public Supabase variables.
+With `AUTH_REQUIRED=true`, the backend validates bearer tokens through Supabase
+Auth when `SUPABASE_URL` and `SUPABASE_ANON_KEY` are configured. If either value
+is missing, bearer-token API calls are rejected fail-closed.
 
 If deploying the API on Vercel, add the required Vercel routing or adapter
 configuration before relying on production traffic. This repository does not

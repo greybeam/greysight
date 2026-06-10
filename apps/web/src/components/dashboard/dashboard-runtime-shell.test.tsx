@@ -55,8 +55,23 @@ describe("DashboardRuntimeShell", () => {
     );
   });
 
+  it("uses a local runtime for unauthenticated Snowflake mode", () => {
+    render(<DashboardRuntimeShell authRequired={false} dataSource="snowflake" />);
+
+    expect(screen.getByTestId("dashboard-props")).toHaveTextContent(
+      JSON.stringify({
+        demoMode: false,
+        runtime: {
+          accessToken: null,
+          organizationId: "00000000-0000-4000-8000-000000000001",
+          organizationName: "Local Snowflake",
+        },
+      }),
+    );
+  });
+
   it("passes selected organization and access token to dashboard runtime", async () => {
-    render(<DashboardRuntimeShell authRequired />);
+    render(<DashboardRuntimeShell authRequired dataSource="snowflake" />);
 
     fireEvent.click(screen.getByRole("button", { name: "Select organization" }));
 

@@ -16,8 +16,14 @@ routes must verify organization membership before returning or mutating data.
 Supabase RLS in `supabase/migrations/` preserves member read access and limits
 sensitive mutations to owners or admins.
 
-The backend currently keeps Supabase JWT validation behind a verifier seam. With
-`AUTH_REQUIRED=true` and no concrete verifier configured, API auth fails closed.
+With `AUTH_REQUIRED=true`, the backend validates bearer tokens through Supabase
+Auth when `SUPABASE_URL` and `SUPABASE_ANON_KEY` are configured. If either value
+is missing, API auth fails closed.
+
+Authenticated organization membership currently comes from verified Supabase
+claims: `app_metadata.organization_ids`, `app_metadata.organizations`, or
+top-level `memberships`. Dashboard run routes reject organization IDs that are
+not present in those claims.
 
 Shared preview, staging, and production environments should use
 `AUTH_REQUIRED=true`.

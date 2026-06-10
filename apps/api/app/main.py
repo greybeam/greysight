@@ -11,6 +11,7 @@ from app.routes.snowflake import router as snowflake_router
 
 logger = logging.getLogger(__name__)
 settings = Settings()
+auth.configure_supabase_session_verifier(settings)
 
 
 def warn_when_auth_required_without_verifier(settings: Settings) -> None:

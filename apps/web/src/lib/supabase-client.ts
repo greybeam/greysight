@@ -9,6 +9,7 @@ export type AuthSession = {
   accessToken: string;
   user?: {
     email?: string | null;
+    appMetadata?: Record<string, unknown> | null;
   } | null;
 };
 
@@ -45,6 +46,7 @@ function toAuthSession(session: Session | null): AuthSession | null {
     accessToken: session.access_token,
     user: {
       email: session.user.email ?? null,
+      appMetadata: session.user.app_metadata ?? null,
     },
   };
 }

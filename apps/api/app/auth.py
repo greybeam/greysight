@@ -3,6 +3,7 @@ from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from typing import Annotated
 
+import httpx
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -14,6 +15,63 @@ SupabaseSessionVerifier = Callable[
     [str], Mapping[str, object] | Awaitable[Mapping[str, object]]
 ]
 supabase_session_verifier: SupabaseSessionVerifier | None = None
+
+
+class SupabaseAuthServerVerifier:
+    def __init__(
+        self,
+        *,
+        supabase_url: str,
+        supabase_anon_key: str,
+        timeout_seconds: float = 10.0,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._user_url = f"{supabase_url.rstrip('/')}/auth/v1/user"
+        self._anon_key = supabase_anon_key
+        self._timeout_seconds = timeout_seconds
+        self._transport = transport
+
+    async def __call__(self, token: str) -> Mapping[str, object]:
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._timeout_seconds,
+                transport=self._transport,
+            ) as client:
+                response = await client.get(
+                    self._user_url,
+                    headers={
+                        "apikey": self._anon_key,
+                        "authorization": f"Bearer {token}",
+                    },
+                )
+        except httpx.HTTPError as exc:
+            raise _authentication_required() from exc
+        if response.status_code != status.HTTP_200_OK:
+            raise _authentication_required()
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise _authentication_required() from exc
+        if not isinstance(payload, Mapping):
+            raise _authentication_required()
+
+        user_id = payload.get("id") or payload.get("sub")
+        return {
+            "sub": user_id,
+            "app_metadata": payload.get("app_metadata", {}),
+        }
+
+
+def configure_supabase_session_verifier(settings: Settings) -> None:
+    global supabase_session_verifier
+    if settings.supabase_url.strip() and settings.supabase_anon_key.strip():
+        supabase_session_verifier = SupabaseAuthServerVerifier(
+            supabase_url=settings.supabase_url,
+            supabase_anon_key=settings.supabase_anon_key,
+        )
+    else:
+        supabase_session_verifier = None
 
 
 @dataclass(frozen=True)
@@ -65,15 +123,19 @@ async def require_auth_context(
     return await validate_supabase_session(credentials.credentials)
 
 
-async def validate_supabase_session(token: str) -> AuthContext:
+async def validate_supabase_session(
+    token: str,
+    verifier: SupabaseSessionVerifier | None = None,
+) -> AuthContext:
     stripped_token = token.strip()
     if not stripped_token:
         raise _authentication_required()
 
-    if supabase_session_verifier is None:
+    selected_verifier = verifier or supabase_session_verifier
+    if selected_verifier is None:
         raise _authentication_required()
 
-    claims_result = supabase_session_verifier(stripped_token)
+    claims_result = selected_verifier(stripped_token)
     claims = (
         await claims_result if inspect.isawaitable(claims_result) else claims_result
     )

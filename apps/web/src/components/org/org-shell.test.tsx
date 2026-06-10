@@ -15,7 +15,17 @@ import type {
 
 const session: AuthSession = {
   accessToken: "test-access-token",
-  user: { email: "owner@example.com" },
+  user: {
+    email: "owner@example.com",
+    appMetadata: {
+      organization_ids: ["22222222-2222-4222-8222-222222222222"],
+    },
+  },
+};
+
+const sessionWithoutOrganization: AuthSession = {
+  accessToken: "test-access-token",
+  user: { email: "owner@example.com", appMetadata: {} },
 };
 
 function authClientWithSession(activeSession: AuthSession | null): BrowserAuthClient {
@@ -88,8 +98,28 @@ describe("OrgShell", () => {
     expect(await screen.findByText("Selected organization")).toBeInTheDocument();
     expect(screen.getByText("Acme Analytics")).toBeInTheDocument();
     expect(organizationSpy).toHaveBeenCalledWith({
-      id: "11111111-1111-4111-8111-111111111111",
+      id: "22222222-2222-4222-8222-222222222222",
       name: "Acme Analytics",
     });
+  });
+
+  it("does not create a local organization when auth membership is missing", async () => {
+    const organizationSpy = vi.fn();
+    render(
+      <OrgShell
+        authClient={authClientWithSession(sessionWithoutOrganization)}
+        authRequired
+        organizationIdGenerator={() => "11111111-1111-4111-8111-111111111111"}
+        onOrganizationChange={organizationSpy}
+      >
+        <p>Dashboard body</p>
+      </OrgShell>,
+    );
+
+    expect(
+      await screen.findByText("No organization membership is available for this session."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create organization" })).toBeDisabled();
+    expect(organizationSpy).not.toHaveBeenCalled();
   });
 });

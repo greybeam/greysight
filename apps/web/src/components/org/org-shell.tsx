@@ -50,6 +50,23 @@ function createLocalOrganizationId(): string {
   ].join("-");
 }
 
+function getMembershipOrganizationIds(session: AuthSession | null): string[] {
+  const metadata = session?.user?.appMetadata;
+  if (!metadata) return [];
+
+  const organizationIds = new Set<string>();
+  for (const key of ["organization_ids", "organizations", "memberships"]) {
+    const value = metadata[key];
+    if (!Array.isArray(value)) continue;
+    for (const item of value) {
+      if (typeof item !== "string") continue;
+      const trimmedItem = item.trim();
+      if (trimmedItem) organizationIds.add(trimmedItem);
+    }
+  }
+  return Array.from(organizationIds);
+}
+
 export default function OrgShell({
   authClient: providedAuthClient,
   authRequired = getAuthMode().authRequired,
@@ -69,6 +86,8 @@ export default function OrgShell({
   const [selectedOrganization, setSelectedOrganization] =
     useState<SelectedOrganization | null>(null);
   const accessToken = session?.accessToken ?? null;
+  const membershipOrganizationIds = getMembershipOrganizationIds(session);
+  const canSelectOrganization = !authRequired || membershipOrganizationIds.length > 0;
 
   useEffect(() => {
     if (!authRequired || !authClient) return;
@@ -101,7 +120,12 @@ export default function OrgShell({
     const trimmedName = organizationName.trim();
     if (!trimmedName) return;
 
-    const organization = { id: organizationIdGenerator(), name: trimmedName };
+    const organizationId = authRequired
+      ? membershipOrganizationIds[0]
+      : organizationIdGenerator();
+    if (!organizationId) return;
+
+    const organization = { id: organizationId, name: trimmedName };
     setSelectedOrganization(organization);
     onOrganizationChange?.(organization);
   }
@@ -181,13 +205,19 @@ export default function OrgShell({
                 value={organizationName}
               />
             </label>
-            <button
-              className="h-10 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white hover:bg-slate-800"
-              type="submit"
-            >
-              Create organization
-            </button>
-          </form>
+        <button
+          className="h-10 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+          disabled={!canSelectOrganization}
+          type="submit"
+        >
+          Create organization
+        </button>
+      </form>
+      {!canSelectOrganization ? (
+        <p className="text-sm text-amber-700">
+          No organization membership is available for this session.
+        </p>
+      ) : null}
         </div>
         {selectedOrganization ? (
           <div className="mt-4 text-sm text-slate-700">

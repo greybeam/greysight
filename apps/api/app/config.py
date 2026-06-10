@@ -11,6 +11,10 @@ class Settings(BaseSettings):
 
     data_source: Literal["demo", "snowflake"] = "demo"
     auth_required: bool = False
+    supabase_url: str = Field(default="", validation_alias=AliasChoices("SUPABASE_URL"))
+    supabase_anon_key: str = Field(
+        default="", validation_alias=AliasChoices("SUPABASE_ANON_KEY")
+    )
     default_window_days: int = Field(
         default=30,
         gt=0,

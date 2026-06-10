@@ -1,10 +1,17 @@
 import logging
 
 import anyio
+import httpx
 import pytest
 from fastapi import HTTPException
 
-from app.auth import AuthContext, require_org_membership, validate_supabase_session
+from app.auth import (
+    AuthContext,
+    SupabaseAuthServerVerifier,
+    configure_supabase_session_verifier,
+    require_org_membership,
+    validate_supabase_session,
+)
 from app.config import Settings
 from app.main import warn_when_auth_required_without_verifier
 
@@ -181,3 +188,83 @@ def test_supabase_validation_ignores_malformed_membership_items(monkeypatch) -> 
     assert context.memberships == frozenset(
         {"org_123", "org_456", "org_789", "org_999"}
     )
+
+
+def test_supabase_auth_server_verifier_returns_claims() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "id": "user_123",
+                "app_metadata": {"organization_ids": ["org_123"]},
+            },
+        )
+
+    verifier = SupabaseAuthServerVerifier(
+        supabase_url="https://project.supabase.co",
+        supabase_anon_key="anon-key",
+        transport=httpx.MockTransport(handler),
+    )
+
+    claims = anyio.run(verifier, "opaque-token")
+
+    assert claims == {
+        "sub": "user_123",
+        "app_metadata": {"organization_ids": ["org_123"]},
+    }
+    assert requests[0].url == "https://project.supabase.co/auth/v1/user"
+    assert requests[0].headers["apikey"] == "anon-key"
+    assert requests[0].headers["authorization"] == "Bearer opaque-token"
+
+
+def test_supabase_auth_server_verifier_rejects_invalid_token() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"message": "invalid"})
+
+    verifier = SupabaseAuthServerVerifier(
+        supabase_url="https://project.supabase.co",
+        supabase_anon_key="anon-key",
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        anyio.run(validate_supabase_session, "opaque-token", verifier)
+
+    assert exc_info.value.status_code == 401
+
+
+def test_supabase_auth_server_verifier_rejects_transport_errors() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("private network detail")
+
+    verifier = SupabaseAuthServerVerifier(
+        supabase_url="https://project.supabase.co",
+        supabase_anon_key="anon-key",
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        anyio.run(validate_supabase_session, "opaque-token", verifier)
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "Authentication required"
+
+
+def test_configure_supabase_session_verifier_clears_missing_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SUPABASE_URL", "https://project.supabase.co")
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "anon-key")
+    configure_supabase_session_verifier(Settings())
+    from app import auth
+
+    assert auth.supabase_session_verifier is not None
+
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_ANON_KEY", raising=False)
+    configure_supabase_session_verifier(Settings())
+
+    assert auth.supabase_session_verifier is None

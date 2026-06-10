@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from app.auth import AuthContext, require_auth_context
+from app.auth import AuthContext, require_auth_context, require_org_membership
 from app.config import Settings
 from app.models import DashboardDatasetResponse, DashboardRun, DashboardRunCreateRequest
 from app.services.cost_metrics import (
@@ -160,6 +160,13 @@ def dataset_is_expired(expires_at: datetime, *, now: datetime | None = None) -> 
     return expires_at <= comparison_time
 
 
+def _require_dashboard_run_membership(
+    auth_context: AuthContext, organization_id: UUID
+) -> None:
+    if auth_context.auth_required:
+        require_org_membership(auth_context, str(organization_id))
+
+
 @router.get("/demo", response_model=DashboardRun)
 def read_demo_dashboard_run() -> DashboardRun:
     demo_run = build_demo_dashboard_dataset().run
@@ -177,6 +184,7 @@ def create_dashboard_run(
     request: DashboardRunCreateRequest,
     _auth_context: AuthContext = Depends(require_auth_context),
 ) -> DashboardRun:
+    _require_dashboard_run_membership(_auth_context, request.organization_id)
     settings = Settings()
     if settings.data_source == "snowflake":
         run = _create_snowflake_dashboard_run(request, settings)
@@ -189,19 +197,24 @@ def create_dashboard_run(
 @router.get("/{run_id}", response_model=DashboardRun)
 def read_dashboard_run(
     run_id: UUID,
-    _auth_context: AuthContext = Depends(require_auth_context),
+    auth_context: AuthContext = Depends(require_auth_context),
 ) -> DashboardRun:
     run = dashboard_run_repository.get_run(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Dashboard run not found")
+    _require_dashboard_run_membership(auth_context, run.organization_id)
     return run
 
 
 @router.get("/{run_id}/datasets", response_model=DashboardDatasetResponse)
 def read_dashboard_run_datasets(
     run_id: UUID,
-    _auth_context: AuthContext = Depends(require_auth_context),
+    auth_context: AuthContext = Depends(require_auth_context),
 ) -> DashboardDatasetResponse:
+    run = dashboard_run_repository.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Dashboard datasets not found")
+    _require_dashboard_run_membership(auth_context, run.organization_id)
     response = dashboard_run_repository.get_dataset_response(run_id)
     if response is None:
         raise HTTPException(status_code=404, detail="Dashboard datasets not found")
@@ -212,11 +225,13 @@ def read_dashboard_run_datasets(
 @router.delete("/{run_id}", response_model=DashboardRun)
 def delete_dashboard_run(
     run_id: UUID,
-    _auth_context: AuthContext = Depends(require_auth_context),
+    auth_context: AuthContext = Depends(require_auth_context),
 ) -> DashboardRun:
-    run = dashboard_run_repository.delete_run(run_id)
+    run = dashboard_run_repository.get_run(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Dashboard run not found")
+    _require_dashboard_run_membership(auth_context, run.organization_id)
+    run = dashboard_run_repository.delete_run(run_id)
     _record_dashboard_run_deleted(run)
     return run
 

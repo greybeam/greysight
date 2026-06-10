@@ -30,6 +30,16 @@ def test_greysight_window_and_timeout_env_aliases(
     assert settings.query_timeout_seconds == 90
 
 
+def test_supabase_env_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SUPABASE_URL", "https://project.supabase.co")
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "anon-key")
+
+    settings = Settings()
+
+    assert settings.supabase_url == "https://project.supabase.co"
+    assert settings.supabase_anon_key == "anon-key"
+
+
 def test_empty_storage_price_uses_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("STORAGE_PRICE_USD_PER_TB_MONTH", "")
 

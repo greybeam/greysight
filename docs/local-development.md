@@ -72,15 +72,20 @@ NEXT_PUBLIC_AUTH_REQUIRED=true
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ```
 
-`NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` are browser-facing
-and can configure the frontend passwordless flow. `SUPABASE_SERVICE_ROLE_KEY`
-and `SUPABASE_JWT_SECRET` are backend-only and must not be exposed to client
-code.
+`NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` are
+browser-facing and configure the frontend passwordless flow.
+`SUPABASE_SERVICE_ROLE_KEY` and `SUPABASE_JWT_SECRET` are backend-only and must
+not be exposed to client code.
 
-The backend currently keeps Supabase JWT validation behind a verifier seam. With
-`AUTH_REQUIRED=true` and no concrete verifier configured, bearer-token API calls
-are rejected. Auth-enabled end-to-end API testing requires wiring and
-configuring that verifier first.
+With `AUTH_REQUIRED=true`, the backend validates bearer tokens through Supabase
+Auth when `SUPABASE_URL` and `SUPABASE_ANON_KEY` are configured. If either value
+is missing, bearer-token API calls are rejected fail-closed.
+
+Authenticated dashboard runs require the Supabase user metadata to contain an
+organization membership ID in `app_metadata.organization_ids`,
+`app_metadata.organizations`, or top-level `memberships`. Until the app has a
+backend org-provisioning flow, seed those IDs in Supabase before testing
+authenticated run creation.
 
 ## Snowflake Setup
 

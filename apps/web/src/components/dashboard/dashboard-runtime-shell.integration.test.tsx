@@ -19,7 +19,12 @@ vi.mock("../../lib/dashboard-api", () => ({
 
 const session: AuthSession = {
   accessToken: "test-access-token",
-  user: { email: "owner@example.com" },
+  user: {
+    email: "owner@example.com",
+    appMetadata: {
+      organization_ids: ["22222222-2222-4222-8222-222222222222"],
+    },
+  },
 };
 
 vi.mock("../../lib/supabase-client", () => ({
@@ -58,7 +63,7 @@ describe("DashboardRuntimeShell integration", () => {
     });
     vi.mocked(fetchDashboardDatasets).mockResolvedValue(demoDashboardDatasets);
 
-    render(<DashboardRuntimeShell authRequired />);
+    render(<DashboardRuntimeShell authRequired dataSource="snowflake" />);
 
     fireEvent.change(await screen.findByLabelText("Organization name"), {
       target: { value: "Acme Analytics" },
@@ -68,9 +73,9 @@ describe("DashboardRuntimeShell integration", () => {
 
     await waitFor(() => expect(startDashboardRun).toHaveBeenCalled());
 
-    const [{ organizationId }] = vi.mocked(startDashboardRun).mock.calls[0];
-    expect(organizationId).toBe("11111111-1111-4111-8111-111111111111");
-    expect(organizationId).not.toBe("Acme Analytics");
+  const [{ organizationId }] = vi.mocked(startDashboardRun).mock.calls[0];
+  expect(organizationId).toBe("22222222-2222-4222-8222-222222222222");
+  expect(organizationId).not.toBe("Acme Analytics");
     expect(screen.getByText("Acme Analytics")).toBeInTheDocument();
   });
 });

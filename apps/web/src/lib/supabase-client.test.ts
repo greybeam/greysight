@@ -75,7 +75,7 @@ describe("supabase-client", () => {
     expect(await authClient?.getSession()).toEqual({
       session: {
         accessToken: "access-token",
-        user: { email: "owner@example.com" },
+        user: { email: "owner@example.com", appMetadata: null },
       },
       error: null,
     });
