@@ -1,6 +1,7 @@
+import inspect
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from typing import Annotated
-from typing import Collection
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -9,6 +10,10 @@ from app.config import Settings
 
 DEMO_ORGANIZATION_ID = "demo-org"
 _bearer_scheme = HTTPBearer(auto_error=False)
+SupabaseSessionVerifier = Callable[
+    [str], Mapping[str, object] | Awaitable[Mapping[str, object]]
+]
+supabase_session_verifier: SupabaseSessionVerifier | None = None
 
 
 @dataclass(frozen=True)
@@ -61,15 +66,34 @@ async def require_auth_context(
 
 
 async def validate_supabase_session(token: str) -> AuthContext:
-    if not token.strip():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    stripped_token = token.strip()
+    if not stripped_token:
+        raise _authentication_required()
+
+    if supabase_session_verifier is None:
+        raise _authentication_required()
+
+    claims_result = supabase_session_verifier(stripped_token)
+    claims = (
+        await claims_result if inspect.isawaitable(claims_result) else claims_result
+    )
+    if not isinstance(claims, Mapping):
+        raise _authentication_required()
+
+    user_id = claims.get("sub")
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise _authentication_required()
 
     return AuthContext(
-        user_id="authenticated",
+        user_id=user_id,
         auth_required=True,
         memberships=frozenset(),
+    )
+
+
+def _authentication_required() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required",
+        headers={"WWW-Authenticate": "Bearer"},
     )

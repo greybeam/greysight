@@ -64,9 +64,26 @@ def test_auth_disabled_demo_bypass_rejects_non_demo_org() -> None:
     assert exc_info.value.status_code == 403
 
 
-def test_supabase_validation_seam_accepts_bearer_without_memberships() -> None:
-    context = anyio.run(validate_supabase_session, "opaque-token")
+def test_supabase_validation_rejects_when_no_verifier_is_configured(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("app.auth.supabase_session_verifier", None)
 
-    assert context.user_id == "authenticated"
+    with pytest.raises(HTTPException) as exc_info:
+        anyio.run(validate_supabase_session, "opaque-token")
+
+    assert exc_info.value.status_code == 401
+
+
+def test_supabase_validation_uses_verified_claims(monkeypatch) -> None:
+    async def verifier(token: str) -> dict[str, object]:
+        assert token == "opaque-token"
+        return {"sub": "user_123"}
+
+    monkeypatch.setattr("app.auth.supabase_session_verifier", verifier)
+
+    context = anyio.run(validate_supabase_session, " opaque-token ")
+
+    assert context.user_id == "user_123"
     assert context.auth_required is True
     assert context.memberships == frozenset()

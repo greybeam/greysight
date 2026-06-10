@@ -73,6 +73,7 @@ describe("OrgShell", () => {
       <OrgShell
         authClient={authClientWithSession(session)}
         authRequired
+        organizationIdGenerator={() => "11111111-1111-4111-8111-111111111111"}
         onOrganizationChange={organizationSpy}
       >
         <p>Dashboard body</p>
@@ -87,7 +88,7 @@ describe("OrgShell", () => {
     expect(await screen.findByText("Selected organization")).toBeInTheDocument();
     expect(screen.getByText("Acme Analytics")).toBeInTheDocument();
     expect(organizationSpy).toHaveBeenCalledWith({
-      id: "Acme Analytics",
+      id: "11111111-1111-4111-8111-111111111111",
       name: "Acme Analytics",
     });
   });

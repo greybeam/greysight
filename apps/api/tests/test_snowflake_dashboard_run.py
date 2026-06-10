@@ -4,7 +4,11 @@ from datetime import date
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.routes.dashboard_runs import dashboard_run_repository
+from app.routes.dashboard_runs import (
+    _build_top_warehouses_table,
+    dashboard_run_repository,
+)
+from app.services.snowflake_client import SnowflakeQueryError
 
 
 def _source_rows(dataset_key: str) -> list[dict[str, object]]:
@@ -109,7 +113,7 @@ def test_snowflake_run_failure_returns_safe_error(monkeypatch) -> None:
     monkeypatch.setenv("DATA_SOURCE", "snowflake")
 
     def fail_query(sql: str, bind_params: dict[str, object]):
-        raise RuntimeError("raw private backend detail")
+        raise SnowflakeQueryError("raw private backend detail")
 
     monkeypatch.setattr("app.routes.dashboard_runs.execute_source_query", fail_query)
 
@@ -125,6 +129,65 @@ def test_snowflake_run_failure_returns_safe_error(monkeypatch) -> None:
     assert response.status_code == 502
     assert "raw private backend detail" not in response.text
     assert response.json()["detail"] == "Could not query Snowflake Account Usage."
+
+
+def test_snowflake_dashboard_run_internal_error_is_not_masked(monkeypatch) -> None:
+    dashboard_run_repository.clear()
+    monkeypatch.setenv("DATA_SOURCE", "snowflake")
+
+    def query_source(sql: str, bind_params: dict[str, object]):
+        for dataset_key in (
+            "warehouse_spend_daily",
+            "service_spend_daily",
+            "query_compute_by_user_daily",
+            "database_storage_daily",
+        ):
+            if _known_source_sql_matches(dataset_key, sql):
+                return deepcopy(_source_rows(dataset_key))
+        raise AssertionError(f"unexpected SQL: {sql}")
+
+    def fail_summary(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("raw private backend detail")
+
+    monkeypatch.setattr("app.routes.dashboard_runs.execute_source_query", query_source)
+    monkeypatch.setattr(
+        "app.routes.dashboard_runs.build_dashboard_summary", fail_summary
+    )
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/dashboard-runs",
+        json={
+            "organization_id": "00000000-0000-0000-0000-000000000001",
+            "source": "snowflake",
+            "window_days": 30,
+        },
+    )
+
+    assert response.status_code == 500
+    assert "raw private backend detail" not in response.text
+
+
+def test_build_top_warehouses_table_caps_at_ten() -> None:
+    rows = [
+        {"warehouse_name": f"WH_{index:02}", "credits_used": float(index)}
+        for index in range(12)
+    ]
+
+    table = _build_top_warehouses_table(rows)
+
+    assert len(table) == 10
+    assert [row["warehouse_name"] for row in table] == [
+        "WH_11",
+        "WH_10",
+        "WH_09",
+        "WH_08",
+        "WH_07",
+        "WH_06",
+        "WH_05",
+        "WH_04",
+        "WH_03",
+        "WH_02",
+    ]
 
 
 def _known_source_sql_matches(dataset_key: str, sql: str) -> bool:

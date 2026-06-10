@@ -16,7 +16,11 @@ from app.services.cost_metrics import (
 from app.services.audit_events import audit_event_recorder
 from app.services.dashboard_registry import load_dashboard_registry
 from app.services.demo_data import build_demo_dashboard_dataset
-from app.services.snowflake_client import SnowflakeQueryError, execute_source_query
+from app.services.snowflake_client import (
+    SnowflakeConfigurationError,
+    SnowflakeQueryError,
+    execute_source_query,
+)
 
 router = APIRouter(prefix="/api/dashboard-runs", tags=["dashboard-runs"])
 
@@ -268,12 +272,7 @@ def _create_snowflake_dashboard_run(
 ) -> DashboardRun:
     try:
         datasets = _build_snowflake_datasets(request.window_days)
-    except SnowflakeQueryError:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Could not query Snowflake Account Usage.",
-        ) from None
-    except Exception:
+    except (SnowflakeConfigurationError, SnowflakeQueryError):
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Could not query Snowflake Account Usage.",
@@ -334,5 +333,5 @@ def _build_top_warehouses_table(
         {"warehouse_name": warehouse_name, "credits_used": credits_used}
         for warehouse_name, credits_used in sorted(
             credits_by_warehouse.items(), key=lambda item: item[1], reverse=True
-        )
+        )[:10]
     ]

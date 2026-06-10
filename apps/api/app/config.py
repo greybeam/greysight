@@ -3,6 +3,8 @@ from typing import Literal
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+DEFAULT_STORAGE_PRICE_USD_PER_TB_MONTH = 23.0
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="", extra="ignore")
@@ -21,7 +23,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("GREYSIGHT_QUERY_TIMEOUT_SECONDS"),
     )
     storage_price_usd_per_tb_month: float = Field(
-        default=23.0,
+        default=DEFAULT_STORAGE_PRICE_USD_PER_TB_MONTH,
         ge=0,
         validation_alias=AliasChoices("STORAGE_PRICE_USD_PER_TB_MONTH"),
     )
@@ -34,5 +36,5 @@ class Settings(BaseSettings):
     @classmethod
     def default_empty_storage_price(cls, value: object) -> object:
         if value == "":
-            return 23.0
+            return DEFAULT_STORAGE_PRICE_USD_PER_TB_MONTH
         return value

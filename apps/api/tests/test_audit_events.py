@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.routes.dashboard_runs import dashboard_run_repository
 from app.services.audit_events import audit_event_recorder
+from app.services.snowflake_client import SnowflakeValidationError
 from app.services.demo_data import build_demo_dashboard_dataset
 
 
@@ -32,7 +33,7 @@ def test_validation_attempt_records_local_audit_without_sensitive_details(
     monkeypatch,
 ) -> None:
     def fail_validation() -> None:
-        raise PermissionError("raw private backend detail")
+        raise SnowflakeValidationError("raw private backend detail")
 
     monkeypatch.setattr(
         "app.routes.snowflake.validate_snowflake_connection",
