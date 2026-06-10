@@ -16,12 +16,7 @@ import {
 } from "@tremor/react";
 import { useCallback, useEffect, useState } from "react";
 
-import {
-  fetchDashboardDatasets,
-  fetchDemoDashboardDatasets,
-  pollDashboardRun,
-  startDashboardRun,
-} from "../../lib/dashboard-api";
+import { fetchDemoDashboardDatasets } from "../../lib/dashboard-api";
 import type {
   DashboardData,
   DashboardRunStatus,
@@ -39,11 +34,8 @@ type LoadState = {
   data?: DashboardData;
 };
 
-const DEMO_ORGANIZATION_ID = "00000000-0000-0000-0000-000000000001";
-
 export default function CostDashboard({
   data,
-  dataSource = "demo",
 }: CostDashboardProps) {
   const [loadState, setLoadState] = useState<LoadState>({
     status: data?.run.status ?? "loading",
@@ -79,37 +71,8 @@ export default function CostDashboard({
   }, [applyDemoDashboardData, data]);
 
   const startRun = useCallback(async () => {
-    if (dataSource === "demo") {
-      await loadDemoRun();
-      return;
-    }
-    setLoadState((current) => ({ ...current, status: "running" }));
-    try {
-      const run = await startDashboardRun({
-        organizationId: DEMO_ORGANIZATION_ID,
-        windowDays: 30,
-      });
-      const completedRun = await pollDashboardRun(run.id);
-      if (completedRun.status === "completed") {
-        const dashboardData = await fetchDashboardDatasets(completedRun.id);
-        setLoadState({
-          status: completedRun.status,
-          message: completedRun.user_safe_message ?? completedRun.error,
-          data: dashboardData,
-        });
-        return;
-      }
-      setLoadState({
-        status: completedRun.status,
-        message: completedRun.user_safe_message ?? completedRun.error,
-      });
-    } catch {
-      setLoadState({
-        status: "failed",
-        message: "Could not start dashboard analysis.",
-      });
-    }
-  }, [dataSource, loadDemoRun]);
+    await loadDemoRun();
+  }, [loadDemoRun]);
 
   useEffect(() => {
     if (data) {

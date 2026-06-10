@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from threading import RLock
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -18,14 +19,16 @@ class StoredDashboardDataset(BaseModel):
 
 class InMemoryDashboardRunRepository:
     def __init__(self) -> None:
+        self._lock = RLock()
         self._runs: dict[UUID, DashboardRun] = {}
         self._summaries: dict[UUID, dict[str, Any]] = {}
         self._datasets: dict[UUID, dict[str, StoredDashboardDataset]] = {}
 
     def clear(self) -> None:
-        self._runs.clear()
-        self._summaries.clear()
-        self._datasets.clear()
+        with self._lock:
+            self._runs.clear()
+            self._summaries.clear()
+            self._datasets.clear()
 
     def create_completed_run(self, request: DashboardRunCreateRequest) -> DashboardRun:
         now = datetime.now(timezone.utc)
@@ -42,62 +45,77 @@ class InMemoryDashboardRunRepository:
             updated_at=now,
         )
         retention_expires_at = now + timedelta(days=request.retention_days)
-        self._runs[run_id] = run
-        self._summaries[run_id] = request.summary
-        self._datasets[run_id] = {
-            dataset_key: StoredDashboardDataset(
-                aggregate_dataset=rows,
-                retention_expires_at=retention_expires_at,
-            )
-            for dataset_key, rows in request.datasets.items()
-        }
+        with self._lock:
+            self._runs[run_id] = run
+            self._summaries[run_id] = request.summary
+            self._datasets[run_id] = {
+                dataset_key: StoredDashboardDataset(
+                    aggregate_dataset=rows,
+                    retention_expires_at=retention_expires_at,
+                )
+                for dataset_key, rows in request.datasets.items()
+            }
         return run
 
     def get_run(self, run_id: UUID) -> DashboardRun | None:
-        return self._runs.get(run_id)
+        with self._lock:
+            return self._runs.get(run_id)
 
     def get_dataset_response(self, run_id: UUID) -> DashboardDatasetResponse | None:
-        run = self._runs.get(run_id)
-        if run is None or run.status == "deleted":
-            return None
+        with self._lock:
+            run = self._runs.get(run_id)
+            if run is None or run.status == "deleted":
+                return None
 
-        stored_datasets = self._datasets.get(run_id)
-        if stored_datasets is None:
-            return None
-        if any(
-            dataset_is_expired(dataset.retention_expires_at)
-            for dataset in stored_datasets.values()
-        ):
-            expired_run = run.model_copy(
-                update={
-                    "status": "expired",
-                    "updated_at": datetime.now(timezone.utc),
-                }
+            stored_datasets = self._datasets.get(run_id)
+            if stored_datasets is None:
+                return None
+            if any(
+                dataset_is_expired(dataset.retention_expires_at)
+                for dataset in list(stored_datasets.values())
+            ):
+                expired_run = run.model_copy(
+                    update={
+                        "status": "expired",
+                        "updated_at": datetime.now(timezone.utc),
+                    }
+                )
+                self._runs[run_id] = expired_run
+                self._datasets.pop(run_id, None)
+                return None
+
+            return DashboardDatasetResponse(
+                run=run,
+                summary=self._summaries.get(run_id, {}),
+                datasets={
+                    dataset_key: stored_dataset.aggregate_dataset
+                    for dataset_key, stored_dataset in stored_datasets.items()
+                },
             )
-            self._runs[run_id] = expired_run
-            self._datasets.pop(run_id, None)
-            return None
 
-        return DashboardDatasetResponse(
-            run=run,
-            summary=self._summaries.get(run_id, {}),
-            datasets={
-                dataset_key: stored_dataset.aggregate_dataset
+    def expire_run_datasets(self, run_id: UUID) -> None:
+        with self._lock:
+            stored_datasets = self._datasets.get(run_id, {})
+            expired_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+            self._datasets[run_id] = {
+                dataset_key: stored_dataset.model_copy(
+                    update={"retention_expires_at": expired_at}
+                )
                 for dataset_key, stored_dataset in stored_datasets.items()
-            },
-        )
+            }
 
     def delete_run(self, run_id: UUID) -> DashboardRun | None:
-        run = self._runs.get(run_id)
-        if run is None:
-            return None
+        with self._lock:
+            run = self._runs.get(run_id)
+            if run is None:
+                return None
 
-        deleted_run = run.model_copy(
-            update={"status": "deleted", "updated_at": datetime.now(timezone.utc)}
-        )
-        self._runs[run_id] = deleted_run
-        self._datasets.pop(run_id, None)
-        return deleted_run
+            deleted_run = run.model_copy(
+                update={"status": "deleted", "updated_at": datetime.now(timezone.utc)}
+            )
+            self._runs[run_id] = deleted_run
+            self._datasets.pop(run_id, None)
+            return deleted_run
 
 
 dashboard_run_repository = InMemoryDashboardRunRepository()

@@ -22,7 +22,7 @@ export type DashboardSummary = {
   average_daily_credits: number;
   estimated_monthly_credits: number;
   storage_bytes: number;
-  estimated_monthly_storage_cost_usd: number | null;
+  estimated_monthly_storage_cost_usd?: number | null;
 };
 
 export type AccountSpendDaily = {
@@ -79,16 +79,48 @@ const REQUIRED_DATASET_KEYS = [
   "top_warehouses_table",
 ] as const;
 
+type RequiredSummaryNumericKey = keyof Pick<
+  DashboardSummary,
+  | "total_credits"
+  | "average_daily_credits"
+  | "estimated_monthly_credits"
+  | "storage_bytes"
+>;
+
+const DASHBOARD_RUN_STATUSES = [
+  "queued",
+  "running",
+  "completed",
+  "failed",
+  "expired",
+  "deleted",
+] as const satisfies readonly DashboardRunStatus[];
+
+const DASHBOARD_RUN_SOURCES = [
+  "demo",
+  "snowflake",
+] as const satisfies readonly DashboardRun["source"][];
+
+const OPTIONAL_RUN_STRING_KEYS = [
+  "started_at",
+  "completed_at",
+  "error",
+  "user_safe_message",
+] as const satisfies readonly (keyof DashboardRun)[];
+
 export default function parseDashboardDatasets(payload: unknown): DashboardData {
   if (!isRecord(payload)) {
     throw new Error("Dashboard response must be an object");
   }
-  if (!isRecord(payload.run)) {
-    throw new Error("Dashboard run is required");
-  }
+
+  const run = parseDashboardRun(payload.run);
+
   if (!isRecord(payload.summary)) {
     throw new Error("Dashboard summary is required");
   }
+
+  const summary = parseDashboardSummary(payload.summary);
+
   if (!isRecord(payload.datasets)) {
     throw new Error("Dashboard datasets are required");
   }
@@ -99,7 +131,19 @@ export default function parseDashboardDatasets(payload: unknown): DashboardData 
     }
   }
 
-  return payload as DashboardData;
+  return {
+    run,
+    summary,
+    datasets: {
+      account_spend_daily: payload.datasets.account_spend_daily,
+      warehouse_spend_daily: payload.datasets.warehouse_spend_daily,
+      service_spend_daily: payload.datasets.service_spend_daily,
+      query_compute_by_user_daily:
+        payload.datasets.query_compute_by_user_daily,
+      database_storage_daily: payload.datasets.database_storage_daily,
+      top_warehouses_table: payload.datasets.top_warehouses_table,
+    } as DashboardDatasets,
+  };
 }
 
 export function parseDashboardRun(payload: unknown): DashboardRun {
@@ -108,16 +152,96 @@ export function parseDashboardRun(payload: unknown): DashboardRun {
   }
   if (
     typeof payload.id !== "string" ||
-    typeof payload.status !== "string" ||
-    typeof payload.source !== "string" ||
-    typeof payload.window_days !== "number"
+    !isDashboardRunStatus(payload.status) ||
+    !isDashboardRunSource(payload.source) ||
+    !isFiniteNumber(payload.window_days)
   ) {
     throw new Error("Dashboard run response is invalid");
   }
 
-  return payload as DashboardRun;
+  const run: DashboardRun = {
+    id: payload.id,
+    status: payload.status,
+    source: payload.source,
+    window_days: payload.window_days,
+  };
+
+  for (const key of OPTIONAL_RUN_STRING_KEYS) {
+    const value = payload[key];
+    if (value === undefined) {
+      continue;
+    }
+    if (value !== null && typeof value !== "string") {
+      throw new Error("Dashboard run response is invalid");
+    }
+    run[key] = value;
+  }
+
+  return run;
+}
+
+function parseDashboardSummary(payload: Record<string, unknown>): DashboardSummary {
+  const summary: DashboardSummary = {
+    total_credits: readRequiredSummaryNumber(payload, "total_credits"),
+    average_daily_credits: readRequiredSummaryNumber(
+      payload,
+      "average_daily_credits",
+    ),
+    estimated_monthly_credits: readRequiredSummaryNumber(
+      payload,
+      "estimated_monthly_credits",
+    ),
+    storage_bytes: readRequiredSummaryNumber(payload, "storage_bytes"),
+  };
+
+  const storageCost = payload.estimated_monthly_storage_cost_usd;
+  if (storageCost !== undefined) {
+    if (storageCost !== null && !isFiniteNumber(storageCost)) {
+      throw new Error(
+        "Dashboard summary estimated_monthly_storage_cost_usd must be a number or null",
+      );
+    }
+    summary.estimated_monthly_storage_cost_usd = storageCost;
+  }
+
+  return summary;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isDashboardRunStatus(value: unknown): value is DashboardRunStatus {
+  return (
+    typeof value === "string" &&
+    (DASHBOARD_RUN_STATUSES as readonly string[]).includes(value)
+  );
+}
+
+function isDashboardRunSource(
+  value: unknown,
+): value is DashboardRun["source"] {
+  return (
+    typeof value === "string" &&
+    (DASHBOARD_RUN_SOURCES as readonly string[]).includes(value)
+  );
+}
+
+function readRequiredSummaryNumber(
+  payload: Record<string, unknown>,
+  key: RequiredSummaryNumericKey,
+): number {
+  const value = payload[key];
+  if (value === undefined) {
+    throw new Error(`Dashboard summary ${key} is required`);
+  }
+  if (!isFiniteNumber(value)) {
+    throw new Error(`Dashboard summary ${key} must be a number`);
+  }
+
+  return value;
 }
