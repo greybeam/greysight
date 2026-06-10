@@ -16,15 +16,29 @@ import {
 } from "@tremor/react";
 import { useCallback, useEffect, useState } from "react";
 
-import { fetchDemoDashboardDatasets } from "../../lib/dashboard-api";
+import {
+  fetchDashboardDatasets,
+  fetchDemoDashboardDatasets,
+  pollDashboardRun,
+  startDashboardRun,
+} from "../../lib/dashboard-api";
 import type {
   DashboardData,
   DashboardRunStatus,
 } from "../../lib/dashboard-contracts";
 import RunStatus from "./run-status";
 
+export type CostDashboardRuntime = {
+  accessToken: string | null;
+  organizationId: string;
+  organizationName: string;
+};
+
 type CostDashboardProps = {
   data?: DashboardData;
+  demoMode?: boolean;
+  runtime?: CostDashboardRuntime | null;
+  windowDays?: number;
 };
 
 type LoadState = {
@@ -35,13 +49,17 @@ type LoadState = {
 
 export default function CostDashboard({
   data,
+  demoMode,
+  runtime,
+  windowDays = 30,
 }: CostDashboardProps) {
+  const shouldUseDemo = demoMode ?? !runtime;
   const [loadState, setLoadState] = useState<LoadState>({
-    status: data?.run.status ?? "loading",
+    status: data?.run.status ?? (shouldUseDemo ? "loading" : "queued"),
     data,
   });
 
-  const applyDemoDashboardData = useCallback(
+  const applyDashboardData = useCallback(
     (dashboardData: DashboardData) => {
       setLoadState({
         status: dashboardData.run.status,
@@ -56,7 +74,7 @@ export default function CostDashboard({
     setLoadState((current) => ({ ...current, status: "loading" }));
     try {
       const dashboardData = await fetchDemoDashboardDatasets();
-      applyDemoDashboardData(dashboardData);
+      applyDashboardData(dashboardData);
     } catch {
       if (data) {
         setLoadState({ status: data.run.status, data });
@@ -67,14 +85,62 @@ export default function CostDashboard({
         message: "Could not load dashboard data.",
       });
     }
-  }, [applyDemoDashboardData, data]);
+  }, [applyDashboardData, data]);
+
+  const loadSnowflakeRun = useCallback(async () => {
+    if (!runtime) {
+      setLoadState({
+        status: "failed",
+        message: "Select an organization before starting a run.",
+      });
+      return;
+    }
+
+    const options = { accessToken: runtime.accessToken };
+    setLoadState((current) => ({ ...current, status: "loading" }));
+
+    try {
+      const run = await startDashboardRun(
+        { organizationId: runtime.organizationId, windowDays },
+        options,
+      );
+      setLoadState((current) => ({
+        ...current,
+        status: run.status,
+        message: run.error ?? run.user_safe_message,
+      }));
+
+      const completedRun = await pollDashboardRun(run.id, options);
+      if (completedRun.status !== "completed") {
+        setLoadState((current) => ({
+          ...current,
+          status: completedRun.status,
+          message: completedRun.error ?? completedRun.user_safe_message,
+        }));
+        return;
+      }
+
+      const dashboardData = await fetchDashboardDatasets(completedRun.id, options);
+      applyDashboardData(dashboardData);
+    } catch {
+      setLoadState({
+        status: "failed",
+        message: "Could not load dashboard data.",
+      });
+    }
+  }, [applyDashboardData, runtime, windowDays]);
 
   const startRun = useCallback(async () => {
-    await loadDemoRun();
-  }, [loadDemoRun]);
+    if (shouldUseDemo) {
+      await loadDemoRun();
+      return;
+    }
+
+    await loadSnowflakeRun();
+  }, [loadDemoRun, loadSnowflakeRun, shouldUseDemo]);
 
   useEffect(() => {
-    if (data) {
+    if (data || !shouldUseDemo) {
       return;
     }
     let isActive = true;
@@ -83,7 +149,7 @@ export default function CostDashboard({
       try {
         const dashboardData = await fetchDemoDashboardDatasets();
         if (isActive) {
-          applyDemoDashboardData(dashboardData);
+          applyDashboardData(dashboardData);
         }
       } catch {
         if (isActive) {
@@ -100,9 +166,13 @@ export default function CostDashboard({
     return () => {
       isActive = false;
     };
-  }, [applyDemoDashboardData, data]);
+  }, [applyDashboardData, data, shouldUseDemo]);
 
   const dashboardData = loadState.data ?? data;
+  const runDisabled =
+    loadState.status === "loading" ||
+    loadState.status === "running" ||
+    (!shouldUseDemo && !runtime);
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -117,9 +187,7 @@ export default function CostDashboard({
           </div>
           <button
             className="h-10 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
-            disabled={
-              loadState.status === "loading" || loadState.status === "running"
-            }
+            disabled={runDisabled}
             type="button"
             onClick={() => {
               void startRun();

@@ -1,5 +1,10 @@
-import CostDashboard from "../../components/dashboard/cost-dashboard";
+import DashboardRuntimeShell from "../../components/dashboard/dashboard-runtime-shell";
+import { getAuthMode } from "../../lib/auth-mode";
 
 export default function DashboardPage() {
-  return <CostDashboard />;
+  const { authRequired } = getAuthMode({
+    AUTH_REQUIRED: process.env.AUTH_REQUIRED,
+  });
+
+  return <DashboardRuntimeShell authRequired={authRequired} />;
 }

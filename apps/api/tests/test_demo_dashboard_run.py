@@ -31,6 +31,19 @@ def test_demo_run_returns_completed_run_and_datasets() -> None:
     assert "service_spend_daily" in datasets_response.json()["datasets"]
 
 
+def test_create_dashboard_run_requires_auth_when_enabled(monkeypatch) -> None:
+    dashboard_run_repository.clear()
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
+
+    response = TestClient(app).post(
+        "/api/dashboard-runs",
+        json=_complete_create_payload(),
+    )
+
+    assert response.status_code in {401, 403}
+    assert response.json()["detail"] == "Authentication required"
+
+
 def test_persisted_run_round_trips_aggregate_datasets() -> None:
     dashboard_run_repository.clear()
     client = TestClient(app)

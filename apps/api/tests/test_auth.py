@@ -64,6 +64,9 @@ def test_auth_disabled_demo_bypass_rejects_non_demo_org() -> None:
     assert exc_info.value.status_code == 403
 
 
-def test_supabase_validation_seam_rejects_placeholder_use() -> None:
-    with pytest.raises(NotImplementedError):
-        anyio.run(validate_supabase_session, "opaque-token")
+def test_supabase_validation_seam_accepts_bearer_without_memberships() -> None:
+    context = anyio.run(validate_supabase_session, "opaque-token")
+
+    assert context.user_id == "authenticated"
+    assert context.auth_required is True
+    assert context.memberships == frozenset()

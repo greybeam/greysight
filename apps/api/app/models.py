@@ -51,7 +51,7 @@ class DashboardRun(BaseModel):
 
 
 class DashboardRunCreateRequest(BaseModel):
-    organization_id: UUID
+    organization_id: UUID | None = None
     source: DashboardRunCreateSource = "snowflake"
     window_days: int = Field(gt=0, le=365)
     summary: dict[str, Any] = Field(default_factory=dict)
@@ -61,6 +61,8 @@ class DashboardRunCreateRequest(BaseModel):
     @model_validator(mode="after")
     def validate_safe_aggregate_datasets(self) -> Self:
         dataset_keys = set(self.datasets)
+        if not dataset_keys:
+            return self
         if dataset_keys != REQUIRED_DATASET_KEYS:
             missing_keys = sorted(REQUIRED_DATASET_KEYS - dataset_keys)
             unknown_keys = sorted(dataset_keys - REQUIRED_DATASET_KEYS)

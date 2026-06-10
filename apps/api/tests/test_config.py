@@ -30,6 +30,14 @@ def test_greysight_window_and_timeout_env_aliases(
     assert settings.query_timeout_seconds == 90
 
 
+def test_empty_storage_price_uses_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("STORAGE_PRICE_USD_PER_TB_MONTH", "")
+
+    settings = Settings()
+
+    assert settings.storage_price_usd_per_tb_month == 23.0
+
+
 def test_invalid_data_source_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATA_SOURCE", "postgres")
 

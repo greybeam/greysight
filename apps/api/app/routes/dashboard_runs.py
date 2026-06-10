@@ -3,11 +3,20 @@ from threading import RLock
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
+from app.auth import AuthContext, require_auth_context
+from app.config import Settings
 from app.models import DashboardDatasetResponse, DashboardRun, DashboardRunCreateRequest
+from app.services.cost_metrics import (
+    build_dashboard_summary,
+    derive_account_spend_daily,
+)
+from app.services.audit_events import audit_event_recorder
+from app.services.dashboard_registry import load_dashboard_registry
 from app.services.demo_data import build_demo_dashboard_dataset
+from app.services.snowflake_client import SnowflakeQueryError, execute_source_query
 
 router = APIRouter(prefix="/api/dashboard-runs", tags=["dashboard-runs"])
 
@@ -31,29 +40,48 @@ class InMemoryDashboardRunRepository:
             self._datasets.clear()
 
     def create_completed_run(self, request: DashboardRunCreateRequest) -> DashboardRun:
+        return self.create_completed_snapshot(
+            organization_id=request.organization_id,
+            source=request.source,
+            window_days=request.window_days,
+            summary=request.summary,
+            datasets=request.datasets,
+            retention_days=request.retention_days,
+        )
+
+    def create_completed_snapshot(
+        self,
+        *,
+        organization_id: UUID | None,
+        source: str,
+        window_days: int,
+        summary: dict[str, Any],
+        datasets: dict[str, list[dict[str, Any]]],
+        retention_days: int,
+    ) -> DashboardRun:
         now = datetime.now(timezone.utc)
         run_id = uuid4()
         run = DashboardRun(
             id=str(run_id),
-            organization_id=request.organization_id,
-            source=request.source,
+            organization_id=organization_id,
+            source=source,
             status="completed",
-            window_days=request.window_days,
+            window_days=window_days,
             started_at=now,
             completed_at=now,
             created_at=now,
             updated_at=now,
         )
-        retention_expires_at = now + timedelta(days=request.retention_days)
+        retention_expires_at = now + timedelta(days=retention_days)
         with self._lock:
             self._runs[run_id] = run
-            self._summaries[run_id] = request.summary
+            self._summaries[run_id] = summary
             self._datasets[run_id] = {
                 dataset_key: StoredDashboardDataset(
                     aggregate_dataset=rows,
                     retention_expires_at=retention_expires_at,
                 )
-                for dataset_key, rows in request.datasets.items()
+                for dataset_key, rows in datasets.items()
             }
         return run
 
@@ -141,12 +169,24 @@ def read_demo_dashboard_datasets() -> dict[str, Any]:
 
 
 @router.post("", response_model=DashboardRun, status_code=status.HTTP_201_CREATED)
-def create_dashboard_run(request: DashboardRunCreateRequest) -> DashboardRun:
-    return dashboard_run_repository.create_completed_run(request)
+def create_dashboard_run(
+    request: DashboardRunCreateRequest,
+    _auth_context: AuthContext = Depends(require_auth_context),
+) -> DashboardRun:
+    settings = Settings()
+    if settings.data_source == "snowflake":
+        run = _create_snowflake_dashboard_run(request, settings)
+    else:
+        run = dashboard_run_repository.create_completed_run(request)
+    _record_dashboard_run_created(run)
+    return run
 
 
 @router.get("/{run_id}", response_model=DashboardRun)
-def read_dashboard_run(run_id: UUID) -> DashboardRun:
+def read_dashboard_run(
+    run_id: UUID,
+    _auth_context: AuthContext = Depends(require_auth_context),
+) -> DashboardRun:
     run = dashboard_run_repository.get_run(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Dashboard run not found")
@@ -154,16 +194,145 @@ def read_dashboard_run(run_id: UUID) -> DashboardRun:
 
 
 @router.get("/{run_id}/datasets", response_model=DashboardDatasetResponse)
-def read_dashboard_run_datasets(run_id: UUID) -> DashboardDatasetResponse:
+def read_dashboard_run_datasets(
+    run_id: UUID,
+    _auth_context: AuthContext = Depends(require_auth_context),
+) -> DashboardDatasetResponse:
     response = dashboard_run_repository.get_dataset_response(run_id)
     if response is None:
         raise HTTPException(status_code=404, detail="Dashboard datasets not found")
+    _record_dashboard_run_dataset_retrieved(response)
     return response
 
 
 @router.delete("/{run_id}", response_model=DashboardRun)
-def delete_dashboard_run(run_id: UUID) -> DashboardRun:
+def delete_dashboard_run(
+    run_id: UUID,
+    _auth_context: AuthContext = Depends(require_auth_context),
+) -> DashboardRun:
     run = dashboard_run_repository.delete_run(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Dashboard run not found")
+    _record_dashboard_run_deleted(run)
     return run
+
+
+def _record_dashboard_run_created(run: DashboardRun) -> None:
+    audit_event_recorder.record_org_event(
+        "dashboard_run.created",
+        organization_id=run.organization_id,
+        payload={
+            "run_id": run.id,
+            "source": run.source,
+            "status": run.status,
+            "window_days": run.window_days,
+            "dataset_keys": _dataset_keys_for_run(run.id),
+        },
+    )
+
+
+def _record_dashboard_run_dataset_retrieved(
+    response: DashboardDatasetResponse,
+) -> None:
+    audit_event_recorder.record_org_event(
+        "dashboard_run.dataset_retrieved",
+        organization_id=response.run.organization_id,
+        payload={
+            "run_id": response.run.id,
+            "dataset_keys": sorted(response.datasets),
+        },
+    )
+
+
+def _record_dashboard_run_deleted(run: DashboardRun) -> None:
+    audit_event_recorder.record_org_event(
+        "dashboard_run.deleted",
+        organization_id=run.organization_id,
+        payload={"run_id": run.id, "status": run.status},
+    )
+
+
+def _dataset_keys_for_run(run_id: str) -> list[str]:
+    try:
+        parsed_run_id = UUID(run_id)
+    except ValueError:
+        return []
+    response = dashboard_run_repository.get_dataset_response(parsed_run_id)
+    if response is None:
+        return []
+    return sorted(response.datasets)
+
+
+def _create_snowflake_dashboard_run(
+    request: DashboardRunCreateRequest, settings: Settings
+) -> DashboardRun:
+    try:
+        datasets = _build_snowflake_datasets(request.window_days)
+    except SnowflakeQueryError:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not query Snowflake Account Usage.",
+        ) from None
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not query Snowflake Account Usage.",
+        ) from None
+
+    summary = build_dashboard_summary(
+        account_spend_daily=datasets["account_spend_daily"],
+        warehouse_spend_daily=datasets["warehouse_spend_daily"],
+        database_storage_daily=datasets["database_storage_daily"],
+        current_usage_date=datetime.now(timezone.utc).date(),
+        window_days=request.window_days,
+        storage_price_usd_per_tb_month=settings.storage_price_usd_per_tb_month,
+    ).model_dump(mode="json")
+
+    json_ready_datasets = {
+        dataset_key: [
+            row.model_dump(mode="json") if hasattr(row, "model_dump") else row
+            for row in rows
+        ]
+        for dataset_key, rows in datasets.items()
+    }
+    return dashboard_run_repository.create_completed_snapshot(
+        organization_id=request.organization_id,
+        source=request.source,
+        window_days=request.window_days,
+        summary=summary,
+        datasets=json_ready_datasets,
+        retention_days=request.retention_days,
+    )
+
+
+def _build_snowflake_datasets(window_days: int) -> dict[str, list[Any]]:
+    registry = load_dashboard_registry()
+    bind_params = {"window_days": window_days}
+    datasets = {
+        dataset_key: execute_source_query(source.sql, bind_params)
+        for dataset_key, source in registry.sources.items()
+    }
+    datasets["account_spend_daily"] = derive_account_spend_daily(
+        datasets["service_spend_daily"]
+    )
+    datasets["top_warehouses_table"] = _build_top_warehouses_table(
+        datasets["warehouse_spend_daily"]
+    )
+    return datasets
+
+
+def _build_top_warehouses_table(
+    warehouse_spend_daily: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    credits_by_warehouse: dict[str, float] = {}
+    for row in warehouse_spend_daily:
+        warehouse_name = str(row["warehouse_name"])
+        credits_by_warehouse[warehouse_name] = credits_by_warehouse.get(
+            warehouse_name, 0.0
+        ) + float(row["credits_used"])
+    return [
+        {"warehouse_name": warehouse_name, "credits_used": credits_used}
+        for warehouse_name, credits_used in sorted(
+            credits_by_warehouse.items(), key=lambda item: item[1], reverse=True
+        )
+    ]

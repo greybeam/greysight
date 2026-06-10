@@ -85,10 +85,21 @@ def test_query_compute_by_user_source_returns_compute_credits_used() -> None:
     sql = registry.sources["query_compute_by_user_daily"].sql.lower()
 
     assert "query_attribution_history" in sql
-    assert "credits_attributed_compute_queries" in sql
+    assert "credits_attributed_compute" in sql
+    assert "query_history" not in sql
     assert " as credits_used" in sql
     assert "query_count" not in sql
     assert "cloud_services_credits" not in sql
+
+
+def test_query_compute_by_user_source_has_complete_filters() -> None:
+    registry = load_dashboard_registry()
+    sql = registry.sources["query_compute_by_user_daily"].sql.lower()
+
+    assert "convert_timezone('utc', current_timestamp())::date" in sql
+    assert "and convert_timezone('utc', start_time)::date <" in sql
+    assert "and warehouse_name is not null" in sql
+    assert "and user_name is not null" in sql
 
 
 def test_registry_rejects_derived_dependencies_without_source(

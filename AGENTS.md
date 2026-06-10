@@ -2,8 +2,14 @@
 
 Greysight is an open source free Snowflake cost observability tool.
 
-## Development Guidelines
+## Development Principles
 Always use subagent driven development if possible. You are the manager delegating work to other workers. This allows you to retain full context as long as reasonable possible.
+
+1. Think Before Coding — Surface assumptions, ambiguities, and simpler alternatives before writing anything; ask rather than silently picking an interpretation.
+2. Lazy Is Correct — Write the minimum code that solves the stated problem; if it can be expressed in fewer lines, it should be. No speculative features, abstractions, or error handling. The shortest honest solution is usually the most maintainable one.
+3. Surgical Changes — Every changed line should trace to the request; match existing style, don't touch adjacent code, and only clean up orphans your own changes created.
+4. Goal-Driven Execution — Convert tasks into verifiable success criteria (usually tests), then loop until they pass rather than declaring done.
+5. Build for the Next Agent — Extensibility comes from simplicity, not flexibility: obvious names, flat structure, standard patterns. Code should be easy to build on because there's less of it to understand, not because it anticipated future needs.
 
 ## Structure
 
