@@ -25,8 +25,8 @@ class WarehouseSpendDaily(BaseModel):
 class DatabaseStorageDaily(BaseModel):
     usage_date: date
     database_name: str | None = None
-    average_database_bytes: int
-    average_failsafe_bytes: int
+    average_database_bytes: float
+    average_failsafe_bytes: float
 
 
 class DashboardSummary(BaseModel):
@@ -35,7 +35,7 @@ class DashboardSummary(BaseModel):
     estimated_monthly_credits: float
     warehouse_count: int
     top_warehouse_name: str | None
-    storage_bytes: int
+    storage_bytes: float
     estimated_monthly_storage_cost_usd: float | None
 
 
@@ -64,7 +64,6 @@ def build_dashboard_summary(
     account_spend_daily: list[AccountSpendDaily | dict[str, Any]],
     warehouse_spend_daily: list[WarehouseSpendDaily | dict[str, Any]],
     database_storage_daily: list[DatabaseStorageDaily | dict[str, Any]],
-    complete_day_count: int,
     current_usage_date: date | None = None,
     storage_price_usd_per_tb_month: float | None = None,
 ) -> DashboardSummary:
@@ -76,6 +75,9 @@ def build_dashboard_summary(
         current_usage_date=current_usage_date,
     )
     total_credits = sum(row.credits_used for row in complete_account_rows)
+    # Account spend rows are sparse today, so averages are over active complete days.
+    # Calendar-window averages need explicit zero-fill once window bounds are modeled.
+    complete_day_count = len({row.usage_date for row in complete_account_rows})
     average_daily_credits = (
         total_credits / complete_day_count if complete_day_count > 0 else 0.0
     )
@@ -140,7 +142,7 @@ def _latest_complete_storage_bytes(
     database_storage_daily: list[DatabaseStorageDaily | dict[str, Any]],
     *,
     current_usage_date: date | None,
-) -> int:
+) -> float:
     storage_rows = [
         DatabaseStorageDaily.model_validate(row) for row in database_storage_daily
     ]
@@ -149,7 +151,7 @@ def _latest_complete_storage_bytes(
         current_usage_date=current_usage_date,
     )
     if not complete_rows:
-        return 0
+        return 0.0
 
     latest_usage_date = max(row.usage_date for row in complete_rows)
     return sum(

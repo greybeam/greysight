@@ -116,3 +116,154 @@ derived_datasets:
 
     with pytest.raises(ValueError, match="missing_source"):
         load_dashboard_registry()
+
+
+def _load_registry_from_yaml(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    yaml_content: str,
+) -> DashboardRegistry:
+    registry_path = tmp_path / "dashboard_sources.yml"
+    registry_path.write_text(yaml_content, encoding="utf-8")
+    monkeypatch.setattr(dashboard_registry_module, "_REGISTRY_PATH", registry_path)
+    return load_dashboard_registry()
+
+
+def test_registry_rejects_parent_directory_sql_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValueError, match="sql_path"):
+        _load_registry_from_yaml(
+            tmp_path,
+            monkeypatch,
+            """
+sources:
+  - id: service_spend_daily
+    kind: snowflake_account_usage
+    sql_path: ../secrets.sql
+    grain:
+      - usage_date
+derived_datasets: []
+""",
+        )
+
+
+def test_registry_rejects_absolute_sql_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValueError, match="sql_path"):
+        _load_registry_from_yaml(
+            tmp_path,
+            monkeypatch,
+            """
+sources:
+  - id: service_spend_daily
+    kind: snowflake_account_usage
+    sql_path: /tmp/service_spend_daily.sql
+    grain:
+      - usage_date
+derived_datasets: []
+""",
+        )
+
+
+def test_registry_rejects_duplicate_source_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValueError, match="service_spend_daily"):
+        _load_registry_from_yaml(
+            tmp_path,
+            monkeypatch,
+            """
+sources:
+  - id: service_spend_daily
+    kind: snowflake_account_usage
+    sql_path: sql/snowflake/service_spend_daily.sql
+    grain:
+      - usage_date
+  - id: service_spend_daily
+    kind: snowflake_account_usage
+    sql_path: sql/snowflake/warehouse_spend_daily.sql
+    grain:
+      - usage_date
+derived_datasets: []
+""",
+        )
+
+
+def test_registry_rejects_duplicate_derived_dataset_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValueError, match="account_spend_daily"):
+        _load_registry_from_yaml(
+            tmp_path,
+            monkeypatch,
+            """
+sources:
+  - id: service_spend_daily
+    kind: snowflake_account_usage
+    sql_path: sql/snowflake/service_spend_daily.sql
+    grain:
+      - usage_date
+derived_datasets:
+  - id: account_spend_daily
+    depends_on:
+      - service_spend_daily
+  - id: account_spend_daily
+    depends_on:
+      - service_spend_daily
+""",
+        )
+
+
+def test_registry_rejects_direct_derived_dataset_cycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValueError, match="cycle"):
+        _load_registry_from_yaml(
+            tmp_path,
+            monkeypatch,
+            """
+sources:
+  - id: service_spend_daily
+    kind: snowflake_account_usage
+    sql_path: sql/snowflake/service_spend_daily.sql
+    grain:
+      - usage_date
+derived_datasets:
+  - id: account_spend_daily
+    depends_on:
+      - account_spend_daily
+""",
+        )
+
+
+def test_registry_rejects_transitive_derived_dataset_cycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValueError, match="cycle"):
+        _load_registry_from_yaml(
+            tmp_path,
+            monkeypatch,
+            """
+sources:
+  - id: service_spend_daily
+    kind: snowflake_account_usage
+    sql_path: sql/snowflake/service_spend_daily.sql
+    grain:
+      - usage_date
+derived_datasets:
+  - id: account_spend_daily
+    depends_on:
+      - monthly_account_spend
+  - id: monthly_account_spend
+    depends_on:
+      - account_spend_daily
+""",
+        )

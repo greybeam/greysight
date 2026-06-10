@@ -67,7 +67,7 @@ def _load_sources(raw_sources: Any) -> dict[str, DashboardSource]:
         sql_path = Path(_required_str(raw_source, "sql_path"))
         resolved_sql_path = (_ROOT_PATH / sql_path).resolve()
         if sql_path.is_absolute() or not resolved_sql_path.is_relative_to(_SQL_ROOT):
-            raise ValueError(f"SQL path for {source_id} must stay under sql/")
+            raise ValueError(f"sql_path for {source_id} must stay under sql/")
         if source_id in sources:
             raise ValueError(f"Duplicate dashboard source: {source_id}")
 
@@ -121,6 +121,32 @@ def _validate_derived_dependencies(
             raise ValueError(
                 f"Derived dataset {dataset.id} depends on unknown source(s): {missing}"
             )
+    _validate_derived_dependency_cycles(sources, derived_datasets)
+
+
+def _validate_derived_dependency_cycles(
+    sources: dict[str, DashboardSource],
+    derived_datasets: dict[str, DerivedDataset],
+) -> None:
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(dataset_id: str) -> None:
+        if dataset_id in sources or dataset_id in visited:
+            return
+        if dataset_id in visiting:
+            raise ValueError(f"Derived dataset dependency cycle includes {dataset_id}")
+
+        dataset = derived_datasets[dataset_id]
+        visiting.add(dataset_id)
+        for dependency in dataset.depends_on:
+            if dependency in derived_datasets:
+                visit(dependency)
+        visiting.remove(dataset_id)
+        visited.add(dataset_id)
+
+    for dataset_id in derived_datasets:
+        visit(dataset_id)
 
 
 def _required_str(raw_value: dict[str, Any], key: str) -> str:

@@ -1,6 +1,6 @@
 # Greysight Agent Guidelines
 
-Greysight is a free Snowflake cost observability tool.
+Greysight is an open source free Snowflake cost observability tool.
 
 ## Development Guidelines
 Always use subagent driven development if possible. You are the manager delegating work to other workers. This allows you to retain full context as long as reasonable possible.

@@ -1,0 +1,8 @@
+review_agent = "claude-code"
+review_guidelines = """
+For Python files (.py), delegate to the python-reviewer subagent.
+For SQL or database-related files, delegate to the database-reviewer subagent.
+For specs, plans, and anything architecture and design relatted, delegate to the architect agent.
+Always run the security-reviewer subagent on any code touching authentication,
+credentials, or external data boundaries.
+"""
