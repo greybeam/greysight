@@ -12,6 +12,16 @@ import type {
   BrowserAuthClient,
   SessionChangeCallback,
 } from "../../lib/supabase-client";
+import createBrowserAuthClient from "../../lib/supabase-client";
+
+vi.mock("../../lib/supabase-client", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../lib/supabase-client")>();
+  return {
+    ...actual,
+    default: vi.fn(() => null),
+  };
+});
 
 const session: AuthSession = {
   accessToken: "test-access-token",
@@ -54,7 +64,10 @@ function authClientWithSession(activeSession: AuthSession | null): BrowserAuthCl
 }
 
 describe("OrgShell", () => {
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
 
   it("renders bypass demo mode when auth is disabled", () => {
     render(
@@ -65,6 +78,36 @@ describe("OrgShell", () => {
 
     expect(screen.getByText("Demo mode")).toBeInTheDocument();
     expect(screen.getByText("Dashboard body")).toBeInTheDocument();
+    expect(createBrowserAuthClient).not.toHaveBeenCalled();
+  });
+
+  it("does not recreate the browser auth client on rerender", () => {
+    const { rerender } = render(
+      <OrgShell authRequired>
+        <p>Dashboard body</p>
+      </OrgShell>,
+    );
+
+    rerender(
+      <OrgShell authRequired>
+        <p>Dashboard body</p>
+      </OrgShell>,
+    );
+
+    expect(createBrowserAuthClient).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves explicit null auth client", () => {
+    render(
+      <OrgShell authClient={null} authRequired>
+        <p>Dashboard body</p>
+      </OrgShell>,
+    );
+
+    expect(
+      screen.getByText("Authentication is not configured"),
+    ).toBeInTheDocument();
+    expect(createBrowserAuthClient).not.toHaveBeenCalled();
   });
 
   it("renders authenticated org controls and exposes the access token", async () => {

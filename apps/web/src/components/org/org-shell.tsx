@@ -75,9 +75,11 @@ export default function OrgShell({
   onAccessTokenChange,
   onOrganizationChange,
 }: OrgShellProps) {
-  const [authClient] = useState<BrowserAuthClient | null>(
-    providedAuthClient ?? createBrowserAuthClient(),
-  );
+  const [authClient] = useState<BrowserAuthClient | null>(() => {
+    if (!authRequired) return null;
+    if (providedAuthClient !== undefined) return providedAuthClient;
+    return createBrowserAuthClient();
+  });
   const [session, setSession] = useState<AuthSession | null>(null);
   const [loading, setLoading] = useState(authRequired && Boolean(authClient));
   const [organizationName, setOrganizationName] = useState("");
