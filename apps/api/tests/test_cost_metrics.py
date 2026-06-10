@@ -97,6 +97,7 @@ def test_build_dashboard_summary_applies_metric_rules() -> None:
             },
         ],
         current_usage_date=date(2026, 6, 7),
+        window_days=2,
         storage_price_usd_per_tb_month=23.0,
     )
 
@@ -121,6 +122,8 @@ def test_storage_cost_is_null_without_a_price() -> None:
                 "average_failsafe_bytes": 0,
             },
         ],
+        current_usage_date=date(2026, 6, 6),
+        window_days=1,
         storage_price_usd_per_tb_month=None,
     )
 
@@ -192,6 +195,7 @@ def test_build_dashboard_summary_uses_float_storage_bytes_and_cost() -> None:
             }
         ],
         current_usage_date=date(2026, 6, 7),
+        window_days=1,
         storage_price_usd_per_tb_month=23.0,
     )
 
@@ -199,13 +203,10 @@ def test_build_dashboard_summary_uses_float_storage_bytes_and_cost() -> None:
     assert summary.estimated_monthly_storage_cost_usd == pytest.approx(40.25)
 
 
-def test_build_dashboard_summary_derives_average_denominator_from_account_rows() -> (
-    None
-):
+def test_build_dashboard_summary_averages_over_sparse_calendar_window() -> None:
     summary = build_dashboard_summary(
         account_spend_daily=[
             {"usage_date": date(2026, 6, 5), "credits_used": 30.0},
-            {"usage_date": date(2026, 6, 7), "credits_used": 999.0},
         ],
         warehouse_spend_daily=[
             {
@@ -215,10 +216,44 @@ def test_build_dashboard_summary_derives_average_denominator_from_account_rows()
             },
         ],
         database_storage_daily=[],
-        current_usage_date=date(2026, 6, 7),
+        current_usage_date=date(2026, 6, 8),
+        window_days=3,
         storage_price_usd_per_tb_month=23.0,
     )
 
     assert summary.total_credits == 30.0
-    assert summary.average_daily_credits == 30.0
-    assert summary.estimated_monthly_credits == 900.0
+    assert summary.average_daily_credits == 10.0
+    assert summary.estimated_monthly_credits == 300.0
+
+
+def test_build_dashboard_summary_excludes_rows_outside_trailing_complete_window() -> (
+    None
+):
+    summary = build_dashboard_summary(
+        account_spend_daily=[
+            {"usage_date": date(2026, 6, 4), "credits_used": 999.0},
+            {"usage_date": date(2026, 6, 5), "credits_used": 30.0},
+        ],
+        warehouse_spend_daily=[
+            {
+                "usage_date": date(2026, 6, 4),
+                "warehouse_name": "OLD_WH",
+                "credits_used": 999.0,
+            },
+            {
+                "usage_date": date(2026, 6, 5),
+                "warehouse_name": "BI_WH",
+                "credits_used": 30.0,
+            },
+        ],
+        database_storage_daily=[],
+        current_usage_date=date(2026, 6, 8),
+        window_days=3,
+        storage_price_usd_per_tb_month=23.0,
+    )
+
+    assert summary.total_credits == 30.0
+    assert summary.average_daily_credits == 10.0
+    assert summary.estimated_monthly_credits == 300.0
+    assert summary.warehouse_count == 1
+    assert summary.top_warehouse_name == "BI_WH"

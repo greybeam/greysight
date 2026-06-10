@@ -143,6 +143,7 @@ def build_demo_dashboard_dataset() -> DashboardDatasetPayload:
         warehouse_spend_daily=warehouse_spend_daily,
         database_storage_daily=database_storage_daily,
         current_usage_date=current_usage_date,
+        window_days=30,
         storage_price_usd_per_tb_month=None,
     )
 
