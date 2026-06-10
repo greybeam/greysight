@@ -1,44 +1,40 @@
 # Greysight Agent Guidelines
 
-Greysight is an open source free Snowflake cost observability tool.
+Greysight is an open source Snowflake cost observability tool. Keep changes
+small, tested, and tied to requested behavior.
 
 ## Development Principles
-Always use subagent driven development if possible. You are the manager delegating work to other workers. This allows you to retain full context as long as reasonable possible.
 
-1. Think Before Coding — Surface assumptions, ambiguities, and simpler alternatives before writing anything; ask rather than silently picking an interpretation.
-2. Lazy Is Correct — Write the minimum code that solves the stated problem; if it can be expressed in fewer lines, it should be. No speculative features, abstractions, or error handling. The shortest honest solution is usually the most maintainable one.
-3. Surgical Changes — Every changed line should trace to the request; match existing style, don't touch adjacent code, and only clean up orphans your own changes created.
-4. Goal-Driven Execution — Convert tasks into verifiable success criteria (usually tests), then loop until they pass rather than declaring done.
-5. Build for the Next Agent — Extensibility comes from simplicity, not flexibility: obvious names, flat structure, standard patterns. Code should be easy to build on because there's less of it to understand, not because it anticipated future needs.
+1. Think before coding: surface assumptions, ambiguities, and simpler alternatives.
+2. Lazy is correct: write the minimum code that solves the stated problem.
+3. Surgical changes: every changed line should trace to the request.
+4. Goal-driven execution: convert tasks into verifiable success criteria and run relevant checks.
+5. Build for the next agent: prefer obvious names, flat structure, and standard patterns.
 
-## Structure
+## Project Structure
 
-- `apps/web/`: Next.js app, React UI, Tremor dashboard components, browser-facing API client, and Vitest tests.
-- `apps/api/`: FastAPI backend, trusted config/routes/services, Python tests, and `uv` dependency lockfile.
-- `supabase/migrations/`: Supabase schema, RLS policies, org membership model, and short-lived aggregate dataset storage.
-- `docs/`: Product specs, implementation plans, dependency notes, and future setup/security/deployment guides.
+- `apps/web/`: Next.js app, dashboard UI, auth/org shell, browser API clients, and Vitest tests.
+- `apps/api/`: FastAPI backend, trusted auth/org guards, Snowflake access, metric calculation, route tests, and `uv` config.
+- `sql/snowflake/`: approved read-only Snowflake Account Usage source queries.
+- `sql/dashboard_sources.yml`: registry that maps dashboard dataset keys to approved SQL assets and derived datasets.
+- `supabase/migrations/`: Supabase schema, RLS policies, organization membership model, and aggregate dataset tables.
+- `docs/`: setup, deployment, security, specs, implementation plans, and dependency notes.
 
-## Where to look
+## Where To Look
 
 | Task | Location | Notes |
 | --- | --- | --- |
-| Web app shell and pages | `apps/web/src/app/` | First screen routes to `/dashboard`; keep UI app-like, not marketing-first. |
-| Dashboard UI components | `apps/web/src/components/` | Shared components live near focused tests. Tremor compatibility spike is in `components/compat/`. |
-| Web API/env helpers | `apps/web/src/lib/` | Only expose `NEXT_PUBLIC_*` values to the browser. Backend secrets stay in FastAPI. |
-| FastAPI routes | `apps/api/app/routes/` | Route modules are mounted from `apps/api/app/main.py`. |
-| Backend settings | `apps/api/app/config.py` | Environment parsing and defaults live here. |
-| API tests | `apps/api/tests/` | Keep behavior and migration invariant tests close to backend code. |
-| Supabase schema/RLS | `supabase/migrations/` | RLS must preserve member read access and admin/owner-only sensitive mutations. |
-| Dependency compatibility | `docs/dependency-compatibility.md` | Records Next/React/Tremor/Tailwind pinning decisions and npm install safety. |
-
-## Guides
-
-- `docs/specs/2026-06-08-cost-dashboard-mvp.md`: scoped MVP product and security requirements.
-- `docs/superpowers/plans/2026-06-08-cost-dashboard-mvp.md`: execution plan with task dependencies and verification commands.
-- `docs/dependency-compatibility.md`: frontend dependency compatibility and install guidance.
+| Dashboard UI | `apps/web/src/app/`, `apps/web/src/components/dashboard/` | First screen routes to `/dashboard`; keep UI app-like, not marketing-first. |
+| API routes | `apps/api/app/routes/` | Routes are mounted from `apps/api/app/main.py`. |
+| Metric calculations | `apps/api/app/services/cost_metrics.py` | Keep demo, Snowflake, and frontend dataset keys aligned. |
+| Snowflake source queries | `sql/snowflake/`, `sql/dashboard_sources.yml` | Execute only registry-approved read-only SQL assets. |
+| Supabase schema/RLS | `supabase/migrations/` | Preserve member read access and owner/admin-only sensitive mutations. |
+| Auth/org behavior | `apps/api/app/auth.py`, `apps/web/src/components/auth/`, `apps/web/src/components/org/` | Keep local demo bypass separate from authenticated org flows. |
+| Local dev/deployment docs | `docs/local-development.md`, `docs/snowflake-setup.md`, `docs/deployment.md` | Keep command and environment details in docs, not in this file. |
 
 ## Core Principles
-1. **Every change needs a test.** Must fail without change, pass with it
-2. **Assert invariants.** Don't silently fail. Don't hedge with if-statements
-3. **Own your regressions.** If tests fail after your change, they are your regressions. Debug them directly. Never stash/revert to "check if they fail on main" — that wastes time and is categorically banned.
-4. **Validate your hypotheses.**: If you suspect a given cause for a bug, validate it and provide incontrovertible evidence. NEVER make unearned assumptions.
+
+1. Every behavior change needs a test that would fail without the change.
+2. Assert invariants instead of silently accepting impossible states.
+3. Own regressions from your change and debug them directly.
+4. Validate hypotheses with evidence before proposing fixes.

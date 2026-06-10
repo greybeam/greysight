@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   configureBrowserAuthClient,
   createBrowserAuthClient,
+  createSupabaseBrowserAuthClient,
   resetBrowserAuthClientFactory,
 } from "./supabase-client";
 
@@ -82,5 +83,43 @@ describe("supabase-client", () => {
     authClient?.onAuthStateChange(vi.fn()).unsubscribe();
 
     expect(unsubscribe).toHaveBeenCalled();
+  });
+
+  it("maps missing Supabase sessions and auth errors", async () => {
+    const supabaseClient = {
+      auth: {
+        getSession: vi.fn().mockResolvedValue({
+          data: { session: null },
+          error: { message: "Session expired" },
+        }),
+        onAuthStateChange: vi.fn(),
+        signInWithOtp: vi
+          .fn()
+          .mockResolvedValue({ error: { message: "Email rejected" } }),
+        signOut: vi
+          .fn()
+          .mockResolvedValue({ error: { message: "Already signed out" } }),
+      },
+    };
+    createClient.mockReturnValue(supabaseClient);
+
+    const authClient = createSupabaseBrowserAuthClient({
+      supabaseUrl: "https://project.supabase.co",
+      supabaseAnonKey: "anon-key",
+    });
+
+    await expect(authClient.getSession()).resolves.toEqual({
+      error: { message: "Session expired" },
+      session: null,
+    });
+    await expect(
+      authClient.signInWithOtp({
+        email: "owner@example.com",
+        options: { emailRedirectTo: "http://localhost:3000" },
+      }),
+    ).resolves.toEqual({ error: { message: "Email rejected" } });
+    await expect(authClient.signOut()).resolves.toEqual({
+      error: { message: "Already signed out" },
+    });
   });
 });

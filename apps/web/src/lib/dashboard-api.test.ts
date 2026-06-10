@@ -95,4 +95,30 @@ describe("dashboard-api", () => {
 
     expect(run.status).toBe("completed");
   });
+
+  it("throws a user-safe error when a dashboard request fails", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("nope", { status: 503 }),
+    );
+
+    await expect(fetchDemoDashboardDatasets()).rejects.toThrow(
+      "Dashboard API request failed with 503",
+    );
+  });
+
+  it("throws when polling does not reach a terminal state", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ ...demoDashboardDatasets.run, status: "running" }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+
+    await expect(
+      pollDashboardRun("run-123", { intervalMs: 0, maxAttempts: 1 }),
+    ).rejects.toThrow("Dashboard run polling timed out");
+  });
 });
