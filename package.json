@@ -1,0 +1,23 @@
+{
+  "private": true,
+  "workspaces": [
+    "apps/web",
+    "apps/api"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:web\" \"npm run dev:api\"",
+    "dev:web": "npm --workspace apps/web run dev",
+    "dev:api": "npm --workspace apps/api run dev",
+    "test": "npm run test:web && npm run test:api",
+    "test:web": "npm --workspace apps/web run test",
+    "test:api": "npm --workspace apps/api run test",
+    "test:coverage": "npm --workspace apps/web run test:coverage && npm --workspace apps/api run test:coverage",
+    "lint": "npm run lint:web && npm run lint:api",
+    "lint:web": "npm --workspace apps/web run lint",
+    "lint:api": "npm --workspace apps/api run lint",
+    "typecheck": "npm --workspace apps/web run typecheck"
+  },
+  "devDependencies": {
+    "concurrently": "10.0.1"
+  }
+}

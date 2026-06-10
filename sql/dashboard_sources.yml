@@ -1,0 +1,31 @@
+sources:
+  - id: warehouse_spend_daily
+    kind: snowflake_account_usage
+    sql_path: sql/snowflake/warehouse_spend_daily.sql
+    grain:
+      - usage_date
+      - warehouse_name
+  - id: service_spend_daily
+    kind: snowflake_account_usage
+    sql_path: sql/snowflake/service_spend_daily.sql
+    grain:
+      - usage_date
+      - service_type
+  - id: query_compute_by_user_daily
+    kind: snowflake_account_usage
+    sql_path: sql/snowflake/query_compute_by_user_daily.sql
+    grain:
+      - usage_date
+      - user_name
+      - warehouse_name
+  - id: database_storage_daily
+    kind: snowflake_account_usage
+    sql_path: sql/snowflake/database_storage_daily.sql
+    grain:
+      - usage_date
+      - database_name
+
+derived_datasets:
+  - id: account_spend_daily
+    depends_on:
+      - service_spend_daily

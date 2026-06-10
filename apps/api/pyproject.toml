@@ -1,0 +1,20 @@
+[project]
+name = "greysight-api"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi==0.115.6",
+  "uvicorn==0.34.0",
+  "pydantic-settings==2.7.1",
+  "pytest==8.3.4",
+  "pytest-cov==6.0.0",
+  "httpx==0.28.1",
+  "pyyaml==6.0.2",
+  "snowflake-connector-python==3.12.4",
+  "ruff==0.8.4",
+  "pyopenssl==24.3.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
