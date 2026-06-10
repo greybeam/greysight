@@ -85,10 +85,29 @@ async def validate_supabase_session(token: str) -> AuthContext:
         raise _authentication_required()
 
     return AuthContext(
-        user_id=user_id,
+        user_id=user_id.strip(),
         auth_required=True,
-        memberships=frozenset(),
+        memberships=_extract_memberships(claims),
     )
+
+
+def _extract_memberships(claims: Mapping[str, object]) -> frozenset[str]:
+    memberships: set[str] = set()
+    app_metadata = claims.get("app_metadata")
+
+    if isinstance(app_metadata, Mapping):
+        memberships.update(_string_list_claim(app_metadata.get("organization_ids")))
+        memberships.update(_string_list_claim(app_metadata.get("organizations")))
+
+    memberships.update(_string_list_claim(claims.get("memberships")))
+    return frozenset(memberships)
+
+
+def _string_list_claim(value: object) -> frozenset[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        return frozenset()
+
+    return frozenset(item.strip() for item in value if item.strip())
 
 
 def _authentication_required() -> HTTPException:

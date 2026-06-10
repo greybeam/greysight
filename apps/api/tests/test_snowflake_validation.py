@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.services.audit_events import audit_event_recorder
 from app.services.snowflake_client import SnowflakeValidationError
 
 
@@ -112,3 +113,29 @@ def test_snowflake_validation_internal_error_is_not_masked(monkeypatch) -> None:
 
     assert response.status_code == 500
     assert "raw private backend detail" not in response.text
+
+
+def test_snowflake_validation_audits_unexpected_validation_errors(monkeypatch) -> None:
+    audit_event_recorder.clear()
+
+    def fail_validation() -> None:
+        raise RuntimeError("raw private backend detail")
+
+    monkeypatch.setattr(
+        "app.routes.snowflake.validate_snowflake_connection",
+        fail_validation,
+    )
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/snowflake/validate"
+    )
+
+    assert response.status_code == 500
+    assert audit_event_recorder.list_events() == [
+        {
+            "event_name": "snowflake.validation_attempted",
+            "organization_id": None,
+            "payload": {"outcome": "error"},
+        }
+    ]
+    assert "raw private backend detail" not in str(audit_event_recorder.list_events())

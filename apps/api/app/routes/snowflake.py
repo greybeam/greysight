@@ -41,6 +41,12 @@ def validate_snowflake(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Could not validate Snowflake Account Usage access.",
         ) from None
+    except Exception:
+        audit_event_recorder.record_event(
+            "snowflake.validation_attempted",
+            payload={"outcome": "error"},
+        )
+        raise
     audit_event_recorder.record_event(
         "snowflake.validation_attempted",
         payload={"outcome": "succeeded"},
