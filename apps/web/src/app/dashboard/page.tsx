@@ -23,7 +23,7 @@ export default function DashboardPage() {
                 <p className="text-sm font-medium text-slate-500">Snowflake cost observability</p>
                 <h1 className="mt-1 text-2xl font-semibold text-slate-950">Cost dashboard</h1>
               </div>
-              <ApiHealth status="ok" />
+          <ApiHealth />
             </div>
           </header>
 

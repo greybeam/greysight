@@ -27,7 +27,7 @@
     "dev": "next dev",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "lint": "node ../../node_modules/eslint/bin/eslint.js .",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "build": "next build"
   }

@@ -11,9 +11,12 @@ class Settings(BaseSettings):
     auth_required: bool = False
     default_window_days: int = Field(
         default=30,
+        gt=0,
+        le=365,
         validation_alias=AliasChoices("GREYSIGHT_DEFAULT_WINDOW_DAYS"),
     )
     query_timeout_seconds: int = Field(
         default=60,
+        gt=0,
         validation_alias=AliasChoices("GREYSIGHT_QUERY_TIMEOUT_SECONDS"),
     )

@@ -6,13 +6,30 @@ Greysight is a free Snowflake cost observability tool.
 Always use subagent driven development if possible. You are the manager delegating work to other workers. This allows you to retain full context as long as reasonable possible.
 
 ## Structure
-<!-- placeholder, put high level project structure here -->
+
+- `apps/web/`: Next.js app, React UI, Tremor dashboard components, browser-facing API client, and Vitest tests.
+- `apps/api/`: FastAPI backend, trusted config/routes/services, Python tests, and `uv` dependency lockfile.
+- `supabase/migrations/`: Supabase schema, RLS policies, org membership model, and short-lived aggregate dataset storage.
+- `docs/`: Product specs, implementation plans, dependency notes, and future setup/security/deployment guides.
 
 ## Where to look
-<!-- placeholder, create simple chart showing task, location, notes. Task being a specific function of this project, where it's located, and any additional notes about that directory or file -->
+
+| Task | Location | Notes |
+| --- | --- | --- |
+| Web app shell and pages | `apps/web/src/app/` | First screen routes to `/dashboard`; keep UI app-like, not marketing-first. |
+| Dashboard UI components | `apps/web/src/components/` | Shared components live near focused tests. Tremor compatibility spike is in `components/compat/`. |
+| Web API/env helpers | `apps/web/src/lib/` | Only expose `NEXT_PUBLIC_*` values to the browser. Backend secrets stay in FastAPI. |
+| FastAPI routes | `apps/api/app/routes/` | Route modules are mounted from `apps/api/app/main.py`. |
+| Backend settings | `apps/api/app/config.py` | Environment parsing and defaults live here. |
+| API tests | `apps/api/tests/` | Keep behavior and migration invariant tests close to backend code. |
+| Supabase schema/RLS | `supabase/migrations/` | RLS must preserve member read access and admin/owner-only sensitive mutations. |
+| Dependency compatibility | `docs/dependency-compatibility.md` | Records Next/React/Tremor/Tailwind pinning decisions and npm install safety. |
 
 ## Guides
-<!-- placeholder, any agent guidelines are hyperlinked here and live in the /docs directory -->
+
+- `docs/specs/2026-06-08-cost-dashboard-mvp.md`: scoped MVP product and security requirements.
+- `docs/superpowers/plans/2026-06-08-cost-dashboard-mvp.md`: execution plan with task dependencies and verification commands.
+- `docs/dependency-compatibility.md`: frontend dependency compatibility and install guidance.
 
 ## Core Principles
 1. **Every change needs a test.** Must fail without change, pass with it

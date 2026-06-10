@@ -35,3 +35,19 @@ def test_invalid_data_source_is_rejected(monkeypatch: pytest.MonkeyPatch) -> Non
 
     with pytest.raises(ValidationError):
         Settings()
+
+
+@pytest.mark.parametrize("value", ["0", "366", "-1"])
+def test_invalid_default_window_days_is_rejected(monkeypatch, value):
+    monkeypatch.setenv("GREYSIGHT_DEFAULT_WINDOW_DAYS", value)
+
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_invalid_query_timeout_seconds_is_rejected(monkeypatch, value):
+    monkeypatch.setenv("GREYSIGHT_QUERY_TIMEOUT_SECONDS", value)
+
+    with pytest.raises(ValidationError):
+        Settings()
