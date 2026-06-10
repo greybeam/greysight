@@ -187,7 +187,7 @@ def _normalize_membership_id(value: str) -> str:
     try:
         return str(UUID(stripped_value))
     except ValueError:
-        return stripped_value
+        return stripped_value.lower()
 
 
 def _authentication_required() -> HTTPException:

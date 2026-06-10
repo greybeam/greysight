@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import LoginForm from "../auth/login-form";
+
 import { getAuthMode } from "../../lib/auth-mode";
 import createBrowserAuthClient, {
   type AuthSession,
   type BrowserAuthClient,
 } from "../../lib/supabase-client";
+import LoginForm from "../auth/login-form";
 
 export type SelectedOrganization = {
   id: string;
@@ -36,7 +37,6 @@ function createLocalOrganizationId(): string {
       bytes[index] = Math.floor(Math.random() * 256);
     }
   }
-
   bytes[6] = (bytes[6] & 0x0f) | 0x40;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
 
@@ -75,10 +75,8 @@ export default function OrgShell({
   onAccessTokenChange,
   onOrganizationChange,
 }: OrgShellProps) {
-  const [authClient] = useState(() =>
-    providedAuthClient === undefined && authRequired
-      ? createBrowserAuthClient()
-      : (providedAuthClient ?? null),
+  const [authClient] = useState<BrowserAuthClient | null>(
+    providedAuthClient ?? createBrowserAuthClient(),
   );
   const [session, setSession] = useState<AuthSession | null>(null);
   const [loading, setLoading] = useState(authRequired && Boolean(authClient));
@@ -87,8 +85,6 @@ export default function OrgShell({
     useState<SelectedOrganization | null>(null);
   const accessToken = session?.accessToken ?? null;
   const membershipOrganizationIds = getMembershipOrganizationIds(session);
-  // Authenticated MVP supports one seeded org until backend org provisioning
-  // can return named memberships for a real selector.
   const canSelectOrganization =
     !authRequired || membershipOrganizationIds.length === 1;
   const organizationSelectionMessage =
@@ -151,12 +147,12 @@ export default function OrgShell({
   if (!authClient) {
     return (
       <main className="min-h-screen bg-slate-50 p-6">
-        <section className="mx-auto max-w-md rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+        <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
           <h1 className="text-lg font-semibold text-slate-950">
             Authentication is not configured
           </h1>
           <p className="mt-2 text-sm text-slate-600">
-            Set the public Supabase URL and anon key to enable login.
+            Set public Supabase URL and anon key to enable login.
           </p>
         </section>
       </main>
@@ -166,9 +162,7 @@ export default function OrgShell({
   if (loading) {
     return (
       <main className="min-h-screen bg-slate-50 p-6">
-        <p className="text-sm font-medium text-slate-600">
-          Loading authentication
-        </p>
+        <p className="text-sm text-slate-600">Loading authentication</p>
       </main>
     );
   }
@@ -182,9 +176,9 @@ export default function OrgShell({
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <section className="border-b border-slate-200 bg-white px-6 py-4">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+    <div className="min-h-screen bg-slate-50 p-6">
+      <section className="mb-6 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div>
             <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
               Signed in
@@ -193,6 +187,7 @@ export default function OrgShell({
               {session.user?.email ?? "Authenticated user"}
             </p>
           </div>
+
           <form
             className="flex flex-col gap-2 sm:flex-row sm:items-end"
             onSubmit={submitOrganization}
@@ -212,20 +207,22 @@ export default function OrgShell({
                 value={organizationName}
               />
             </label>
-        <button
-          className="h-10 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
-          disabled={!canSelectOrganization}
-          type="submit"
-        >
-          Create organization
-        </button>
-      </form>
-      {!canSelectOrganization ? (
-        <p className="text-sm text-amber-700">
-          {organizationSelectionMessage}
-        </p>
-      ) : null}
+            <button
+              className="h-10 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+              disabled={!canSelectOrganization}
+              type="submit"
+            >
+              Create organization
+            </button>
+          </form>
+
+          {!canSelectOrganization ? (
+            <p className="text-sm text-amber-700">
+              {organizationSelectionMessage}
+            </p>
+          ) : null}
         </div>
+
         {selectedOrganization ? (
           <div className="mt-4 text-sm text-slate-700">
             <p className="font-medium text-slate-500">Selected organization</p>
@@ -235,6 +232,7 @@ export default function OrgShell({
           </div>
         ) : null}
       </section>
+
       {children}
     </div>
   );

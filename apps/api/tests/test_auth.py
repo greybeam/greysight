@@ -322,3 +322,21 @@ def test_supabase_auth_server_verifier_rejects_non_mapping_payload() -> None:
         anyio.run(validate_supabase_session, "opaque-token", verifier)
 
     assert exc_info.value.status_code == 401
+
+
+def test_supabase_validation_normalizes_non_uuid_membership_claim_case(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def verifier(token: str) -> dict[str, object]:
+        assert token == "opaque-token"
+        return {
+            "sub": "user_123",
+            "app_metadata": {"organization_ids": ["ORG_ABC"]},
+        }
+
+    monkeypatch.setattr("app.auth.supabase_session_verifier", verifier)
+
+    context = anyio.run(validate_supabase_session, "opaque-token")
+
+    assert "org_abc" in context.memberships
+    assert require_org_membership(context, "org_abc") is None

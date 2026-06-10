@@ -108,6 +108,25 @@ def test_auth_required_demo_source_creates_complete_org_scoped_datasets(
     assert len(datasets["warehouse_spend_daily"]) > 0
 
 
+def test_auth_required_demo_source_pins_run_to_demo_window(monkeypatch) -> None:
+    dashboard_run_repository.clear()
+    monkeypatch.setenv("DATA_SOURCE", "demo")
+    headers = _verified_token_for_org(monkeypatch, ORG_ONE)
+
+    create_response = TestClient(app).post(
+        "/api/dashboard-runs",
+        json={
+            "organization_id": ORG_ONE,
+            "source": "snowflake",
+            "window_days": 7,
+        },
+        headers=headers,
+    )
+
+    assert create_response.status_code == 201
+    assert create_response.json()["window_days"] == 30
+
+
 def test_persisted_run_routes_reject_non_member_organization(monkeypatch) -> None:
     dashboard_run_repository.clear()
     payload = _complete_create_payload()

@@ -327,7 +327,7 @@ def _create_demo_dashboard_run(request: DashboardRunCreateRequest) -> DashboardR
     return dashboard_run_repository.create_completed_snapshot(
         organization_id=request.organization_id,
         source=request.source,
-        window_days=request.window_days,
+        window_days=demo_payload.run.window_days,
         summary=demo_payload.summary.model_dump(mode="json"),
         datasets=demo_payload.datasets,
         retention_days=request.retention_days,
