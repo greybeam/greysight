@@ -20,3 +20,7 @@ class Settings(BaseSettings):
         gt=0,
         validation_alias=AliasChoices("GREYSIGHT_QUERY_TIMEOUT_SECONDS"),
     )
+    cors_allowed_origins: tuple[str, ...] = Field(
+        default=("http://localhost:3000",),
+        validation_alias=AliasChoices("GREYSIGHT_CORS_ALLOWED_ORIGINS"),
+    )
