@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+import math
 from typing import Any, Callable
 
 from app.models import DashboardDatasetMetadata, DashboardRun
@@ -66,6 +68,7 @@ CURRENCY_CODE_PREFIXES = frozenset(
 )
 CURRENCY_CODE_SEPARATOR = "\u00a0"
 CURRENCY_COMPACT_DECIMAL_CODES = frozenset({"HUF", "IDR", "JPY", "KRW"})
+CURRENCY_TWO_DECIMAL_QUANT = Decimal("0.01")
 
 DatasetRow = dict[str, Any]
 RateIndex = dict[str, "RateIndexEntry"]
@@ -412,31 +415,47 @@ def _through_date_for(metadata: DashboardDatasetMetadata) -> date | None:
 
 def _format_currency(value: float, currency: str | None) -> str:
     resolved_currency = currency or "USD"
+    decimal_value = _decimal_from_number(value)
+    absolute_value = abs(decimal_value)
+    sign = "-" if decimal_value < 0 else ""
+
     if resolved_currency == "USD":
-        amount = f"{abs(value):,.2f}"
-        if value < 0:
-            return f"-${amount}"
-        return f"${amount}"
+        amount = _format_fixed_decimal(absolute_value)
+        return f"{sign}${amount}"
     if resolved_currency in CURRENCY_SYMBOL_PREFIXES:
-        amount = _format_currency_amount(abs(value), resolved_currency)
-        sign = "-" if value < 0 else ""
+        amount = _format_currency_amount(absolute_value, resolved_currency)
         return f"{sign}{CURRENCY_SYMBOL_PREFIXES[resolved_currency]}{amount}"
     if resolved_currency in CURRENCY_CODE_PREFIXES:
-        amount = _format_currency_amount(abs(value), resolved_currency)
-        sign = "-" if value < 0 else ""
+        amount = _format_currency_amount(absolute_value, resolved_currency)
         return f"{sign}{resolved_currency}{CURRENCY_CODE_SEPARATOR}{amount}"
-    amount = f"{value:,.2f}"
+    amount = _format_fixed_decimal(decimal_value)
     return f"{amount} {resolved_currency}"
 
 
-def _format_compact_amount(value: float) -> str:
-    return f"{value:,.2f}".rstrip("0").rstrip(".")
+def _decimal_from_number(value: float) -> Decimal:
+    try:
+        decimal_value = Decimal(str(value))
+    except InvalidOperation as exc:
+        raise ValueError("Dashboard currency value must be finite.") from exc
+    if not decimal_value.is_finite():
+        raise ValueError("Dashboard currency value must be finite.")
+    return decimal_value
 
 
-def _format_currency_amount(value: float, currency: str) -> str:
+def _format_fixed_decimal(value: Decimal) -> str:
+    rounded = value.quantize(CURRENCY_TWO_DECIMAL_QUANT, rounding=ROUND_HALF_UP)
+    return f"{rounded:,.2f}"
+
+
+def _format_compact_amount(value: Decimal) -> str:
+    rounded = value.quantize(CURRENCY_TWO_DECIMAL_QUANT, rounding=ROUND_HALF_UP)
+    return f"{rounded:,.2f}".rstrip("0").rstrip(".")
+
+
+def _format_currency_amount(value: Decimal, currency: str) -> str:
     if currency in CURRENCY_COMPACT_DECIMAL_CODES:
         return _format_compact_amount(value)
-    return f"{value:,.2f}"
+    return _format_fixed_decimal(value)
 
 
 def _format_usage_date(value: date) -> str:
@@ -1113,13 +1132,24 @@ def _required_float_field(row: DatasetRow, dataset_key: str, field_name: str) ->
             "Dashboard dataset row is missing required numeric field "
             f"{dataset_key}.{field_name}."
         )
+    if isinstance(value, bool):
+        raise ValueError(
+            "Dashboard dataset row has invalid numeric field "
+            f"{dataset_key}.{field_name}."
+        )
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(
             "Dashboard dataset row has invalid numeric field "
             f"{dataset_key}.{field_name}."
         ) from exc
+    if not math.isfinite(parsed):
+        raise ValueError(
+            "Dashboard dataset row has invalid numeric field "
+            f"{dataset_key}.{field_name}."
+        )
+    return parsed
 
 
 def _string_field(row: DatasetRow, field_name: str, fallback: str) -> str:

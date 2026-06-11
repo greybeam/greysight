@@ -284,11 +284,32 @@ def test_negative_usd_billed_total_uses_accounting_minus_label() -> None:
     assert view.total_spend.total_label == "-$10.00"
 
 
+def test_usd_billed_total_rounds_half_cents_like_intl() -> None:
+    view = _single_org_spend_view(spend=2.675, currency="USD")
+
+    assert view.total_spend.total == pytest.approx(2.675, abs=0.001)
+    assert view.total_spend.total_label == "$2.68"
+
+
+def test_negative_usd_billed_total_rounds_half_cents_like_intl() -> None:
+    view = _single_org_spend_view(spend=-2.675, currency="USD")
+
+    assert view.total_spend.total == pytest.approx(-2.675, abs=0.001)
+    assert view.total_spend.total_label == "-$2.68"
+
+
 def test_eur_billed_total_uses_symbol_prefix_label() -> None:
     view = _single_org_spend_view(spend=1234.5, currency="EUR")
 
     assert view.total_spend.total == pytest.approx(1234.5, abs=0.01)
     assert view.total_spend.total_label == "€1,234.50"
+
+
+def test_eur_billed_total_rounds_half_cents_like_intl() -> None:
+    view = _single_org_spend_view(spend=1.005, currency="EUR")
+
+    assert view.total_spend.total == pytest.approx(1.005, abs=0.001)
+    assert view.total_spend.total_label == "€1.01"
 
 
 def test_negative_eur_billed_total_uses_symbol_prefix_label() -> None:
@@ -592,6 +613,33 @@ def test_missing_required_rate_sheet_effective_rate_fails_loudly() -> None:
     ]
 
     with pytest.raises(ValueError, match="rate_sheet_daily.effective_rate"):
+        build_dashboard_view(
+            run=_demo_run(),
+            datasets=datasets,
+            metadata=_demo_metadata(),
+            source_start_date=source_start,
+            source_end_date=source_end,
+            window_days=7,
+        )
+
+
+@pytest.mark.parametrize("invalid_spend", [True, "nan", "inf"])
+def test_invalid_required_billed_spend_fails_loudly(invalid_spend: object) -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    datasets["org_spend_daily"] = [
+        {
+            "usage_date": "2026-06-08",
+            "service_type": "CLOUD_SERVICES",
+            "rating_type": "COMPUTE",
+            "billing_type": "CONSUMPTION",
+            "is_adjustment": False,
+            "currency": "USD",
+            "spend": invalid_spend,
+        }
+    ]
+
+    with pytest.raises(ValueError, match="org_spend_daily.spend"):
         build_dashboard_view(
             run=_demo_run(),
             datasets=datasets,
