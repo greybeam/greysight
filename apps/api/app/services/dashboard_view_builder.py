@@ -35,6 +35,11 @@ def resolve_dashboard_view_range(
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> DashboardViewRange:
+    if source_start_date > source_end_date:
+        raise ValueError(
+            "Dashboard source bounds start_date must be on or before end_date."
+        )
+
     has_relative = window_days is not None
     has_custom = start_date is not None or end_date is not None
     if has_relative and has_custom:
@@ -58,7 +63,7 @@ def resolve_dashboard_view_range(
         assert end_date is not None
         if start_date > end_date:
             raise ValueError(
-                "Custom dashboard range start_date must be before end_date."
+                "Custom dashboard range start_date must be on or before end_date."
             )
         effective_start = start_date
         effective_end = min(end_date, through_date)

@@ -1,24 +1,13 @@
 from datetime import date
-from uuid import UUID
 
 import pytest
 
-from app.models import DashboardRun
 from app.services.dashboard_view_builder import (
     DEFAULT_VIEW_WINDOW_DAYS,
     DashboardRangeOutOfBoundsError,
     resolve_dashboard_view_range,
 )
 from app.services.dashboard_view_models import DashboardViewRange
-
-
-RUN = DashboardRun(
-    id="00000000-0000-4000-8000-000000000001",
-    source="snowflake",
-    status="completed",
-    window_days=100,
-    organization_id=UUID("00000000-0000-4000-8000-000000000001"),
-)
 
 
 def test_resolves_default_relative_range_from_through_date() -> None:
@@ -98,3 +87,48 @@ def test_rejects_ambiguous_relative_and_custom_range() -> None:
             start_date=date(2026, 6, 1),
             end_date=date(2026, 6, 8),
         )
+
+
+def test_rejects_unsupported_relative_window_days() -> None:
+    with pytest.raises(ValueError, match="Unsupported dashboard window_days"):
+        resolve_dashboard_view_range(
+            through_date=date(2026, 6, 8),
+            source_start_date=date(2026, 3, 1),
+            source_end_date=date(2026, 6, 8),
+            window_days=14,
+        )
+
+
+def test_rejects_partial_custom_range() -> None:
+    with pytest.raises(ValueError, match="requires start_date and end_date"):
+        resolve_dashboard_view_range(
+            through_date=date(2026, 6, 8),
+            source_start_date=date(2026, 3, 1),
+            source_end_date=date(2026, 6, 8),
+            start_date=date(2026, 6, 1),
+        )
+
+
+def test_rejects_custom_start_date_after_end_date() -> None:
+    with pytest.raises(ValueError, match="on or before end_date"):
+        resolve_dashboard_view_range(
+            through_date=date(2026, 6, 8),
+            source_start_date=date(2026, 3, 1),
+            source_end_date=date(2026, 6, 8),
+            start_date=date(2026, 6, 8),
+            end_date=date(2026, 6, 7),
+        )
+
+
+def test_rejects_inverted_stored_source_bounds_as_invalid_input() -> None:
+    with pytest.raises(
+        ValueError,
+        match="Dashboard source bounds start_date must be on or before end_date",
+    ) as exc_info:
+        resolve_dashboard_view_range(
+            through_date=date(2026, 6, 8),
+            source_start_date=date(2026, 6, 9),
+            source_end_date=date(2026, 6, 8),
+        )
+
+    assert type(exc_info.value) is ValueError
