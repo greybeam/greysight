@@ -87,6 +87,7 @@ def _fake_execute(
     account_fails: bool = False,
     org_rows: dict[str, list[dict[str, Any]]] | None = None,
     account_rows: dict[str, list[dict[str, Any]]] | None = None,
+    account_locator: str = "TU24199",
 ):
     org_datasets = org_rows or _org_rows()
     account_datasets = account_rows or _account_rows()
@@ -95,11 +96,11 @@ def _fake_execute(
         lowered = sql.lower()
         if "current_account()" in lowered:
             assert bind_params == {}
-            return [{"account_locator": "TU24199"}]
+            return [{"account_locator": account_locator}]
         if "organization_usage" in lowered:
             assert bind_params == {
                 "window_days": FETCH_WINDOW_DAYS,
-                "account_locator": "TU24199",
+                "account_locator": account_locator,
             }
             if org_fails:
                 raise SnowflakeQueryError("org usage unavailable")
@@ -162,6 +163,24 @@ def test_falls_back_to_estimated_mode_when_org_usage_is_unavailable() -> None:
     assert data.metadata.account_usage.available is True
     assert data.metadata.billing_through_date is None
     assert data.metadata.currency == "USD"
+    assert data.datasets["org_spend_daily"] == []
+    assert data.datasets["rate_sheet_daily"] == []
+
+
+def test_invalid_current_account_locator_skips_org_usage_with_safe_detail() -> None:
+    data = build_snowflake_dashboard_data(
+        Settings(), execute=_fake_execute(account_locator="BAD-DROP")
+    )
+
+    assert data.metadata.data_mode == "estimated"
+    assert data.metadata.account_locator is None
+    assert data.metadata.organization_usage.available is False
+    assert (
+        data.metadata.organization_usage.detail
+        == "Could not determine Snowflake account."
+    )
+    assert "BAD-DROP" not in data.metadata.organization_usage.detail
+    assert data.metadata.account_usage.available is True
     assert data.datasets["org_spend_daily"] == []
     assert data.datasets["rate_sheet_daily"] == []
 

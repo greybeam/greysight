@@ -312,6 +312,9 @@ def _create_snowflake_dashboard_run(
     return dashboard_run_repository.create_completed_snapshot(
         organization_id=request.organization_id,
         source=request.source,
+        # Persist the Snowflake fetch window used for datasets.
+        # dashboard_data.summary was computed with request.window_days for legacy
+        # summary compatibility.
         window_days=FETCH_WINDOW_DAYS,
         summary=dashboard_data.summary,
         datasets=dashboard_data.datasets,

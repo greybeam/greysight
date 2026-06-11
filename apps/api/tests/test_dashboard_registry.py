@@ -77,9 +77,12 @@ def test_source_sql_uses_required_account_usage_contract() -> None:
     registry = load_dashboard_registry()
 
     for source in registry.sources.values():
+        sql = source.sql
+        assert not FORBIDDEN_SQL.search(sql)
+
         if source.kind != "snowflake_account_usage":
             continue
-        sql = source.sql
+
         normalized_sql = " ".join(sql.lower().split())
 
         assert "%(window_days)s" in sql
@@ -90,7 +93,6 @@ def test_source_sql_uses_required_account_usage_contract() -> None:
         assert "dateadd(" in normalized_sql
         assert "-%(window_days)s" in normalized_sql
         assert "group by" in normalized_sql
-        assert not FORBIDDEN_SQL.search(sql)
 
 
 def test_query_compute_by_user_source_returns_attributed_compute_credits() -> None:

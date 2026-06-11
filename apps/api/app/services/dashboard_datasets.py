@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 from typing import Any, Callable
 
@@ -20,6 +21,7 @@ from app.services.snowflake_client import (
 )
 
 FETCH_WINDOW_DAYS = 100
+_ACCOUNT_LOCATOR_PATTERN = re.compile(r"^[A-Za-z0-9_]{1,64}$")
 
 ExecuteFn = Callable[[str, dict[str, Any]], list[dict[str, Any]]]
 
@@ -57,11 +59,13 @@ def build_snowflake_dashboard_data(
         bind_params=org_bind_params,
         skip=account_locator is None,
         skip_detail=locator_error,
+        unavailable_detail="Could not query Snowflake Organization Usage data.",
     )
     account_datasets, account_availability = _fetch_source_group(
         account_sources,
         execute_source,
         bind_params={"window_days": FETCH_WINDOW_DAYS},
+        unavailable_detail="Could not query Snowflake Account Usage data.",
     )
 
     if not org_availability.available and not account_availability.available:
@@ -94,7 +98,7 @@ def build_snowflake_dashboard_data(
     metadata = _build_metadata(
         settings=settings,
         datasets=datasets,
-        account_locator=account_locator or "",
+        account_locator=account_locator,
         org_availability=org_availability,
         account_availability=account_availability,
     )
@@ -161,7 +165,10 @@ def _derive_account_locator(
 
     if not rows or not rows[0].get("account_locator"):
         return None, "Could not determine Snowflake account."
-    return str(rows[0]["account_locator"]), None
+    account_locator = str(rows[0]["account_locator"])
+    if not _ACCOUNT_LOCATOR_PATTERN.fullmatch(account_locator):
+        return None, "Could not determine Snowflake account."
+    return account_locator, None
 
 
 def _fetch_source_group(
@@ -169,6 +176,7 @@ def _fetch_source_group(
     execute: ExecuteFn,
     *,
     bind_params: dict[str, Any],
+    unavailable_detail: str,
     skip: bool = False,
     skip_detail: str | None = None,
 ) -> tuple[dict[str, list[dict[str, Any]]], SourceAvailability]:
@@ -180,8 +188,8 @@ def _fetch_source_group(
     try:
         for dataset_key, source in sources.items():
             datasets[dataset_key] = execute(source.sql, bind_params)
-    except (SnowflakeQueryError, SnowflakeConfigurationError) as exc:
-        return empty, SourceAvailability(available=False, detail=str(exc))
+    except (SnowflakeQueryError, SnowflakeConfigurationError):
+        return empty, SourceAvailability(available=False, detail=unavailable_detail)
 
     return datasets, SourceAvailability(available=True)
 
@@ -190,7 +198,7 @@ def _build_metadata(
     *,
     settings: Settings,
     datasets: dict[str, list[dict[str, Any]]],
-    account_locator: str,
+    account_locator: str | None,
     org_availability: SourceAvailability,
     account_availability: SourceAvailability,
 ) -> DashboardDatasetMetadata:

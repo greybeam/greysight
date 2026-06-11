@@ -122,6 +122,69 @@ def test_snowflake_dashboard_run_returns_neutral_error_when_sources_fail(
     )
 
 
+def test_snowflake_dashboard_run_does_not_expose_unexpected_backend_detail(
+    monkeypatch,
+) -> None:
+    dashboard_run_repository.clear()
+    monkeypatch.setenv("DATA_SOURCE", "snowflake")
+
+    def execute(sql: str, bind_params: dict[str, Any]) -> list[dict[str, Any]]:
+        lowered = sql.lower()
+        if "current_account()" in lowered:
+            assert bind_params == {}
+            return [{"account_locator": "TU24199"}]
+        if "organization_usage" in lowered:
+            assert bind_params == {
+                "window_days": FETCH_WINDOW_DAYS,
+                "account_locator": "TU24199",
+            }
+            if "usage_in_currency_daily" in lowered:
+                return [
+                    {
+                        "usage_date": date(2026, 6, 5),
+                        "service_type": "WAREHOUSE_METERING",
+                        "rating_type": "COMPUTE",
+                        "billing_type": "CONSUMPTION",
+                        "is_adjustment": False,
+                        "currency": "USD",
+                        "spend": 24.0,
+                    }
+                ]
+            return [
+                {
+                    "usage_date": date(2026, 6, 5),
+                    "service_type": "WAREHOUSE_METERING",
+                    "rating_type": "COMPUTE",
+                    "currency": "USD",
+                    "effective_rate": 3.0,
+                }
+            ]
+
+        assert bind_params == {"window_days": FETCH_WINDOW_DAYS}
+        return _source_rows(_source_key_for_sql(lowered))
+
+    def raise_private_detail(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("raw private backend detail")
+
+    monkeypatch.setattr("app.services.dashboard_datasets.execute_source_query", execute)
+    monkeypatch.setattr(
+        "app.services.dashboard_datasets.build_dashboard_summary",
+        raise_private_detail,
+    )
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/dashboard-runs",
+        json={
+            "organization_id": "00000000-0000-0000-0000-000000000001",
+            "source": "snowflake",
+            "window_days": 30,
+        },
+    )
+
+    assert response.status_code == 500
+    assert "raw private backend detail" not in response.text
+
+
 def test_snowflake_dashboard_run_falls_back_to_estimated_mode(
     monkeypatch,
 ) -> None:

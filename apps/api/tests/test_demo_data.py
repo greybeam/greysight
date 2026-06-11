@@ -27,6 +27,7 @@ def test_demo_dashboard_dataset_matches_v0_contract() -> None:
     assert payload.metadata.currency == "USD"
     assert payload.metadata.billing_through_date == DEMO_BILLING_THROUGH
     assert payload.metadata.account_usage_through_date == DEMO_ACCOUNT_USAGE_THROUGH
+    assert DEMO_ACCOUNT_USAGE_THROUGH == DEMO_BILLING_THROUGH
     assert payload.metadata.organization_usage.available is True
     assert payload.metadata.account_usage.available is True
     assert set(payload.datasets) == set(SAFE_DATASET_ROW_FIELDS)
