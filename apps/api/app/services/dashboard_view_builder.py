@@ -65,6 +65,10 @@ def resolve_dashboard_view_range(
             raise ValueError(
                 "Custom dashboard range start_date must be on or before end_date."
             )
+        if start_date > through_date:
+            raise ValueError(
+                "Custom dashboard range start_date must be on or before through_date."
+            )
         effective_start = start_date
         effective_end = min(end_date, through_date)
         mode = "custom"

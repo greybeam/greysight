@@ -120,6 +120,19 @@ def test_rejects_custom_start_date_after_end_date() -> None:
         )
 
 
+def test_rejects_custom_start_date_after_through_date_as_invalid_range() -> None:
+    with pytest.raises(ValueError, match="on or before through_date") as exc_info:
+        resolve_dashboard_view_range(
+            through_date=date(2026, 6, 8),
+            source_start_date=date(2026, 3, 1),
+            source_end_date=date(2026, 6, 20),
+            start_date=date(2026, 6, 10),
+            end_date=date(2026, 6, 11),
+        )
+
+    assert type(exc_info.value) is ValueError
+
+
 def test_rejects_inverted_stored_source_bounds_as_invalid_input() -> None:
     with pytest.raises(
         ValueError,
