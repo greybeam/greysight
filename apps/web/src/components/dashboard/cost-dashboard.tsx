@@ -307,7 +307,9 @@ function DashboardSections({ data }: { data: DashboardData }) {
                 >
                   <TableCell>{row.user_name}</TableCell>
                   <TableCell>{row.warehouse_name}</TableCell>
-                  <TableCell>{formatNumber(row.credits_used)}</TableCell>
+                  <TableCell>
+                    {formatNumber(row.credits_attributed_compute)}
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>

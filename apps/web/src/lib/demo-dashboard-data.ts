@@ -1,141 +1,195 @@
 import type { DashboardData } from "./dashboard-contracts";
 
-const demoDashboardDatasets: DashboardData = {
+const FETCH_DAYS = 100;
+const BILLING_THROUGH = "2026-06-08";
+const ACCOUNT_USAGE_THROUGH = "2026-06-09";
+const ACCOUNT_LOCATOR = "DEMO123";
+const CREDIT_RATE_USD = 2.25;
+const STORAGE_RATE_USD = 25;
+
+const SERVICES: Array<[serviceType: string, ratingType: string, credits: number]> =
+  [
+    ["WAREHOUSE_METERING", "COMPUTE", 38],
+    ["CLOUD_SERVICES", "COMPUTE", 4],
+    ["AUTO_CLUSTERING", "COMPUTE", 1.5],
+  ];
+const WAREHOUSES: Array<[warehouseName: string, share: number]> = [
+  ["BI_WH", 0.5],
+  ["ETL_WH", 0.35],
+  ["ADHOC_WH", 0.15],
+];
+const USERS: Array<[userName: string, warehouseName: string, share: number]> = [
+  ["ANALYST_A", "BI_WH", 0.34],
+  ["ANALYST_B", "ADHOC_WH", 0.22],
+  ["DATA_ENGINEER", "ETL_WH", 0.3],
+  ["AIRFLOW_SVC", "ETL_WH", 0.14],
+];
+const DATABASES: Array<[databaseName: string, baseTb: number]> = [
+  ["RAW", 3.6],
+  ["ANALYTICS", 2.3],
+  ["APP", 1.1],
+];
+
+function round(value: number, digits = 3): number {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+}
+
+function addDays(usageDate: string, offset: number): string {
+  const [year, month, day] = usageDate.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() + offset);
+  return date.toISOString().slice(0, 10);
+}
+
+function dailyMultiplier(index: number): number {
+  const weekdayShape = (index % 7) * 0.025;
+  const monthShape = (index % 30) * 0.004;
+  return round(0.9 + weekdayShape + monthShape, 4);
+}
+
+const usageDates = Array.from({ length: FETCH_DAYS }, (_, index) =>
+  addDays(BILLING_THROUGH, index - (FETCH_DAYS - 1)),
+);
+
+const serviceSpendDaily = usageDates.flatMap((usage_date, index) =>
+  SERVICES.map(([service_type, , credits]) => ({
+    usage_date,
+    service_type,
+    credits_used: round(credits * dailyMultiplier(index)),
+  })),
+);
+
+const warehouseSpendDaily = usageDates.flatMap((usage_date, index) => {
+  const meteredCredits = 38 * dailyMultiplier(index);
+  return WAREHOUSES.map(([warehouse_name, share]) => {
+    const computeCredits = round(meteredCredits * share);
+    return {
+      usage_date,
+      warehouse_name,
+      credits_used: round(computeCredits * 1.08),
+      credits_used_compute: computeCredits,
+    };
+  });
+});
+
+const queryComputeByUserDaily = usageDates.flatMap((usage_date, index) => {
+  const meteredCredits = 38 * dailyMultiplier(index);
+  return USERS.map(([user_name, warehouse_name, share]) => ({
+    usage_date,
+    user_name,
+    warehouse_name,
+    credits_attributed_compute: round(meteredCredits * share),
+  }));
+});
+
+const databaseStorageDaily = usageDates.flatMap((usage_date, index) =>
+  DATABASES.map(([database_name, baseTb]) => {
+    const growthFactor = 1 + index / 500;
+    const databaseBytes = Math.round(baseTb * growthFactor * 1_000_000_000_000);
+    return {
+      usage_date,
+      database_name,
+      average_database_bytes: databaseBytes,
+      average_failsafe_bytes: Math.round(databaseBytes * 0.08),
+    };
+  }),
+);
+
+const orgSpendDaily = serviceSpendDaily.map((row) => {
+  const service = SERVICES.find(([serviceType]) => serviceType === row.service_type);
+  return {
+    usage_date: row.usage_date,
+    service_type: row.service_type,
+    rating_type: service?.[1] ?? "COMPUTE",
+    billing_type: "CONSUMPTION",
+    is_adjustment: false,
+    currency: "USD",
+    spend: round(row.credits_used * CREDIT_RATE_USD, 2),
+  };
+});
+
+const rateSheetDaily = usageDates.flatMap((usage_date) =>
+  SERVICES.map(([service_type, rating_type]) => ({
+    usage_date,
+    service_type,
+    rating_type,
+    currency: "USD",
+    effective_rate: CREDIT_RATE_USD,
+  })),
+);
+
+const accountSpendDaily = usageDates.map((usage_date) => ({
+  usage_date,
+  credits_used: round(
+    serviceSpendDaily
+      .filter((row) => row.usage_date === usage_date)
+      .reduce((total, row) => total + row.credits_used, 0),
+  ),
+}));
+
+const topWarehousesTable = WAREHOUSES.map(([warehouse_name]) => ({
+  warehouse_name,
+  credits_used: round(
+    warehouseSpendDaily
+      .filter((row) => row.warehouse_name === warehouse_name)
+      .reduce((total, row) => total + row.credits_used, 0),
+  ),
+}));
+
+const totalCredits = round(
+  accountSpendDaily.reduce((total, row) => total + row.credits_used, 0),
+);
+const latestStorageBytes = databaseStorageDaily
+  .filter((row) => row.usage_date === BILLING_THROUGH)
+  .reduce(
+    (total, row) =>
+      total + row.average_database_bytes + row.average_failsafe_bytes,
+    0,
+  );
+
+const demoDashboardData: DashboardData = {
+  schema_version: 1,
   run: {
     id: "demo-run",
     status: "completed",
     source: "demo",
-    window_days: 30,
-    started_at: "2026-06-08T00:00:00Z",
-    completed_at: "2026-06-08T00:00:01Z",
+    window_days: FETCH_DAYS,
+    started_at: "2026-06-10T00:00:00Z",
+    completed_at: "2026-06-10T00:00:01Z",
+    user_safe_message: null,
     error: null,
   },
   summary: {
-    total_credits: 132,
-    average_daily_credits: 44,
-    estimated_monthly_credits: 1320,
-    storage_bytes: 6700000000000,
+    total_credits: totalCredits,
+    average_daily_credits: round(totalCredits / FETCH_DAYS),
+    estimated_monthly_credits: round((totalCredits / FETCH_DAYS) * 30),
+    storage_bytes: latestStorageBytes,
     estimated_monthly_storage_cost_usd: null,
   },
+  metadata: {
+    data_mode: "demo",
+    account_locator: ACCOUNT_LOCATOR,
+    currency: "USD",
+    billing_through_date: BILLING_THROUGH,
+    account_usage_through_date: ACCOUNT_USAGE_THROUGH,
+    estimated_credit_price_usd: CREDIT_RATE_USD,
+    storage_price_usd_per_tb_month: STORAGE_RATE_USD,
+    unsupported_reason: null,
+    organization_usage: { available: true, detail: null },
+    account_usage: { available: true, detail: null },
+  },
   datasets: {
-    account_spend_daily: [
-      { usage_date: "2026-06-05", credits_used: 41.5 },
-      { usage_date: "2026-06-06", credits_used: 43.5 },
-      { usage_date: "2026-06-07", credits_used: 47 },
-    ],
-    service_spend_daily: [
-      {
-        usage_date: "2026-06-05",
-        service_type: "WAREHOUSE_METERING",
-        credits_used: 37.5,
-      },
-      {
-        usage_date: "2026-06-05",
-        service_type: "CLOUD_SERVICES",
-        credits_used: 4,
-      },
-      {
-        usage_date: "2026-06-06",
-        service_type: "WAREHOUSE_METERING",
-        credits_used: 39,
-      },
-      {
-        usage_date: "2026-06-06",
-        service_type: "CLOUD_SERVICES",
-        credits_used: 4.5,
-      },
-      {
-        usage_date: "2026-06-07",
-        service_type: "WAREHOUSE_METERING",
-        credits_used: 42,
-      },
-      {
-        usage_date: "2026-06-07",
-        service_type: "CLOUD_SERVICES",
-        credits_used: 5,
-      },
-    ],
-    warehouse_spend_daily: [
-      { usage_date: "2026-06-05", warehouse_name: "BI_WH", credits_used: 18 },
-      { usage_date: "2026-06-05", warehouse_name: "ETL_WH", credits_used: 14.5 },
-      { usage_date: "2026-06-05", warehouse_name: "ADHOC_WH", credits_used: 5 },
-      { usage_date: "2026-06-06", warehouse_name: "BI_WH", credits_used: 19 },
-      { usage_date: "2026-06-06", warehouse_name: "ETL_WH", credits_used: 15.5 },
-      { usage_date: "2026-06-06", warehouse_name: "ADHOC_WH", credits_used: 4.5 },
-      { usage_date: "2026-06-07", warehouse_name: "BI_WH", credits_used: 21 },
-      { usage_date: "2026-06-07", warehouse_name: "ETL_WH", credits_used: 16 },
-      { usage_date: "2026-06-07", warehouse_name: "ADHOC_WH", credits_used: 5 },
-    ],
-    query_compute_by_user_daily: [
-      {
-        usage_date: "2026-06-05",
-        user_name: "ANALYST_A",
-        warehouse_name: "BI_WH",
-        credits_used: 12,
-      },
-      {
-        usage_date: "2026-06-05",
-        user_name: "ANALYST_B",
-        warehouse_name: "ADHOC_WH",
-        credits_used: 8.5,
-      },
-      {
-        usage_date: "2026-06-06",
-        user_name: "ANALYST_A",
-        warehouse_name: "BI_WH",
-        credits_used: 13,
-      },
-      {
-        usage_date: "2026-06-06",
-        user_name: "DATA_ENGINEER",
-        warehouse_name: "ETL_WH",
-        credits_used: 10.5,
-      },
-      {
-        usage_date: "2026-06-07",
-        user_name: "DATA_ENGINEER",
-        warehouse_name: "ETL_WH",
-        credits_used: 14,
-      },
-      {
-        usage_date: "2026-06-07",
-        user_name: "ANALYST_B",
-        warehouse_name: "ADHOC_WH",
-        credits_used: 9,
-      },
-    ],
-    database_storage_daily: [
-      {
-        usage_date: "2026-06-05",
-        database_name: "RAW",
-        average_database_bytes: 3500000000000,
-        average_failsafe_bytes: 400000000000,
-      },
-      {
-        usage_date: "2026-06-05",
-        database_name: "ANALYTICS",
-        average_database_bytes: 2200000000000,
-        average_failsafe_bytes: 200000000000,
-      },
-      {
-        usage_date: "2026-06-07",
-        database_name: "RAW",
-        average_database_bytes: 3700000000000,
-        average_failsafe_bytes: 450000000000,
-      },
-      {
-        usage_date: "2026-06-07",
-        database_name: "ANALYTICS",
-        average_database_bytes: 2300000000000,
-        average_failsafe_bytes: 250000000000,
-      },
-    ],
-    top_warehouses_table: [
-      { warehouse_name: "BI_WH", credits_used: 58 },
-      { warehouse_name: "ETL_WH", credits_used: 46 },
-      { warehouse_name: "ADHOC_WH", credits_used: 14.5 },
-    ],
+    account_spend_daily: accountSpendDaily,
+    service_spend_daily: serviceSpendDaily,
+    warehouse_spend_daily: warehouseSpendDaily,
+    query_compute_by_user_daily: queryComputeByUserDaily,
+    database_storage_daily: databaseStorageDaily,
+    top_warehouses_table: topWarehousesTable,
+    org_spend_daily: orgSpendDaily,
+    rate_sheet_daily: rateSheetDaily,
+    current_account: [{ account_locator: ACCOUNT_LOCATOR }],
   },
 };
 
-export default demoDashboardDatasets;
+export default demoDashboardData;
