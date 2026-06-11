@@ -417,6 +417,46 @@ describe("buildDashboardViewModel", () => {
     );
   });
 
+  it("labels aggregated users with a single warehouse only when applicable", () => {
+    const vm = buildDashboardViewModel(
+      dataWith({
+        datasets: {
+          ...demoDashboardData.datasets,
+          query_compute_by_user_daily: [
+            {
+              usage_date: "2026-06-08",
+              user_name: "SINGLE_WH_USER",
+              warehouse_name: "BI_WH",
+              credits_attributed_compute: 10,
+            },
+            {
+              usage_date: "2026-06-08",
+              user_name: "MULTI_WH_USER",
+              warehouse_name: "BI_WH",
+              credits_attributed_compute: 5,
+            },
+            {
+              usage_date: "2026-06-08",
+              user_name: "MULTI_WH_USER",
+              warehouse_name: "ETL_WH",
+              credits_attributed_compute: 5,
+            },
+          ],
+        },
+      }),
+      7,
+    );
+
+    expect(
+      vm.detailTables.users.find((row) => row.name === "SINGLE_WH_USER")
+        ?.warehouseName,
+    ).toBe("BI_WH");
+    expect(
+      vm.detailTables.users.find((row) => row.name === "MULTI_WH_USER")
+        ?.warehouseName,
+    ).toBe("Multiple warehouses");
+  });
+
   it("keeps warehouse total credits distinct from compute credits", () => {
     const vm = buildDashboardViewModel(demoDashboardData, 7);
 

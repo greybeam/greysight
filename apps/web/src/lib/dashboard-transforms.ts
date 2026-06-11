@@ -461,7 +461,7 @@ export function buildDashboardViewModel(
       warehouses: buildWarehouseDetails(warehouseRows, currency, convert),
       users: computeSpend.rankedUsers.map((row) => ({
         ...row,
-        warehouseName: "Multiple warehouses",
+        warehouseName: userWarehouseLabel(userRows, row.name),
       })),
       storage: storageSpend.databases,
     },
@@ -832,4 +832,21 @@ function buildWarehouseDetails(
     creditsCompute: value.creditsCompute,
     creditsTotal: value.creditsTotal,
   })).sort((a, b) => b.spend - a.spend);
+}
+
+function userWarehouseLabel(
+  rows: QueryComputeByUserDaily[],
+  userName: string,
+): string {
+  const warehouseNames = new Set(
+    rows
+      .filter((row) => row.user_name === userName)
+      .map((row) => row.warehouse_name),
+  );
+
+  if (warehouseNames.size === 1) {
+    return Array.from(warehouseNames)[0] ?? "Unknown warehouse";
+  }
+
+  return "Multiple warehouses";
 }
