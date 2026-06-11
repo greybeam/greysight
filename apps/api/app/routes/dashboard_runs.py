@@ -13,6 +13,7 @@ from app.models import (
     DashboardDatasetResponse,
     DashboardRun,
     DashboardRunCreateRequest,
+    SourceAvailability,
 )
 from app.services.audit_events import audit_event_recorder
 from app.services.dashboard_datasets import (
@@ -20,6 +21,12 @@ from app.services.dashboard_datasets import (
     DashboardSourcesUnavailableError,
     build_snowflake_dashboard_data,
 )
+from app.services.dashboard_view_builder import (
+    DashboardInvalidRangeError,
+    DashboardRangeOutOfBoundsError,
+    build_dashboard_view,
+)
+from app.services.dashboard_view_models import DashboardViewResponse
 from app.services.demo_data import build_demo_dashboard_dataset
 
 router = APIRouter(prefix="/api/dashboard-runs", tags=["dashboard-runs"])
@@ -109,6 +116,58 @@ class InMemoryDashboardRunRepository:
     def get_source_bounds(self, run_id: UUID) -> StoredSourceBounds | None:
         with self._lock:
             return self._source_bounds.get(run_id)
+
+    def get_view_inputs(
+        self, run_id: UUID
+    ) -> (
+        tuple[
+            DashboardRun,
+            dict[str, list[dict[str, Any]]],
+            DashboardDatasetMetadata,
+            StoredSourceBounds,
+        ]
+        | None
+    ):
+        with self._lock:
+            run = self._runs.get(run_id)
+            if run is None or run.status == "deleted":
+                return None
+
+            datasets = self._datasets.get(run_id)
+            if datasets is None:
+                return None
+
+            if any(
+                dataset_is_expired(dataset.retention_expires_at)
+                for dataset in list(datasets.values())
+            ):
+                self._runs[run_id] = run.model_copy(
+                    update={
+                        "status": "expired",
+                        "updated_at": datetime.now(timezone.utc),
+                    }
+                )
+                self._datasets.pop(run_id, None)
+                self._metadata.pop(run_id, None)
+                self._source_bounds.pop(run_id, None)
+                return None
+
+            metadata = self._metadata.get(run_id)
+            source_bounds = self._source_bounds.get(run_id)
+            if source_bounds is None:
+                return None
+            dataset_rows = {
+                dataset_key: stored_dataset.aggregate_dataset
+                for dataset_key, stored_dataset in datasets.items()
+            }
+            return (
+                run,
+                dataset_rows,
+                DashboardDatasetMetadata.model_validate(metadata)
+                if metadata is not None
+                else _metadata_for_dataset_rows(dataset_rows),
+                source_bounds,
+            )
 
     def _store_source_bounds(
         self,
@@ -235,6 +294,27 @@ def read_demo_dashboard_datasets() -> dict[str, Any]:
     return payload.model_dump(mode="json")
 
 
+@router.get("/demo/view")
+def read_demo_dashboard_view(
+    window_days: int | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> dict[str, Any]:
+    payload = build_demo_dashboard_dataset()
+    run = DashboardRun.model_validate(payload.run.model_dump(mode="json"))
+    bounds = _source_bounds_for_dataset_rows(payload.datasets)
+    view = _prepared_view_or_http_error(
+        run=run,
+        datasets=payload.datasets,
+        metadata=payload.metadata,
+        source_bounds=bounds,
+        window_days=window_days,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    return view.model_dump(mode="json")
+
+
 @router.post("", response_model=DashboardRun, status_code=status.HTTP_201_CREATED)
 def create_dashboard_run(
     request: DashboardRunCreateRequest,
@@ -260,6 +340,35 @@ def read_dashboard_run(
         raise HTTPException(status_code=404, detail="Dashboard run not found")
     _require_dashboard_run_membership(auth_context, run.organization_id)
     return run
+
+
+@router.get("/{run_id}/view")
+def read_dashboard_run_view(
+    run_id: UUID,
+    window_days: int | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    auth_context: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    run = dashboard_run_repository.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Dashboard view not found")
+    _require_dashboard_run_membership(auth_context, run.organization_id)
+    view_inputs = dashboard_run_repository.get_view_inputs(run_id)
+    if view_inputs is None:
+        raise HTTPException(status_code=404, detail="Dashboard view not found")
+    run, datasets, metadata, source_bounds = view_inputs
+    view = _prepared_view_or_http_error(
+        run=run,
+        datasets=datasets,
+        metadata=metadata,
+        source_bounds=source_bounds,
+        window_days=window_days,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    _record_dashboard_run_view_retrieved(view)
+    return view.model_dump(mode="json")
 
 
 @router.get("/{run_id}/datasets", response_model=DashboardDatasetResponse)
@@ -319,6 +428,20 @@ def _record_dashboard_run_dataset_retrieved(
     )
 
 
+def _record_dashboard_run_view_retrieved(response: DashboardViewResponse) -> None:
+    audit_event_recorder.record_org_event(
+        "dashboard_run.view_retrieved",
+        organization_id=response.run.organization_id,
+        payload={
+            "run_id": response.run.id,
+            "range_mode": response.range.mode,
+            "start_date": response.range.start_date.isoformat(),
+            "end_date": response.range.end_date.isoformat(),
+            "window_days": response.range.window_days,
+        },
+    )
+
+
 def _record_dashboard_run_deleted(run: DashboardRun) -> None:
     audit_event_recorder.record_org_event(
         "dashboard_run.deleted",
@@ -336,6 +459,115 @@ def _dataset_keys_for_run(run_id: str) -> list[str]:
     if response is None:
         return []
     return sorted(response.datasets)
+
+
+def _source_bounds_for_dataset_rows(
+    datasets: dict[str, list[dict[str, Any]]],
+) -> StoredSourceBounds:
+    usage_dates = [
+        row["usage_date"]
+        if isinstance(row["usage_date"], date)
+        else date.fromisoformat(str(row["usage_date"]))
+        for rows in datasets.values()
+        for row in rows
+        if row.get("usage_date") is not None
+    ]
+    if not usage_dates:
+        now = datetime.now(timezone.utc).date()
+        return StoredSourceBounds(source_start_date=now, source_end_date=now)
+    return StoredSourceBounds(
+        source_start_date=min(usage_dates),
+        source_end_date=max(usage_dates),
+    )
+
+
+def _metadata_for_dataset_rows(
+    datasets: dict[str, list[dict[str, Any]]],
+) -> DashboardDatasetMetadata:
+    bounds = _source_bounds_for_dataset_rows(datasets)
+    currencies = {
+        str(row["currency"])
+        for dataset_key in ("org_spend_daily", "rate_sheet_daily")
+        for row in datasets.get(dataset_key, [])
+        if row.get("currency") is not None
+    }
+    currency = next(iter(currencies)) if len(currencies) == 1 else None
+    return DashboardDatasetMetadata(
+        data_mode="billed" if datasets.get("org_spend_daily") else "estimated",
+        account_locator=_account_locator_for_dataset_rows(datasets),
+        currency=currency,
+        billing_through_date=bounds.source_end_date
+        if datasets.get("org_spend_daily")
+        else None,
+        account_usage_through_date=bounds.source_end_date,
+        estimated_credit_price_usd=_estimated_credit_price_for_dataset_rows(datasets),
+        storage_price_usd_per_tb_month=25.0,
+        unsupported_reason="mixed_currency" if len(currencies) > 1 else None,
+        organization_usage=SourceAvailability(
+            available=bool(datasets.get("org_spend_daily"))
+        ),
+        account_usage=SourceAvailability(
+            available=bool(datasets.get("service_spend_daily"))
+        ),
+    )
+
+
+def _account_locator_for_dataset_rows(
+    datasets: dict[str, list[dict[str, Any]]],
+) -> str | None:
+    for row in datasets.get("current_account", []):
+        account_locator = row.get("account_locator")
+        if account_locator is not None:
+            return str(account_locator)
+    return None
+
+
+def _estimated_credit_price_for_dataset_rows(
+    datasets: dict[str, list[dict[str, Any]]],
+) -> float:
+    for row in datasets.get("rate_sheet_daily", []):
+        effective_rate = row.get("effective_rate")
+        if effective_rate is not None:
+            return float(effective_rate)
+    return 3.0
+
+
+def _prepared_view_or_http_error(
+    *,
+    run: DashboardRun,
+    datasets: dict[str, list[dict[str, Any]]],
+    metadata: DashboardDatasetMetadata,
+    source_bounds: StoredSourceBounds,
+    window_days: int | None,
+    start_date: date | None,
+    end_date: date | None,
+) -> DashboardViewResponse:
+    try:
+        return build_dashboard_view(
+            run=run,
+            datasets=datasets,
+            metadata=metadata,
+            source_start_date=source_bounds.source_start_date,
+            source_end_date=source_bounds.source_end_date,
+            window_days=window_days,
+            start_date=start_date,
+            end_date=end_date,
+        )
+    except DashboardRangeOutOfBoundsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "range_out_of_bounds",
+                "message": "Broader date ranges are not supported yet.",
+                "source_start_date": exc.source_start_date.isoformat(),
+                "source_end_date": exc.source_end_date.isoformat(),
+            },
+        ) from None
+    except DashboardInvalidRangeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "invalid_range", "message": str(exc)},
+        ) from None
 
 
 def _create_snowflake_dashboard_run(

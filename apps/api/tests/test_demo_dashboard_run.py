@@ -1,4 +1,5 @@
 from copy import deepcopy
+from datetime import date
 from uuid import UUID
 
 from fastapi.testclient import TestClient
@@ -46,6 +47,41 @@ def test_demo_run_returns_completed_run_and_datasets() -> None:
     assert run_response.json()["status"] == "completed"
     assert datasets_response.status_code == 200
     assert "service_spend_daily" in datasets_response.json()["datasets"]
+
+
+def test_demo_view_route_returns_default_prepared_view() -> None:
+    client = TestClient(app)
+
+    response = client.get("/api/dashboard-runs/demo/view")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["schema_version"] == 1
+    assert body["run"]["id"] == "demo-run"
+    assert body["range"] == {
+        "mode": "relative",
+        "window_days": 30,
+        "start_date": "2026-05-10",
+        "end_date": "2026-06-08",
+    }
+    assert body["header"]["data_mode_label"] == "Demo"
+    assert body["header"]["freshness_label"] == "Demo data through Jun 8, 2026"
+    assert body["total_spend"]["projection_basis_label"] == "latest 30 days"
+
+
+def test_demo_view_clamps_custom_end_date_to_through_date() -> None:
+    response = TestClient(app).get(
+        "/api/dashboard-runs/demo/view",
+        params={"start_date": "2026-06-01", "end_date": "2026-06-11"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["range"] == {
+        "mode": "custom",
+        "window_days": None,
+        "start_date": "2026-06-01",
+        "end_date": "2026-06-08",
+    }
 
 
 def test_create_dashboard_run_requires_auth_when_enabled(monkeypatch) -> None:
@@ -146,6 +182,10 @@ def test_persisted_run_routes_reject_non_member_organization(monkeypatch) -> Non
         f"/api/dashboard-runs/{created_run.id}/datasets",
         headers=headers,
     )
+    view_response = TestClient(app).get(
+        f"/api/dashboard-runs/{created_run.id}/view",
+        headers=headers,
+    )
     delete_response = TestClient(app).delete(
         f"/api/dashboard-runs/{created_run.id}",
         headers=headers,
@@ -153,6 +193,7 @@ def test_persisted_run_routes_reject_non_member_organization(monkeypatch) -> Non
 
     assert run_response.status_code == 403
     assert datasets_response.status_code == 403
+    assert view_response.status_code == 403
     assert delete_response.status_code == 403
 
 
@@ -184,6 +225,49 @@ def test_persisted_run_round_trips_aggregate_datasets() -> None:
         datasets_response.json()["datasets"]["service_spend_daily"][0]["service_type"]
         == "WAREHOUSE_METERING"
     )
+
+
+def test_view_route_does_not_expose_dataset_invariant_errors_as_range_errors() -> None:
+    dashboard_run_repository.clear()
+    client = TestClient(app, raise_server_exceptions=False)
+    payload = _complete_create_payload()
+    datasets = payload["datasets"]
+    assert isinstance(datasets, dict)
+    org_spend_rows = datasets["org_spend_daily"]
+    assert isinstance(org_spend_rows, list)
+    org_spend_rows[0]["usage_date"] = "2026-06-08"
+    org_spend_rows[0]["spend"] = "not-a-number"
+
+    create_response = client.post("/api/dashboard-runs", json=payload)
+    run_id = create_response.json()["id"]
+
+    response = client.get(f"/api/dashboard-runs/{run_id}/view")
+
+    assert create_response.status_code == 201
+    assert response.status_code == 500
+    assert "invalid_range" not in response.text
+    assert "org_spend_daily.spend" not in response.text
+
+
+def test_view_route_does_not_expose_corrupted_source_bounds_as_range_errors() -> None:
+    dashboard_run_repository.clear()
+    client = TestClient(app, raise_server_exceptions=False)
+    create_response = client.post(
+        "/api/dashboard-runs",
+        json=_complete_create_payload(),
+    )
+    run_id = UUID(create_response.json()["id"])
+    bounds = dashboard_run_repository.get_source_bounds(run_id)
+    assert bounds is not None
+    bounds.source_start_date = date(2026, 6, 9)
+    bounds.source_end_date = date(2026, 6, 8)
+
+    response = client.get(f"/api/dashboard-runs/{run_id}/view")
+
+    assert create_response.status_code == 201
+    assert response.status_code == 500
+    assert "invalid_range" not in response.text
+    assert "source bounds start_date" not in response.text
 
 
 def test_deleted_run_keeps_readable_tombstone_without_datasets() -> None:
@@ -326,6 +410,25 @@ def test_expired_run_removes_source_bounds() -> None:
     dashboard_run_repository.expire_run_datasets(run_id)
 
     response = client.get(f"/api/dashboard-runs/{run_id}/datasets")
+
+    assert response.status_code == 404
+    assert dashboard_run_repository.get_source_bounds(run_id) is None
+
+
+def test_view_route_404_for_expired_run() -> None:
+    dashboard_run_repository.clear()
+    client = TestClient(app)
+    run_id = UUID(
+        client.post(
+            "/api/dashboard-runs",
+            json=_complete_create_payload(),
+        ).json()["id"]
+    )
+    dashboard_run_repository.expire_run_datasets(run_id)
+
+    # Hitting /view must lazily expire the run (like /datasets) and drop its
+    # source bounds, rather than serving a prepared view from expired data.
+    response = TestClient(app).get(f"/api/dashboard-runs/{run_id}/view")
 
     assert response.status_code == 404
     assert dashboard_run_repository.get_source_bounds(run_id) is None

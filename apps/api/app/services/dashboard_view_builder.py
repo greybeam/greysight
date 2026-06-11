@@ -84,6 +84,10 @@ class DashboardRangeOutOfBoundsError(ValueError):
         return "Requested dashboard range is outside stored source bounds."
 
 
+class DashboardInvalidRangeError(ValueError):
+    pass
+
+
 @dataclass(frozen=True)
 class RateIndexEntry:
     currency: str | None
@@ -122,9 +126,13 @@ def resolve_dashboard_view_range(
     has_relative = window_days is not None
     has_custom = start_date is not None or end_date is not None
     if has_relative and has_custom:
-        raise ValueError("Dashboard view accepts exactly one range mode.")
+        raise DashboardInvalidRangeError(
+            "Dashboard view accepts exactly one range mode."
+        )
     if has_custom and (start_date is None or end_date is None):
-        raise ValueError("Custom dashboard range requires start_date and end_date.")
+        raise DashboardInvalidRangeError(
+            "Custom dashboard range requires start_date and end_date."
+        )
 
     if not has_relative and not has_custom:
         window_days = DEFAULT_VIEW_WINDOW_DAYS
@@ -132,7 +140,7 @@ def resolve_dashboard_view_range(
 
     if has_relative:
         if window_days not in SUPPORTED_VIEW_WINDOW_DAYS:
-            raise ValueError("Unsupported dashboard window_days.")
+            raise DashboardInvalidRangeError("Unsupported dashboard window_days.")
         effective_start = window_start_for(through_date, int(window_days))
         effective_end = through_date
         mode = "relative"
@@ -141,11 +149,11 @@ def resolve_dashboard_view_range(
         assert start_date is not None
         assert end_date is not None
         if start_date > end_date:
-            raise ValueError(
+            raise DashboardInvalidRangeError(
                 "Custom dashboard range start_date must be on or before end_date."
             )
         if start_date > through_date:
-            raise ValueError(
+            raise DashboardInvalidRangeError(
                 "Custom dashboard range start_date must be on or before through_date."
             )
         effective_start = start_date

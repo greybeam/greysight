@@ -223,6 +223,125 @@ def test_snowflake_dashboard_run_falls_back_to_estimated_mode(
     assert body["datasets"]["rate_sheet_daily"] == []
 
 
+def test_snowflake_dashboard_run_view_route_returns_prepared_view(monkeypatch) -> None:
+    dashboard_run_repository.clear()
+    monkeypatch.setenv("DATA_SOURCE", "snowflake")
+
+    def execute(sql: str, bind_params: dict[str, Any]) -> list[dict[str, Any]]:
+        lowered = sql.lower()
+        if "current_account()" in lowered:
+            return [{"account_locator": "TU24199"}]
+        if "organization_usage" in lowered:
+            if "usage_in_currency_daily" in lowered:
+                return [
+                    {
+                        "usage_date": date(2026, 6, 5),
+                        "service_type": "WAREHOUSE_METERING",
+                        "rating_type": "COMPUTE",
+                        "billing_type": "CONSUMPTION",
+                        "is_adjustment": False,
+                        "currency": "USD",
+                        "spend": 24.0,
+                    }
+                ]
+            return [
+                {
+                    "usage_date": date(2026, 6, 5),
+                    "service_type": "WAREHOUSE_METERING",
+                    "rating_type": "COMPUTE",
+                    "currency": "USD",
+                    "effective_rate": 3.0,
+                }
+            ]
+        return _source_rows(_source_key_for_sql(lowered))
+
+    monkeypatch.setattr("app.services.dashboard_datasets.execute_source_query", execute)
+    client = TestClient(app)
+    run_response = client.post(
+        "/api/dashboard-runs",
+        json={
+            "organization_id": "00000000-0000-0000-0000-000000000001",
+            "source": "snowflake",
+            "window_days": 30,
+        },
+    )
+    run_id = run_response.json()["id"]
+
+    view_response = client.get(f"/api/dashboard-runs/{run_id}/view")
+
+    assert view_response.status_code == 200
+    body = view_response.json()
+    assert body["run"]["id"] == run_id
+    assert body["header"]["data_mode_label"] == "Billed"
+    assert body["header"]["account_locator"] == "TU24199"
+    assert body["total_spend"]["basis"] == "billed"
+
+
+def test_snowflake_dashboard_view_rejects_too_old_custom_range(monkeypatch) -> None:
+    dashboard_run_repository.clear()
+    monkeypatch.setenv("DATA_SOURCE", "snowflake")
+    monkeypatch.setattr(
+        "app.services.dashboard_datasets.execute_source_query",
+        lambda sql, bind_params: [{"account_locator": "TU24199"}]
+        if "current_account()" in sql.lower()
+        else _source_rows(_source_key_for_sql(sql.lower()))
+        if "organization_usage" not in sql.lower()
+        else [],
+    )
+    client = TestClient(app)
+    run_response = client.post(
+        "/api/dashboard-runs",
+        json={
+            "organization_id": "00000000-0000-0000-0000-000000000001",
+            "source": "snowflake",
+            "window_days": 30,
+        },
+    )
+    run_id = run_response.json()["id"]
+
+    response = client.get(
+        f"/api/dashboard-runs/{run_id}/view",
+        params={"start_date": "2026-01-01", "end_date": "2026-01-31"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "range_out_of_bounds"
+    assert (
+        response.json()["detail"]["source_start_date"]
+        <= response.json()["detail"]["source_end_date"]
+    )
+
+
+def test_snowflake_dashboard_view_rejects_invalid_window_days(monkeypatch) -> None:
+    dashboard_run_repository.clear()
+    monkeypatch.setenv("DATA_SOURCE", "snowflake")
+    monkeypatch.setattr(
+        "app.services.dashboard_datasets.execute_source_query",
+        lambda sql, bind_params: [{"account_locator": "TU24199"}]
+        if "current_account()" in sql.lower()
+        else _source_rows(_source_key_for_sql(sql.lower()))
+        if "organization_usage" not in sql.lower()
+        else [],
+    )
+    client = TestClient(app)
+    run_id = client.post(
+        "/api/dashboard-runs",
+        json={
+            "organization_id": "00000000-0000-0000-0000-000000000001",
+            "source": "snowflake",
+            "window_days": 30,
+        },
+    ).json()["id"]
+
+    response = client.get(
+        f"/api/dashboard-runs/{run_id}/view",
+        params={"window_days": 15},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid_range"
+
+
 def _source_rows(dataset_key: str) -> list[dict[str, object]]:
     rows: dict[str, list[dict[str, object]]] = {
         "service_spend_daily": [

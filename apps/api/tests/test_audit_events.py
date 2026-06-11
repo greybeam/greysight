@@ -62,15 +62,18 @@ def test_org_dashboard_run_lifecycle_records_sanitized_audit_events() -> None:
     run_id = create_response.json()["id"]
 
     datasets_response = client.get(f"/api/dashboard-runs/{run_id}/datasets")
+    view_response = client.get(f"/api/dashboard-runs/{run_id}/view")
     delete_response = client.delete(f"/api/dashboard-runs/{run_id}")
 
     assert create_response.status_code == 201
     assert datasets_response.status_code == 200
+    assert view_response.status_code == 200
     assert delete_response.status_code == 200
     events = audit_event_recorder.list_events()
     assert [event["event_name"] for event in events] == [
         "dashboard_run.created",
         "dashboard_run.dataset_retrieved",
+        "dashboard_run.view_retrieved",
         "dashboard_run.deleted",
     ]
     assert {event["organization_id"] for event in events} == {
@@ -107,7 +110,14 @@ def test_org_dashboard_run_lifecycle_records_sanitized_audit_events() -> None:
             "warehouse_spend_daily",
         ],
     }
-    assert events[2]["payload"] == {"run_id": run_id, "status": "deleted"}
+    assert events[2]["payload"] == {
+        "run_id": run_id,
+        "range_mode": "relative",
+        "start_date": "2026-05-10",
+        "end_date": "2026-06-08",
+        "window_days": 30,
+    }
+    assert events[3]["payload"] == {"run_id": run_id, "status": "deleted"}
     assert "WAREHOUSE_METERING" not in str(events)
     assert "select *" not in str(events).lower()
 

@@ -7,6 +7,7 @@ from app.models import DashboardDatasetMetadata, DashboardRun, SourceAvailabilit
 from app.services.demo_data import build_demo_dashboard_dataset
 from app.services.dashboard_view_builder import (
     DEFAULT_VIEW_WINDOW_DAYS,
+    DashboardInvalidRangeError,
     DashboardRangeOutOfBoundsError,
     build_dashboard_view,
     resolve_dashboard_view_range,
@@ -82,7 +83,7 @@ def test_rejects_ranges_older_than_stored_source_bounds() -> None:
 
 
 def test_rejects_ambiguous_relative_and_custom_range() -> None:
-    with pytest.raises(ValueError, match="exactly one range mode"):
+    with pytest.raises(DashboardInvalidRangeError, match="exactly one range mode"):
         resolve_dashboard_view_range(
             through_date=date(2026, 6, 8),
             source_start_date=date(2026, 3, 1),
@@ -94,7 +95,10 @@ def test_rejects_ambiguous_relative_and_custom_range() -> None:
 
 
 def test_rejects_unsupported_relative_window_days() -> None:
-    with pytest.raises(ValueError, match="Unsupported dashboard window_days"):
+    with pytest.raises(
+        DashboardInvalidRangeError,
+        match="Unsupported dashboard window_days",
+    ):
         resolve_dashboard_view_range(
             through_date=date(2026, 6, 8),
             source_start_date=date(2026, 3, 1),
@@ -104,7 +108,10 @@ def test_rejects_unsupported_relative_window_days() -> None:
 
 
 def test_rejects_partial_custom_range() -> None:
-    with pytest.raises(ValueError, match="requires start_date and end_date"):
+    with pytest.raises(
+        DashboardInvalidRangeError,
+        match="requires start_date and end_date",
+    ):
         resolve_dashboard_view_range(
             through_date=date(2026, 6, 8),
             source_start_date=date(2026, 3, 1),
@@ -114,7 +121,7 @@ def test_rejects_partial_custom_range() -> None:
 
 
 def test_rejects_custom_start_date_after_end_date() -> None:
-    with pytest.raises(ValueError, match="on or before end_date"):
+    with pytest.raises(DashboardInvalidRangeError, match="on or before end_date"):
         resolve_dashboard_view_range(
             through_date=date(2026, 6, 8),
             source_start_date=date(2026, 3, 1),
@@ -125,7 +132,10 @@ def test_rejects_custom_start_date_after_end_date() -> None:
 
 
 def test_rejects_custom_start_date_after_through_date_as_invalid_range() -> None:
-    with pytest.raises(ValueError, match="on or before through_date") as exc_info:
+    with pytest.raises(
+        DashboardInvalidRangeError,
+        match="on or before through_date",
+    ) as exc_info:
         resolve_dashboard_view_range(
             through_date=date(2026, 6, 8),
             source_start_date=date(2026, 3, 1),
@@ -134,7 +144,7 @@ def test_rejects_custom_start_date_after_through_date_as_invalid_range() -> None
             end_date=date(2026, 6, 11),
         )
 
-    assert type(exc_info.value) is ValueError
+    assert type(exc_info.value) is DashboardInvalidRangeError
 
 
 def test_rejects_inverted_stored_source_bounds_as_invalid_input() -> None:
