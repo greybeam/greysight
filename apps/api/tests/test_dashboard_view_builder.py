@@ -298,6 +298,20 @@ def test_negative_eur_billed_total_uses_symbol_prefix_label() -> None:
     assert view.total_spend.total_label == "-€10.00"
 
 
+def test_jpy_billed_total_uses_symbol_prefix_without_decimals() -> None:
+    view = _single_org_spend_view(spend=10.0, currency="JPY")
+
+    assert view.total_spend.total == pytest.approx(10, abs=0.01)
+    assert view.total_spend.total_label == "¥10"
+
+
+def test_negative_jpy_billed_total_uses_symbol_prefix_without_decimals() -> None:
+    view = _single_org_spend_view(spend=-10.0, currency="JPY")
+
+    assert view.total_spend.total == pytest.approx(-10, abs=0.01)
+    assert view.total_spend.total_label == "-¥10"
+
+
 def test_projection_uses_latest_30_days_regardless_of_selected_range() -> None:
     datasets = _demo_datasets()
     source_start, source_end = _source_bounds(datasets)

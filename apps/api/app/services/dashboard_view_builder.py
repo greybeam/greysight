@@ -389,7 +389,9 @@ def _format_currency(value: float, currency: str | None) -> str:
             return f"-${amount}"
         return f"${amount}"
     if resolved_currency in CURRENCY_SYMBOL_PREFIXES:
-        amount = f"{abs(value):,.2f}"
+        amount = (
+            f"{abs(value):,.0f}" if resolved_currency == "JPY" else f"{abs(value):,.2f}"
+        )
         sign = "-" if value < 0 else ""
         return f"{sign}{CURRENCY_SYMBOL_PREFIXES[resolved_currency]}{amount}"
     amount = f"{value:,.2f}"
