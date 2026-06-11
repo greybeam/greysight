@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, timedelta
+from decimal import Decimal
 from typing import Any, Callable
 
 from pydantic import BaseModel
@@ -258,10 +259,22 @@ def _as_date(value: Any) -> date:
 def _json_ready_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         {
-            key: value.isoformat() if isinstance(value, date) else value
+            key: _json_ready_value(value)
             for key, value in (
                 row.model_dump().items() if isinstance(row, BaseModel) else row.items()
             )
         }
         for row in rows
     ]
+
+
+def _json_ready_value(value: Any) -> Any:
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ValueError("Snowflake numeric value must be finite.")
+        if value == value.to_integral_value():
+            return int(value)
+        return float(value)
+    return value

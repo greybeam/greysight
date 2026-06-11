@@ -6,11 +6,13 @@ import DashboardRuntimeShell from "./dashboard-runtime-shell";
 vi.mock("../org/org-shell", () => ({
   default: ({
     authRequired,
+    bypassModeLabel,
     children,
     onAccessTokenChange,
     onOrganizationChange,
   }: {
     authRequired?: boolean;
+    bypassModeLabel?: string;
     children: React.ReactNode;
     onAccessTokenChange?: (accessToken: string | null) => void;
     onOrganizationChange?: (
@@ -19,6 +21,7 @@ vi.mock("../org/org-shell", () => ({
   }) => (
     <section>
       <span>Auth required: {String(authRequired)}</span>
+      <span>Bypass label: {bypassModeLabel}</span>
       <button
         type="button"
         onClick={() => {
@@ -47,6 +50,7 @@ describe("DashboardRuntimeShell", () => {
   it("keeps demo mode for auth bypass", () => {
     render(<DashboardRuntimeShell authRequired={false} />);
 
+    expect(screen.getByText("Bypass label: Demo mode")).toBeInTheDocument();
     expect(screen.getByTestId("dashboard-props")).toHaveTextContent(
       JSON.stringify({ demoMode: true, modeLabel: "Demo", runtime: null }),
     );
@@ -55,6 +59,9 @@ describe("DashboardRuntimeShell", () => {
   it("uses a local runtime for unauthenticated Snowflake mode", () => {
     render(<DashboardRuntimeShell authRequired={false} dataSource="snowflake" />);
 
+    expect(
+      screen.getByText("Bypass label: Local Snowflake mode"),
+    ).toBeInTheDocument();
     expect(screen.getByTestId("dashboard-props")).toHaveTextContent(
       JSON.stringify({
         demoMode: false,

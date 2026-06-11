@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -151,6 +152,56 @@ def test_builds_billed_dashboard_data_with_metadata_and_bounded_rows() -> None:
         {"warehouse_name": "LOAD_WH", "credits_used": 8.0}
     ]
     assert len(data.datasets["query_compute_by_user_daily"]) == TOP_USER_COUNT + 1
+
+
+def test_normalizes_decimal_snowflake_numbers_for_json_payloads() -> None:
+    account_rows = _account_rows()
+    account_rows["warehouse_spend_daily"][0]["credits_used"] = Decimal("8.250000000")
+    account_rows["warehouse_spend_daily"][0]["credits_used_compute"] = Decimal(
+        "7.500000000"
+    )
+    account_rows["service_spend_daily"][0]["credits_used"] = Decimal("8.000000000")
+    account_rows["service_spend_daily"][1]["credits_used"] = Decimal("2.000000000")
+    account_rows["query_compute_by_user_daily"][0]["credits_attributed_compute"] = (
+        Decimal("6.125000000")
+    )
+    account_rows["database_storage_daily"][0]["average_database_bytes"] = Decimal(
+        "1000000000000"
+    )
+    org_rows = _org_rows()
+    org_rows["org_spend_daily"][0]["spend"] = Decimal("24.500000000")
+    org_rows["rate_sheet_daily"][0]["effective_rate"] = Decimal("3.250000000")
+
+    data = build_snowflake_dashboard_data(
+        Settings(),
+        execute=_fake_execute(account_rows=account_rows, org_rows=org_rows),
+    )
+
+    assert data.datasets["warehouse_spend_daily"][0]["credits_used"] == 8.25
+    assert isinstance(data.datasets["warehouse_spend_daily"][0]["credits_used"], float)
+    assert data.datasets["warehouse_spend_daily"][0]["credits_used_compute"] == 7.5
+    assert isinstance(
+        data.datasets["warehouse_spend_daily"][0]["credits_used_compute"], float
+    )
+    assert (
+        data.datasets["query_compute_by_user_daily"][0]["credits_attributed_compute"]
+        == 6.125
+    )
+    assert isinstance(
+        data.datasets["query_compute_by_user_daily"][0]["credits_attributed_compute"],
+        float,
+    )
+    assert (
+        data.datasets["database_storage_daily"][0]["average_database_bytes"]
+        == 1_000_000_000_000
+    )
+    assert isinstance(
+        data.datasets["database_storage_daily"][0]["average_database_bytes"], int
+    )
+    assert data.datasets["org_spend_daily"][0]["spend"] == 24.5
+    assert isinstance(data.datasets["org_spend_daily"][0]["spend"], float)
+    assert data.datasets["rate_sheet_daily"][0]["effective_rate"] == 3.25
+    assert isinstance(data.datasets["rate_sheet_daily"][0]["effective_rate"], float)
 
 
 def test_falls_back_to_estimated_mode_when_org_usage_is_unavailable() -> None:

@@ -50,10 +50,13 @@ export default function DashboardRuntimeShell({
     : dataSource === "snowflake"
       ? "Local Snowflake"
       : "Demo";
+  const bypassModeLabel =
+    dataSource === "snowflake" ? "Local Snowflake mode" : "Demo mode";
 
   return (
     <OrgShell
       authRequired={authRequired}
+      bypassModeLabel={bypassModeLabel}
       onAccessTokenChange={setAccessToken}
       onOrganizationChange={setOrganization}
     >
