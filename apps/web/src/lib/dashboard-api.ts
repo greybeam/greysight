@@ -1,8 +1,10 @@
 import resolveApiUrl from "./api-client";
 import parseDashboardDatasets, {
   parseDashboardRun,
+  parseDashboardView,
   type DashboardData,
   type DashboardRun,
+  type DashboardView,
 } from "./dashboard-contracts";
 
 type DashboardApiOptions = {
@@ -19,8 +21,18 @@ type StartDashboardRunInput = {
   windowDays: number;
 };
 
+export type DashboardViewRangeRequest =
+  | { windowDays?: number; startDate?: never; endDate?: never }
+  | { windowDays?: never; startDate: string; endDate: string };
+
 export async function fetchDemoDashboardDatasets(): Promise<DashboardData> {
   return fetchDashboardDataPath("/api/dashboard-runs/demo/datasets");
+}
+
+export async function fetchDemoDashboardView(
+  range: DashboardViewRangeRequest = { windowDays: 30 },
+): Promise<DashboardView> {
+  return fetchDashboardViewPath("/api/dashboard-runs/demo/view", range);
 }
 
 // Reserved for Snowflake runs; Phase 3 is demo-backed by default.
@@ -30,6 +42,18 @@ export async function fetchDashboardDatasets(
 ): Promise<DashboardData> {
   return fetchDashboardDataPath(
     `/api/dashboard-runs/${runId}/datasets`,
+    options,
+  );
+}
+
+export async function fetchDashboardView(
+  runId: string,
+  range: DashboardViewRangeRequest = { windowDays: 30 },
+  options: DashboardApiOptions = {},
+): Promise<DashboardView> {
+  return fetchDashboardViewPath(
+    `/api/dashboard-runs/${runId}/view`,
+    range,
     options,
   );
 }
@@ -89,6 +113,26 @@ async function fetchDashboardDataPath(
 ): Promise<DashboardData> {
   const payload = await fetchJson(path, {}, options);
   return parseDashboardDatasets(payload);
+}
+
+async function fetchDashboardViewPath(
+  path: string,
+  range: DashboardViewRangeRequest,
+  options: DashboardApiOptions = {},
+): Promise<DashboardView> {
+  const params = new URLSearchParams();
+
+  if (range.windowDays !== undefined) {
+    params.set("window_days", String(range.windowDays));
+  }
+  if (range.startDate !== undefined && range.endDate !== undefined) {
+    params.set("start_date", range.startDate);
+    params.set("end_date", range.endDate);
+  }
+
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  const payload = await fetchJson(`${path}${suffix}`, {}, options);
+  return parseDashboardView(payload);
 }
 
 async function fetchJson(

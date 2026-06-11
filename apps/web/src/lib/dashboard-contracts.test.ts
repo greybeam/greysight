@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import parseDashboardDatasets, { FETCH_WINDOW_DAYS } from "./dashboard-contracts";
+import parseDashboardDatasets, {
+  FETCH_WINDOW_DAYS,
+  parseDashboardView,
+} from "./dashboard-contracts";
 import demoDashboardDatasets from "./demo-dashboard-data";
 
 describe("parseDashboardDatasets", () => {
@@ -181,5 +184,138 @@ describe("parseDashboardDatasets", () => {
     const parsed = parseDashboardDatasets(payload);
 
     expect(parsed.summary.estimated_monthly_storage_cost_usd).toBeUndefined();
+  });
+});
+
+describe("parseDashboardView", () => {
+  const preparedViewPayload = {
+    schema_version: 1,
+    run: demoDashboardDatasets.run,
+    range: {
+      mode: "relative",
+      window_days: 30,
+      start_date: "2026-05-10",
+      end_date: "2026-06-08",
+    },
+    projection_range: {
+      start_date: "2026-05-10",
+      end_date: "2026-06-08",
+    },
+    header: {
+      data_mode_label: "Demo",
+      account_locator: "DEMO123",
+      currency: "USD",
+      through_date: "2026-06-08",
+      through_date_label: "Jun 8, 2026",
+      freshness_label: "Demo data through Jun 8, 2026",
+      estimated_credit_price_label: "$2.25 / credit",
+      storage_price_label: "$25.00 / TB-month",
+    },
+    unsupported: null,
+    total_spend: {
+      basis: "billed",
+      total: 123.45,
+      total_label: "$123.45",
+      average_daily: 4.12,
+      average_daily_label: "$4.12",
+      projected_monthly: 127.72,
+      projected_monthly_label: "$127.72",
+      projection_basis_label: "latest 30 days",
+      daily_series: [{ date: "2026-06-08", spend: 123.45, spend_label: "$123.45" }],
+      top_driver: {
+        name: "CLOUD_SERVICES",
+        spend: 123.45,
+        spend_label: "$123.45",
+        credits: null,
+      },
+      is_empty: false,
+    },
+    compute_spend: {
+      compute_basis: "billed",
+      daily_series: [],
+      ranked_warehouses: [],
+      ranked_users: [],
+      warehouse_bars: [],
+      user_bars: [],
+      is_empty: true,
+    },
+    storage_spend: {
+      basis: "estimated",
+      database_basis: "estimated",
+      daily_series: [],
+      databases: [],
+      database_bars: [],
+      is_empty: true,
+    },
+    service_spend: {
+      basis: "billed",
+      daily_series: [{ date: "2026-06-08", values: { CLOUD_SERVICES: 123.45 } }],
+      service_names: ["CLOUD_SERVICES"],
+      ranked_services: [],
+      service_bars: [],
+      is_empty: false,
+    },
+    detail_tables: {
+      services: [],
+      warehouses: [
+        {
+          name: "COMPUTE_WH",
+          spend: 12,
+          spend_label: "$12.00",
+          credits: 4,
+          credits_compute: 3,
+          credits_total: 4,
+        },
+      ],
+      users: [
+        {
+          name: "ANALYST",
+          warehouse_name: "COMPUTE_WH",
+          spend: 6,
+          spend_label: "$6.00",
+          credits: 2,
+        },
+      ],
+      storage: [
+        {
+          name: "APP_DB",
+          bytes: 1000,
+          monthly_spend: 0.01,
+          monthly_spend_label: "$0.01",
+        },
+      ],
+    },
+  };
+
+  it("maps a prepared dashboard view response to camelCase fields", () => {
+    const parsed = parseDashboardView(preparedViewPayload);
+
+    expect(parsed.range.windowDays).toBe(30);
+    expect(parsed.projectionRange.startDate).toBe("2026-05-10");
+    expect(parsed.header.dataModeLabel).toBe("Demo");
+    expect(parsed.totalSpend.dailySeries[0]).toEqual({
+      date: "2026-06-08",
+      spend: 123.45,
+      spendLabel: "$123.45",
+    });
+    expect(parsed.serviceSpend.dailySeries[0]).toEqual({
+      date: "2026-06-08",
+      values: { CLOUD_SERVICES: 123.45 },
+    });
+    expect(parsed.detailTables.warehouses[0]?.creditsCompute).toBe(3);
+    expect(parsed.detailTables.users[0]?.warehouseName).toBe("COMPUTE_WH");
+    expect(parsed.detailTables.storage[0]?.monthlySpendLabel).toBe("$0.01");
+  });
+
+  it("rejects malformed prepared dashboard view responses", () => {
+    expect(() =>
+      parseDashboardView({
+        ...preparedViewPayload,
+        total_spend: {
+          ...preparedViewPayload.total_spend,
+          total: "123.45",
+        },
+      }),
+    ).toThrow("Dashboard view response is invalid");
   });
 });
