@@ -2,7 +2,7 @@ import type { DashboardData } from "./dashboard-contracts";
 
 const FETCH_DAYS = 100;
 const BILLING_THROUGH = "2026-06-08";
-const ACCOUNT_USAGE_THROUGH = "2026-06-09";
+const ACCOUNT_USAGE_THROUGH = BILLING_THROUGH;
 const ACCOUNT_LOCATOR = "DEMO123";
 const CREDIT_RATE_USD = 2.25;
 const STORAGE_RATE_USD = 25;
@@ -31,8 +31,7 @@ const DATABASES: Array<[databaseName: string, baseTb: number]> = [
 ];
 
 function round(value: number, digits = 3): number {
-  const factor = 10 ** digits;
-  return Math.round(value * factor) / factor;
+  return Number(value.toFixed(digits));
 }
 
 function addDays(usageDate: string, offset: number): string {
@@ -91,7 +90,9 @@ const databaseStorageDaily = usageDates.flatMap((usage_date, index) =>
       usage_date,
       database_name,
       average_database_bytes: databaseBytes,
-      average_failsafe_bytes: Math.round(databaseBytes * 0.08),
+      average_failsafe_bytes: Math.round(
+        baseTb * 0.08 * growthFactor * 1_000_000_000_000,
+      ),
     };
   }),
 );
@@ -137,16 +138,26 @@ const topWarehousesTable = WAREHOUSES.map(([warehouse_name]) => ({
   ),
 }));
 
-const totalCredits = round(
-  accountSpendDaily.reduce((total, row) => total + row.credits_used, 0),
+const completeAccountSpendDaily = accountSpendDaily.filter(
+  (row) => row.usage_date < BILLING_THROUGH,
 );
+const totalCredits = round(
+  completeAccountSpendDaily.reduce((total, row) => total + row.credits_used, 0),
+);
+const averageDailyCredits = Number((totalCredits / FETCH_DAYS).toFixed(5));
+const estimatedMonthlyCredits = Number((averageDailyCredits * 30).toFixed(4));
+const latestCompleteStorageDate = usageDates
+  .filter((usageDate) => usageDate < BILLING_THROUGH)
+  .at(-1);
 const latestStorageBytes = databaseStorageDaily
-  .filter((row) => row.usage_date === BILLING_THROUGH)
+  .filter((row) => row.usage_date === latestCompleteStorageDate)
   .reduce(
     (total, row) =>
       total + row.average_database_bytes + row.average_failsafe_bytes,
     0,
   );
+const estimatedMonthlyStorageCostUsd =
+  (latestStorageBytes / 1_000_000_000_000) * STORAGE_RATE_USD;
 
 const demoDashboardData: DashboardData = {
   schema_version: 1,
@@ -156,16 +167,16 @@ const demoDashboardData: DashboardData = {
     source: "demo",
     window_days: FETCH_DAYS,
     started_at: "2026-06-10T00:00:00Z",
-    completed_at: "2026-06-10T00:00:01Z",
+    completed_at: "2026-06-10T00:00:00Z",
     user_safe_message: null,
     error: null,
   },
   summary: {
     total_credits: totalCredits,
-    average_daily_credits: round(totalCredits / FETCH_DAYS),
-    estimated_monthly_credits: round((totalCredits / FETCH_DAYS) * 30),
+    average_daily_credits: averageDailyCredits,
+    estimated_monthly_credits: estimatedMonthlyCredits,
     storage_bytes: latestStorageBytes,
-    estimated_monthly_storage_cost_usd: null,
+    estimated_monthly_storage_cost_usd: estimatedMonthlyStorageCostUsd,
   },
   metadata: {
     data_mode: "demo",

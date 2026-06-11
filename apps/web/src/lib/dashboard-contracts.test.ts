@@ -14,12 +14,21 @@ describe("parseDashboardDatasets", () => {
     expect(parsed.schema_version).toBe(1);
     expect(parsed.run.status).toBe("completed");
     expect(parsed.run.window_days).toBe(100);
+    expect(parsed.run.started_at).toBe("2026-06-10T00:00:00Z");
+    expect(parsed.run.completed_at).toBe("2026-06-10T00:00:00Z");
+    expect(parsed.summary).toMatchObject({
+      total_credits: 4428.898,
+      average_daily_credits: 44.28898,
+      estimated_monthly_credits: 1328.6694,
+      storage_bytes: 9041760000000,
+      estimated_monthly_storage_cost_usd: 226.044,
+    });
     expect(parsed.metadata).toEqual({
       data_mode: "demo",
       account_locator: "DEMO123",
       currency: "USD",
       billing_through_date: "2026-06-08",
-      account_usage_through_date: "2026-06-09",
+      account_usage_through_date: "2026-06-08",
       estimated_credit_price_usd: 2.25,
       storage_price_usd_per_tb_month: 25,
       unsupported_reason: null,
