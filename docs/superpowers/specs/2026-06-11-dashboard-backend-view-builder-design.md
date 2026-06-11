@@ -134,9 +134,10 @@ Rules:
 - Relative windows always end on the run's data through-date, not wall-clock
   today. That through-date comes from metadata: billing freshness for billed and
   demo views, Account Usage freshness for estimated views.
-- Custom ranges with `end_date` after the run's through-date are invalid for
-  slice 1 and should return `range_out_of_bounds`; do not append trailing
-  zero-spend days.
+- Custom ranges with `end_date` after the run's through-date should be clamped
+  down to the through-date and served. The prepared view response should include
+  the effective clamped `range.end_date`, not the requested future/today date.
+  Do not append trailing zero-spend days.
 - Date ranges must be inside the source data bounds stored for that run.
 - If a requested range is outside the stored source data bounds, return a
   typed `range_out_of_bounds` error with the stored bounds so the frontend can
@@ -163,13 +164,12 @@ Response shape:
   "range": {
     "mode": "relative",
     "window_days": 30,
-    "start_date": "2026-05-12",
-    "end_date": "2026-06-10"
+    "start_date": "2026-05-10",
+    "end_date": "2026-06-08"
   },
   "projection_range": {
-    "start_date": "2026-05-12",
-    "end_date": "2026-06-10",
-    "basis_label": "latest 30 days"
+    "start_date": "2026-05-10",
+    "end_date": "2026-06-08"
   },
   "header": {},
   "unsupported": null,
@@ -226,7 +226,9 @@ Responsibilities:
 
 - Determine the through date from metadata.
 - Resolve relative windows into inclusive `start_date` and `end_date`.
-- Validate the requested range against stored source bounds and through-date.
+- Clamp custom range end dates down to the through-date before validating
+  source bounds.
+- Validate the effective requested range against stored source bounds.
 - Use the full source datasets plus the selected range; do not require callers
   to pre-filter source rows.
 - Filter source rows to the selected range for visible cards, charts, rankings,
@@ -324,6 +326,8 @@ Backend tests:
   estimated credit price.
 - Unit tests proving projected monthly always uses the latest 30-day source
   window, independent of selected range and custom range.
+- Unit tests proving custom range end dates after the through-date clamp to the
+  through-date instead of returning `range_out_of_bounds`.
 - Unit tests for storage daily spend and latest database rankings.
 - Unit tests for ranking caps and detail row caps.
 - Route tests for `/view` default, relative windows, custom ranges, invalid
