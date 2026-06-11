@@ -194,6 +194,9 @@ def test_deleted_run_keeps_readable_tombstone_without_datasets() -> None:
         json=_complete_create_payload(),
     )
     run_id = create_response.json()["id"]
+    parsed_run_id = UUID(run_id)
+
+    assert dashboard_run_repository.get_source_bounds(parsed_run_id) is not None
 
     delete_response = client.delete(f"/api/dashboard-runs/{run_id}")
     run_response = client.get(f"/api/dashboard-runs/{run_id}")
@@ -204,6 +207,7 @@ def test_deleted_run_keeps_readable_tombstone_without_datasets() -> None:
     assert run_response.status_code == 200
     assert run_response.json()["status"] == "deleted"
     assert datasets_response.status_code == 404
+    assert dashboard_run_repository.get_source_bounds(parsed_run_id) is None
 
 
 def test_create_run_rejects_raw_snowflake_fields() -> None:
@@ -260,6 +264,24 @@ def test_create_run_accepts_empty_aggregate_dataset_rows() -> None:
     assert response.status_code == 201
 
 
+def test_create_run_rejects_malformed_usage_date() -> None:
+    dashboard_run_repository.clear()
+    client = TestClient(app, raise_server_exceptions=False)
+    payload = _complete_create_payload()
+    datasets = payload["datasets"]
+    assert isinstance(datasets, dict)
+    service_rows = datasets["service_spend_daily"]
+    assert isinstance(service_rows, list)
+    service_rows[0]["usage_date"] = "not-a-date"
+
+    response = client.post("/api/dashboard-runs", json=payload)
+
+    assert response.status_code == 422
+    detail = str(response.json()["detail"])
+    assert "service_spend_daily[0]" in detail
+    assert "usage_date" in detail
+
+
 def test_expired_persisted_datasets_are_unavailable_and_mark_run_expired() -> None:
     dashboard_run_repository.clear()
     client = TestClient(app)
@@ -275,6 +297,38 @@ def test_expired_persisted_datasets_are_unavailable_and_mark_run_expired() -> No
     assert datasets_response.status_code == 404
     assert run_response.status_code == 200
     assert run_response.json()["status"] == "expired"
+
+
+def test_completed_run_persists_source_bounds() -> None:
+    dashboard_run_repository.clear()
+    client = TestClient(app)
+    create_response = client.post(
+        "/api/dashboard-runs",
+        json=_complete_create_payload(),
+    )
+    run_id = create_response.json()["id"]
+
+    bounds = dashboard_run_repository.get_source_bounds(UUID(run_id))
+
+    assert bounds is not None
+    assert bounds.source_start_date.isoformat() == "2026-03-01"
+    assert bounds.source_end_date.isoformat() == "2026-06-08"
+
+
+def test_expired_run_removes_source_bounds() -> None:
+    dashboard_run_repository.clear()
+    client = TestClient(app)
+    create_response = client.post(
+        "/api/dashboard-runs",
+        json=_complete_create_payload(),
+    )
+    run_id = UUID(create_response.json()["id"])
+    dashboard_run_repository.expire_run_datasets(run_id)
+
+    response = client.get(f"/api/dashboard-runs/{run_id}/datasets")
+
+    assert response.status_code == 404
+    assert dashboard_run_repository.get_source_bounds(run_id) is None
 
 
 def test_demo_route_is_not_captured_by_uuid_run_route() -> None:

@@ -112,7 +112,27 @@ class DashboardRunCreateRequest(BaseModel):
                         f"Dataset {dataset_key}[{row_index}] is invalid: "
                         + "; ".join(problems)
                     )
+                if "usage_date" in row:
+                    _validate_usage_date(dataset_key, row_index, row["usage_date"])
         return self
+
+
+def _validate_usage_date(dataset_key: str, row_index: int, value: Any) -> None:
+    if isinstance(value, date):
+        return
+    if isinstance(value, str):
+        try:
+            date.fromisoformat(value)
+        except ValueError:
+            raise ValueError(
+                f"Dataset {dataset_key}[{row_index}] has invalid usage_date: "
+                "expected ISO YYYY-MM-DD"
+            ) from None
+        return
+    raise ValueError(
+        f"Dataset {dataset_key}[{row_index}] has invalid usage_date: "
+        "expected ISO YYYY-MM-DD"
+    )
 
 
 class SourceAvailability(BaseModel):

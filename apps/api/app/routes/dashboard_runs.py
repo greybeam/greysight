@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from threading import RLock
 from typing import Any
 from uuid import UUID, uuid4
@@ -30,6 +30,11 @@ class StoredDashboardDataset(BaseModel):
     retention_expires_at: datetime
 
 
+class StoredSourceBounds(BaseModel):
+    source_start_date: date
+    source_end_date: date
+
+
 class InMemoryDashboardRunRepository:
     def __init__(self) -> None:
         self._lock = RLock()
@@ -37,6 +42,7 @@ class InMemoryDashboardRunRepository:
         self._summaries: dict[UUID, dict[str, Any]] = {}
         self._datasets: dict[UUID, dict[str, StoredDashboardDataset]] = {}
         self._metadata: dict[UUID, dict[str, Any] | None] = {}
+        self._source_bounds: dict[UUID, StoredSourceBounds] = {}
 
     def clear(self) -> None:
         with self._lock:
@@ -44,6 +50,7 @@ class InMemoryDashboardRunRepository:
             self._summaries.clear()
             self._datasets.clear()
             self._metadata.clear()
+            self._source_bounds.clear()
 
     def create_completed_run(self, request: DashboardRunCreateRequest) -> DashboardRun:
         return self.create_completed_snapshot(
@@ -92,11 +99,45 @@ class InMemoryDashboardRunRepository:
                 )
                 for dataset_key, rows in datasets.items()
             }
+            self._store_source_bounds(run_id, datasets)
         return run
 
     def get_run(self, run_id: UUID) -> DashboardRun | None:
         with self._lock:
             return self._runs.get(run_id)
+
+    def get_source_bounds(self, run_id: UUID) -> StoredSourceBounds | None:
+        with self._lock:
+            return self._source_bounds.get(run_id)
+
+    def _store_source_bounds(
+        self,
+        run_id: UUID,
+        datasets: dict[str, list[dict[str, Any]]],
+    ) -> None:
+        usage_dates: list[date] = []
+        for rows in datasets.values():
+            for row in rows:
+                value = row.get("usage_date")
+                if value is None:
+                    continue
+                parsed = (
+                    value if isinstance(value, date) else date.fromisoformat(str(value))
+                )
+                usage_dates.append(parsed)
+
+        if not usage_dates:
+            now = datetime.now(timezone.utc).date()
+            self._source_bounds[run_id] = StoredSourceBounds(
+                source_start_date=now,
+                source_end_date=now,
+            )
+            return
+
+        self._source_bounds[run_id] = StoredSourceBounds(
+            source_start_date=min(usage_dates),
+            source_end_date=max(usage_dates),
+        )
 
     def get_dataset_response(self, run_id: UUID) -> DashboardDatasetResponse | None:
         with self._lock:
@@ -120,6 +161,7 @@ class InMemoryDashboardRunRepository:
                 self._runs[run_id] = expired_run
                 self._datasets.pop(run_id, None)
                 self._metadata.pop(run_id, None)
+                self._source_bounds.pop(run_id, None)
                 return None
 
             stored_metadata = self._metadata.get(run_id)
@@ -160,6 +202,7 @@ class InMemoryDashboardRunRepository:
             self._runs[run_id] = deleted_run
             self._datasets.pop(run_id, None)
             self._metadata.pop(run_id, None)
+            self._source_bounds.pop(run_id, None)
             return deleted_run
 
 
