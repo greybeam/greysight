@@ -24,4 +24,21 @@ describe("DetailTables", () => {
     ).toBeGreaterThan(0);
     expect(screen.getByText(viewModel.detailTables.users[0].name)).toBeInTheDocument();
   });
+
+  it("provides accessible names for each detail table", () => {
+    render(<DetailTables viewModel={viewModel.detailTables} />);
+
+    expect(
+      screen.getByRole("table", { name: "Service spend" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("table", { name: "Warehouse spend" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("table", { name: "User compute spend" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("table", { name: "Storage by database" }),
+    ).toBeInTheDocument();
+  });
 });

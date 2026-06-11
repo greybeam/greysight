@@ -20,7 +20,8 @@ describe("DashboardPage", () => {
     render(<DashboardPage />);
 
     expect(screen.getByText("Greysight")).toBeInTheDocument();
-    expect(screen.getAllByText("Loading dashboard data")).toHaveLength(2);
-    expect(screen.getByRole("button", { name: "Start run" })).toBeDisabled();
+    expect(screen.getByText("Loading dashboard data")).toBeInTheDocument();
+    expect(screen.getByLabelText("Loading dashboard")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run analysis" })).toBeDisabled();
   });
 });

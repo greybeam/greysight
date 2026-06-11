@@ -2,12 +2,6 @@
 
 import {
   Card,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeaderCell,
-  TableRow,
   Text,
 } from "@tremor/react";
 
@@ -22,7 +16,10 @@ function formatNumber(value: number): string {
 type DetailTableProps = {
   title: string;
   headers: string[];
-  rows: Array<Array<string | number>>;
+  rows: Array<{
+    key: string;
+    cells: Array<{ key: string; value: string | number }>;
+  }>;
 };
 
 function DetailTable({ title, headers, rows }: DetailTableProps) {
@@ -30,26 +27,33 @@ function DetailTable({ title, headers, rows }: DetailTableProps) {
     <Card className="p-4">
       <Text>{title}</Text>
       <div className="mt-2 max-h-72 overflow-y-auto">
-        <Table>
-          <TableHead>
-            <TableRow>
+        <table
+          aria-label={title}
+          className="w-full text-left text-xs text-slate-700"
+        >
+          <thead className="text-slate-900">
+            <tr>
               {headers.map((header) => (
-                <TableHeaderCell key={header}>{header}</TableHeaderCell>
+                <th key={header} className="whitespace-nowrap px-4 py-3.5 font-semibold">
+                  {header}
+                </th>
               ))}
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {rows.slice(0, MAX_ROWS).map((row, index) => (
-              <TableRow key={`${String(row[0])}-${index}`}>
-                {row.map((cell, cellIndex) => (
-                  <TableCell key={cellIndex} className="py-1.5 text-xs">
-                    {typeof cell === "number" ? formatNumber(cell) : cell}
-                  </TableCell>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-200 align-top">
+            {rows.slice(0, MAX_ROWS).map((row) => (
+              <tr key={row.key}>
+                {row.cells.map((cell) => (
+                  <td key={cell.key} className="whitespace-nowrap px-4 py-1.5">
+                    {typeof cell.value === "number"
+                      ? formatNumber(cell.value)
+                      : cell.value}
+                  </td>
                 ))}
-              </TableRow>
+              </tr>
             ))}
-          </TableBody>
-        </Table>
+          </tbody>
+        </table>
       </div>
     </Card>
   );
@@ -65,40 +69,52 @@ export default function DetailTables({
       <DetailTable
         title="Service spend"
         headers={["Service", "Spend", "Credits"]}
-        rows={viewModel.services.map((row) => [
-          row.name,
-          row.spendLabel,
-          row.credits ?? 0,
-        ])}
+        rows={viewModel.services.map((row) => ({
+          key: row.name,
+          cells: [
+            { key: "name", value: row.name },
+            { key: "spend", value: row.spendLabel },
+            { key: "credits", value: row.credits ?? 0 },
+          ],
+        }))}
       />
       <DetailTable
         title="Warehouse spend"
         headers={["Warehouse", "Est. spend", "Compute credits", "Total credits"]}
-        rows={viewModel.warehouses.map((row) => [
-          row.name,
-          row.spendLabel,
-          row.creditsCompute,
-          row.creditsTotal,
-        ])}
+        rows={viewModel.warehouses.map((row) => ({
+          key: row.name,
+          cells: [
+            { key: "name", value: row.name },
+            { key: "spend", value: row.spendLabel },
+            { key: "creditsCompute", value: row.creditsCompute },
+            { key: "creditsTotal", value: row.creditsTotal },
+          ],
+        }))}
       />
       <DetailTable
         title="User compute spend"
         headers={["User", "Warehouse", "Est. spend", "Credits"]}
-        rows={viewModel.users.map((row) => [
-          row.name,
-          row.warehouseName,
-          row.spendLabel,
-          row.credits ?? 0,
-        ])}
+        rows={viewModel.users.map((row) => ({
+          key: `${row.name}-${row.warehouseName}`,
+          cells: [
+            { key: "name", value: row.name },
+            { key: "warehouseName", value: row.warehouseName },
+            { key: "spend", value: row.spendLabel },
+            { key: "credits", value: row.credits ?? 0 },
+          ],
+        }))}
       />
       <DetailTable
         title="Storage by database"
         headers={["Database", "Est. monthly spend", "Bytes"]}
-        rows={viewModel.storage.map((row) => [
-          row.name,
-          row.monthlySpendLabel,
-          row.bytes,
-        ])}
+        rows={viewModel.storage.map((row) => ({
+          key: row.name,
+          cells: [
+            { key: "name", value: row.name },
+            { key: "monthlySpend", value: row.monthlySpendLabel },
+            { key: "bytes", value: row.bytes },
+          ],
+        }))}
       />
     </section>
   );

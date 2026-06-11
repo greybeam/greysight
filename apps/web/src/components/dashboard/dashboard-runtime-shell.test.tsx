@@ -48,7 +48,7 @@ describe("DashboardRuntimeShell", () => {
     render(<DashboardRuntimeShell authRequired={false} />);
 
     expect(screen.getByTestId("dashboard-props")).toHaveTextContent(
-      JSON.stringify({ demoMode: true, runtime: null }),
+      JSON.stringify({ demoMode: true, modeLabel: "Demo", runtime: null }),
     );
   });
 
@@ -58,6 +58,7 @@ describe("DashboardRuntimeShell", () => {
     expect(screen.getByTestId("dashboard-props")).toHaveTextContent(
       JSON.stringify({
         demoMode: false,
+        modeLabel: "Local Snowflake",
         runtime: {
           accessToken: null,
           organizationId: "00000000-0000-4000-8000-000000000001",
@@ -76,6 +77,7 @@ describe("DashboardRuntimeShell", () => {
       expect(screen.getByTestId("dashboard-props")).toHaveTextContent(
         JSON.stringify({
           demoMode: false,
+          modeLabel: "Authenticated Snowflake",
           runtime: {
             accessToken: "test-access-token",
             organizationId: "org-123",
@@ -95,6 +97,7 @@ describe("DashboardRuntimeShell", () => {
       expect(screen.getByTestId("dashboard-props")).toHaveTextContent(
         JSON.stringify({
           demoMode: false,
+          modeLabel: "Authenticated Snowflake",
           runtime: {
             accessToken: "test-access-token",
             organizationId: "org-123",
