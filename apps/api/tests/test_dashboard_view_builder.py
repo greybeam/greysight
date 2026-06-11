@@ -312,6 +312,34 @@ def test_negative_jpy_billed_total_uses_symbol_prefix_without_decimals() -> None
     assert view.total_spend.total_label == "-¥10"
 
 
+def test_fractional_jpy_billed_total_trims_trailing_zeroes() -> None:
+    view = _single_org_spend_view(spend=10.5, currency="JPY")
+
+    assert view.total_spend.total == pytest.approx(10.5, abs=0.01)
+    assert view.total_spend.total_label == "¥10.5"
+
+
+def test_negative_fractional_jpy_billed_total_trims_trailing_zeroes() -> None:
+    view = _single_org_spend_view(spend=-1234.5, currency="JPY")
+
+    assert view.total_spend.total == pytest.approx(-1234.5, abs=0.01)
+    assert view.total_spend.total_label == "-¥1,234.5"
+
+
+def test_chf_billed_total_uses_code_prefix_with_nbsp() -> None:
+    view = _single_org_spend_view(spend=1234.5, currency="CHF")
+
+    assert view.total_spend.total == pytest.approx(1234.5, abs=0.01)
+    assert view.total_spend.total_label == "CHF\u00a01,234.50"
+
+
+def test_negative_chf_billed_total_uses_code_prefix_with_nbsp() -> None:
+    view = _single_org_spend_view(spend=-1234.5, currency="CHF")
+
+    assert view.total_spend.total == pytest.approx(-1234.5, abs=0.01)
+    assert view.total_spend.total_label == "-CHF\u00a01,234.50"
+
+
 def test_projection_uses_latest_30_days_regardless_of_selected_range() -> None:
     datasets = _demo_datasets()
     source_start, source_end = _source_bounds(datasets)

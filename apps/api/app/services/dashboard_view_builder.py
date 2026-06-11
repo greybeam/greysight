@@ -37,6 +37,8 @@ CURRENCY_SYMBOL_PREFIXES = {
     "CAD": "CA$",
     "AUD": "A$",
 }
+CURRENCY_CODE_PREFIXES = frozenset({"CHF", "NOK", "SGD"})
+CURRENCY_CODE_SEPARATOR = "\u00a0"
 
 DatasetRow = dict[str, Any]
 RateIndex = dict[str, "RateIndexEntry"]
@@ -390,12 +392,22 @@ def _format_currency(value: float, currency: str | None) -> str:
         return f"${amount}"
     if resolved_currency in CURRENCY_SYMBOL_PREFIXES:
         amount = (
-            f"{abs(value):,.0f}" if resolved_currency == "JPY" else f"{abs(value):,.2f}"
+            _format_compact_amount(abs(value))
+            if resolved_currency == "JPY"
+            else f"{abs(value):,.2f}"
         )
         sign = "-" if value < 0 else ""
         return f"{sign}{CURRENCY_SYMBOL_PREFIXES[resolved_currency]}{amount}"
+    if resolved_currency in CURRENCY_CODE_PREFIXES:
+        amount = f"{abs(value):,.2f}"
+        sign = "-" if value < 0 else ""
+        return f"{sign}{resolved_currency}{CURRENCY_CODE_SEPARATOR}{amount}"
     amount = f"{value:,.2f}"
     return f"{amount} {resolved_currency}"
+
+
+def _format_compact_amount(value: float) -> str:
+    return f"{value:,.2f}".rstrip("0").rstrip(".")
 
 
 def _format_usage_date(value: date) -> str:
