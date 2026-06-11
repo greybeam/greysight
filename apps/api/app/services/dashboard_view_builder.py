@@ -30,6 +30,13 @@ DEFAULT_VIEW_WINDOW_DAYS = 30
 SUPPORTED_VIEW_WINDOW_DAYS = frozenset({7, 30, 90})
 DASHBOARD_RANKED_BAR_LIMIT = 8
 DASHBOARD_DETAIL_ROW_LIMIT = 50
+CURRENCY_SYMBOL_PREFIXES = {
+    "EUR": "€",
+    "GBP": "£",
+    "JPY": "¥",
+    "CAD": "CA$",
+    "AUD": "A$",
+}
 
 DatasetRow = dict[str, Any]
 RateIndex = dict[str, "RateIndexEntry"]
@@ -163,6 +170,29 @@ def build_dashboard_view(
             header=header,
             currency=currency,
             unsupported=None,
+        )
+
+    unsupported = _unsupported_view_model(metadata)
+    if unsupported is not None:
+        view_range = resolve_dashboard_view_range(
+            through_date=through_date,
+            source_start_date=date.min,
+            source_end_date=date.max,
+            window_days=window_days,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        projection_start, projection_end = projection_range_for(through_date)
+        return _empty_dashboard_view(
+            run=run,
+            view_range=view_range,
+            projection_range=DashboardProjectionRange(
+                start_date=projection_start,
+                end_date=projection_end,
+            ),
+            header=header,
+            currency=currency,
+            unsupported=unsupported,
         )
 
     view_range = resolve_dashboard_view_range(
@@ -358,6 +388,10 @@ def _format_currency(value: float, currency: str | None) -> str:
         if value < 0:
             return f"-${amount}"
         return f"${amount}"
+    if resolved_currency in CURRENCY_SYMBOL_PREFIXES:
+        amount = f"{abs(value):,.2f}"
+        sign = "-" if value < 0 else ""
+        return f"{sign}{CURRENCY_SYMBOL_PREFIXES[resolved_currency]}{amount}"
     amount = f"{value:,.2f}"
     return f"{amount} {resolved_currency}"
 

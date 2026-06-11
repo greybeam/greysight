@@ -11,7 +11,7 @@ from app.services.dashboard_view_builder import (
     build_dashboard_view,
     resolve_dashboard_view_range,
 )
-from app.services.dashboard_view_models import DashboardViewRange
+from app.services.dashboard_view_models import DashboardViewRange, DashboardViewResponse
 
 
 def test_resolves_default_relative_range_from_through_date() -> None:
@@ -185,6 +185,32 @@ def _sum_org_spend(
     )
 
 
+def _single_org_spend_view(spend: float, currency: str) -> DashboardViewResponse:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    datasets["org_spend_daily"] = [
+        {
+            "usage_date": "2026-06-08",
+            "service_type": "CLOUD_SERVICES",
+            "rating_type": "COMPUTE",
+            "billing_type": "CONSUMPTION",
+            "is_adjustment": spend < 0,
+            "currency": currency,
+            "spend": spend,
+        }
+    ]
+    metadata = _demo_metadata().model_copy(update={"currency": currency})
+
+    return build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=metadata,
+        source_start_date=source_start,
+        source_end_date=source_end,
+        window_days=7,
+    )
+
+
 def test_builds_demo_view_with_billed_like_totals_and_labels() -> None:
     datasets = _demo_datasets()
     source_start, source_end = _source_bounds(datasets)
@@ -252,31 +278,24 @@ def test_builds_billed_view_with_negative_adjustments_included() -> None:
 
 
 def test_negative_usd_billed_total_uses_accounting_minus_label() -> None:
-    datasets = _demo_datasets()
-    source_start, source_end = _source_bounds(datasets)
-    datasets["org_spend_daily"] = [
-        {
-            "usage_date": "2026-06-08",
-            "service_type": "CLOUD_SERVICES",
-            "rating_type": "COMPUTE",
-            "billing_type": "CONSUMPTION",
-            "is_adjustment": True,
-            "currency": "USD",
-            "spend": -10.0,
-        }
-    ]
-
-    view = build_dashboard_view(
-        run=_demo_run(),
-        datasets=datasets,
-        metadata=_demo_metadata(),
-        source_start_date=source_start,
-        source_end_date=source_end,
-        window_days=7,
-    )
+    view = _single_org_spend_view(spend=-10.0, currency="USD")
 
     assert view.total_spend.total == pytest.approx(-10, abs=0.01)
     assert view.total_spend.total_label == "-$10.00"
+
+
+def test_eur_billed_total_uses_symbol_prefix_label() -> None:
+    view = _single_org_spend_view(spend=1234.5, currency="EUR")
+
+    assert view.total_spend.total == pytest.approx(1234.5, abs=0.01)
+    assert view.total_spend.total_label == "€1,234.50"
+
+
+def test_negative_eur_billed_total_uses_symbol_prefix_label() -> None:
+    view = _single_org_spend_view(spend=-10.0, currency="EUR")
+
+    assert view.total_spend.total == pytest.approx(-10, abs=0.01)
+    assert view.total_spend.total_label == "-€10.00"
 
 
 def test_projection_uses_latest_30_days_regardless_of_selected_range() -> None:
@@ -394,6 +413,28 @@ def test_mixed_currency_returns_prepared_unsupported_view() -> None:
         source_start_date=source_start,
         source_end_date=source_end,
         window_days=30,
+    )
+
+    assert view.unsupported is not None
+    assert view.unsupported.title == "Mixed currencies are not supported"
+    assert view.total_spend.is_empty is True
+
+
+def test_mixed_currency_out_of_bounds_custom_range_returns_unsupported() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    metadata = _demo_metadata().model_copy(
+        update={"currency": None, "unsupported_reason": "mixed_currency"}
+    )
+
+    view = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=metadata,
+        source_start_date=source_start,
+        source_end_date=source_end,
+        start_date=date(2026, 2, 1),
+        end_date=date(2026, 2, 2),
     )
 
     assert view.unsupported is not None
