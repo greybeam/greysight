@@ -251,6 +251,34 @@ def test_builds_billed_view_with_negative_adjustments_included() -> None:
     )
 
 
+def test_negative_usd_billed_total_uses_accounting_minus_label() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    datasets["org_spend_daily"] = [
+        {
+            "usage_date": "2026-06-08",
+            "service_type": "CLOUD_SERVICES",
+            "rating_type": "COMPUTE",
+            "billing_type": "CONSUMPTION",
+            "is_adjustment": True,
+            "currency": "USD",
+            "spend": -10.0,
+        }
+    ]
+
+    view = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=_demo_metadata(),
+        source_start_date=source_start,
+        source_end_date=source_end,
+        window_days=7,
+    )
+
+    assert view.total_spend.total == pytest.approx(-10, abs=0.01)
+    assert view.total_spend.total_label == "-$10.00"
+
+
 def test_projection_uses_latest_30_days_regardless_of_selected_range() -> None:
     datasets = _demo_datasets()
     source_start, source_end = _source_bounds(datasets)
@@ -327,6 +355,31 @@ def test_estimated_mode_uses_account_usage_through_date_and_estimated_basis() ->
     assert view.compute_spend.ranked_warehouses
 
 
+def test_no_through_date_returns_empty_view_before_range_validation() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    metadata = _demo_metadata().model_copy(
+        update={
+            "billing_through_date": None,
+            "account_usage_through_date": None,
+        }
+    )
+
+    view = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=metadata,
+        source_start_date=source_start,
+        source_end_date=source_end,
+        start_date=date(2026, 2, 1),
+        end_date=date(2026, 2, 2),
+    )
+
+    assert view.total_spend.is_empty is True
+    assert view.range.start_date == source_end
+    assert view.range.end_date == source_end
+
+
 def test_mixed_currency_returns_prepared_unsupported_view() -> None:
     datasets = _demo_datasets()
     source_start, source_end = _source_bounds(datasets)
@@ -381,3 +434,51 @@ def test_capped_bars_and_detail_rows_match_dashboard_limits() -> None:
     assert view.service_spend.service_bars[0].name == "SERVICE_55"
     assert view.service_spend.service_bars[0].bar_width_percent == 100
     assert len(view.detail_tables.services) == 50
+
+
+def test_missing_required_billed_spend_fails_loudly() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    datasets["org_spend_daily"] = [
+        {
+            "usage_date": "2026-06-08",
+            "service_type": "CLOUD_SERVICES",
+            "rating_type": "COMPUTE",
+            "billing_type": "CONSUMPTION",
+            "is_adjustment": False,
+            "currency": "USD",
+        }
+    ]
+
+    with pytest.raises(ValueError, match="org_spend_daily.spend"):
+        build_dashboard_view(
+            run=_demo_run(),
+            datasets=datasets,
+            metadata=_demo_metadata(),
+            source_start_date=source_start,
+            source_end_date=source_end,
+            window_days=7,
+        )
+
+
+def test_missing_required_rate_sheet_effective_rate_fails_loudly() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    datasets["rate_sheet_daily"] = [
+        {
+            "usage_date": "2026-06-08",
+            "service_type": "WAREHOUSE_METERING",
+            "rating_type": "COMPUTE",
+            "currency": "USD",
+        }
+    ]
+
+    with pytest.raises(ValueError, match="rate_sheet_daily.effective_rate"):
+        build_dashboard_view(
+            run=_demo_run(),
+            datasets=datasets,
+            metadata=_demo_metadata(),
+            source_start_date=source_start,
+            source_end_date=source_end,
+            window_days=7,
+        )

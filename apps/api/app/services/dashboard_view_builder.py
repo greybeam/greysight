@@ -353,9 +353,12 @@ def _through_date_for(metadata: DashboardDatasetMetadata) -> date | None:
 
 def _format_currency(value: float, currency: str | None) -> str:
     resolved_currency = currency or "USD"
-    amount = f"{value:,.2f}"
     if resolved_currency == "USD":
+        amount = f"{abs(value):,.2f}"
+        if value < 0:
+            return f"-${amount}"
         return f"${amount}"
+    amount = f"{value:,.2f}"
     return f"{amount} {resolved_currency}"
 
 
@@ -530,7 +533,9 @@ def _build_rate_index(rows: list[DatasetRow]) -> RateIndex:
         rating_type = _optional_string(row.get("rating_type"))
         entry = RateIndexEntry(
             currency=_optional_string(row.get("currency")),
-            effective_rate=_float_field(row, "effective_rate"),
+            effective_rate=_required_float_field(
+                row, "rate_sheet_daily", "effective_rate"
+            ),
         )
 
         if rating_type is not None:
@@ -590,9 +595,9 @@ def _daily_billed_totals(
     spend_by_date = {usage_date: 0.0 for usage_date in dates}
     for row in rows:
         usage_date = _as_date(row["usage_date"])
-        spend_by_date[usage_date] = spend_by_date.get(usage_date, 0.0) + _float_field(
-            row, "spend"
-        )
+        spend_by_date[usage_date] = spend_by_date.get(
+            usage_date, 0.0
+        ) + _required_float_field(row, "org_spend_daily", "spend")
     return [
         DollarPoint(
             date=usage_date.isoformat(),
@@ -613,7 +618,7 @@ def _daily_estimated_totals(
     for row in rows:
         usage_date = _as_date(row["usage_date"])
         spend_by_date[usage_date] = spend_by_date.get(usage_date, 0.0) + convert(
-            _float_field(row, "credits_used"),
+            _required_float_field(row, "service_spend_daily", "credits_used"),
             usage_date,
             _string_field(row, "service_type", "Unknown service"),
             None,
@@ -670,9 +675,13 @@ def _build_compute_spend(
         [
             NamedAmount(
                 name=_string_field(row, "warehouse_name", "Unknown warehouse"),
-                credits=_float_field(row, "credits_used_compute"),
+                credits=_required_float_field(
+                    row, "warehouse_spend_daily", "credits_used_compute"
+                ),
                 spend=convert(
-                    _float_field(row, "credits_used_compute"),
+                    _required_float_field(
+                        row, "warehouse_spend_daily", "credits_used_compute"
+                    ),
                     _as_date(row["usage_date"]),
                     "WAREHOUSE_METERING",
                     "COMPUTE",
@@ -686,9 +695,15 @@ def _build_compute_spend(
         [
             NamedAmount(
                 name=_string_field(row, "user_name", "Unknown user"),
-                credits=_float_field(row, "credits_attributed_compute"),
+                credits=_required_float_field(
+                    row, "query_compute_by_user_daily", "credits_attributed_compute"
+                ),
                 spend=convert(
-                    _float_field(row, "credits_attributed_compute"),
+                    _required_float_field(
+                        row,
+                        "query_compute_by_user_daily",
+                        "credits_attributed_compute",
+                    ),
                     _as_date(row["usage_date"]),
                     "WAREHOUSE_METERING",
                     "COMPUTE",
@@ -702,7 +717,7 @@ def _build_compute_spend(
     for row in warehouse_rows:
         usage_date = _as_date(row["usage_date"])
         spend_by_date[usage_date] = spend_by_date.get(usage_date, 0.0) + convert(
-            _float_field(row, "credits_used_compute"),
+            _required_float_field(row, "warehouse_spend_daily", "credits_used_compute"),
             usage_date,
             "WAREHOUSE_METERING",
             "COMPUTE",
@@ -835,7 +850,9 @@ def _build_service_spend(
         [
             NamedAmount(
                 name=_string_field(row, "service_type", "Unknown service"),
-                credits=_float_field(row, "credits_used")
+                credits=_required_float_field(
+                    row, "service_spend_daily", "credits_used"
+                )
                 if "credits_used" in row
                 else 0.0,
                 spend=_service_spend(row, basis, convert),
@@ -860,11 +877,11 @@ def _service_spend(
     basis: SpendBasis,
     convert: ConvertCredits,
 ) -> float:
-    if basis == "billed" and "spend" in row:
-        return _float_field(row, "spend")
-    if "credits_used" in row:
+    if basis == "billed":
+        return _required_float_field(row, "org_spend_daily", "spend")
+    if basis == "estimated":
         return convert(
-            _float_field(row, "credits_used"),
+            _required_float_field(row, "service_spend_daily", "credits_used"),
             _as_date(row["usage_date"]),
             _string_field(row, "service_type", "Unknown service"),
             None,
@@ -956,7 +973,9 @@ def _build_warehouse_details(
             {"spend": 0.0, "credits_compute": 0.0, "credits_total": 0.0},
         )
         usage_date = _as_date(row["usage_date"])
-        credits_compute = _float_field(row, "credits_used_compute")
+        credits_compute = _required_float_field(
+            row, "warehouse_spend_daily", "credits_used_compute"
+        )
         current["spend"] += convert(
             credits_compute,
             usage_date,
@@ -964,7 +983,9 @@ def _build_warehouse_details(
             "COMPUTE",
         )
         current["credits_compute"] += credits_compute
-        current["credits_total"] += _float_field(row, "credits_used")
+        current["credits_total"] += _required_float_field(
+            row, "warehouse_spend_daily", "credits_used"
+        )
 
     return sorted(
         [
@@ -1003,16 +1024,25 @@ def _is_storage_spend_row(row: DatasetRow) -> bool:
 
 
 def _storage_bytes(row: DatasetRow) -> float:
-    return _float_field(row, "average_database_bytes") + _float_field(
-        row, "average_failsafe_bytes"
-    )
+    return _required_float_field(
+        row, "database_storage_daily", "average_database_bytes"
+    ) + _required_float_field(row, "database_storage_daily", "average_failsafe_bytes")
 
 
-def _float_field(row: DatasetRow, field_name: str) -> float:
-    value = row.get(field_name, 0.0)
+def _required_float_field(row: DatasetRow, dataset_key: str, field_name: str) -> float:
+    value = row.get(field_name)
     if value is None:
-        return 0.0
-    return float(value)
+        raise ValueError(
+            "Dashboard dataset row is missing required numeric field "
+            f"{dataset_key}.{field_name}."
+        )
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "Dashboard dataset row has invalid numeric field "
+            f"{dataset_key}.{field_name}."
+        ) from exc
 
 
 def _string_field(row: DatasetRow, field_name: str, fallback: str) -> str:
