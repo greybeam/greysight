@@ -2,7 +2,7 @@ select
     convert_timezone('UTC', start_time)::date as usage_date,
     user_name,
     warehouse_name,
-    sum(credits_attributed_compute) as credits_used
+    sum(credits_attributed_compute) as credits_attributed_compute
 from snowflake.account_usage.query_attribution_history
 where convert_timezone('UTC', start_time)::date >= dateadd(
     day,

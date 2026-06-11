@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.models import DashboardRunCreateRequest
 from app.routes.dashboard_runs import dashboard_run_repository
-from app.services.demo_data import build_demo_dashboard_dataset
+from app.services.demo_data import DEMO_FETCH_DAYS, build_demo_dashboard_dataset
 
 ORG_ONE = "00000000-0000-0000-0000-000000000001"
 ORG_TWO = "00000000-0000-0000-0000-000000000002"
@@ -103,7 +103,9 @@ def test_auth_required_demo_source_creates_complete_org_scoped_datasets(
     )
 
     assert datasets_response.status_code == 200
-    datasets = datasets_response.json()["datasets"]
+    body = datasets_response.json()
+    assert body["metadata"]["data_mode"] == "demo"
+    datasets = body["datasets"]
     assert len(datasets["service_spend_daily"]) > 0
     assert len(datasets["warehouse_spend_daily"]) > 0
 
@@ -124,7 +126,7 @@ def test_auth_required_demo_source_pins_run_to_demo_window(monkeypatch) -> None:
     )
 
     assert create_response.status_code == 201
-    assert create_response.json()["window_days"] == 30
+    assert create_response.json()["window_days"] == DEMO_FETCH_DAYS
 
 
 def test_persisted_run_routes_reject_non_member_organization(monkeypatch) -> None:
@@ -175,7 +177,9 @@ def test_persisted_run_round_trips_aggregate_datasets() -> None:
     assert run_response.status_code == 200
     assert run_response.json()["id"] == created_run["id"]
     assert datasets_response.status_code == 200
-    assert datasets_response.json()["summary"]["total_credits"] == 132.0
+    body = datasets_response.json()
+    demo_payload = build_demo_dashboard_dataset()
+    assert body["summary"]["total_credits"] == demo_payload.summary.total_credits
     assert (
         datasets_response.json()["datasets"]["service_spend_daily"][0]["service_type"]
         == "WAREHOUSE_METERING"

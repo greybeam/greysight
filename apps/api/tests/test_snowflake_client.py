@@ -6,6 +6,7 @@ import pytest
 from app.services.snowflake_client import (
     SnowflakeConfigurationError,
     SnowflakeConnectionConfig,
+    SnowflakeQueryError,
     SnowflakeValidationError,
     execute_source_query,
     validate_snowflake_connection,
@@ -182,3 +183,118 @@ def test_config_from_environment_loads_private_key_path_without_exposing_it(
         config.connector_kwargs()
     assert str(key_path) not in str(exc_info.value)
     assert exc_info.value.__cause__ is None
+
+
+def test_execute_source_query_allows_empty_bind_params() -> None:
+    captured: dict[str, object] = {}
+
+    class _Cursor:
+        description = [("ONE",)]
+
+        def execute(self, sql: str, params: dict[str, object]) -> None:
+            captured.update(params)
+
+        def fetchall(self) -> list[tuple[int]]:
+            return [(1,)]
+
+        def __enter__(self) -> "_Cursor":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    class _Connection:
+        def cursor(self) -> _Cursor:
+            return _Cursor()
+
+        def close(self) -> None:
+            return None
+
+    rows = execute_source_query(
+        "select 1 as one",
+        {},
+        config=SnowflakeConnectionConfig(),
+        connect=lambda _config: _Connection(),
+    )
+
+    assert rows == [{"one": 1}]
+    assert captured == {}
+
+
+def test_execute_source_query_accepts_account_locator_bind() -> None:
+    captured: dict[str, object] = {}
+
+    class _Cursor:
+        description = [("ACCOUNT_LOCATOR",)]
+
+        def execute(self, sql: str, params: dict[str, object]) -> None:
+            captured.update(params)
+
+        def fetchall(self) -> list[tuple[str]]:
+            return [("TU24199",)]
+
+        def __enter__(self) -> "_Cursor":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    class _Connection:
+        def cursor(self) -> _Cursor:
+            return _Cursor()
+
+        def close(self) -> None:
+            return None
+
+    rows = execute_source_query(
+        "select current_account() as account_locator",
+        {"window_days": 100, "account_locator": "TU24199"},
+        config=SnowflakeConnectionConfig(),
+        connect=lambda _config: _Connection(),
+    )
+
+    assert rows == [{"account_locator": "TU24199"}]
+    assert captured == {"window_days": 100, "account_locator": "TU24199"}
+
+
+def test_execute_source_query_rejects_malformed_account_locator() -> None:
+    with pytest.raises(ValueError, match="account_locator"):
+        execute_source_query(
+            "select 1",
+            {"window_days": 100, "account_locator": "BAD;DROP"},
+        )
+
+
+def test_execute_source_query_rejects_unknown_bind_keys() -> None:
+    with pytest.raises(ValueError, match="bind"):
+        execute_source_query("select 1", {"window_days": 100, "foo": 1})
+
+
+def test_execute_source_query_maps_query_errors_to_neutral_message() -> None:
+    class _Cursor:
+        def execute(self, sql: str, params: dict[str, object]) -> None:
+            raise RuntimeError("raw account usage failure")
+
+        def __enter__(self) -> "_Cursor":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    class _Connection:
+        def cursor(self) -> _Cursor:
+            return _Cursor()
+
+        def close(self) -> None:
+            return None
+
+    with pytest.raises(SnowflakeQueryError) as exc_info:
+        execute_source_query(
+            "select 1",
+            {},
+            config=SnowflakeConnectionConfig(),
+            connect=lambda _config: _Connection(),
+        )
+
+    assert str(exc_info.value) == "Could not query Snowflake."
+    assert "raw account usage failure" not in str(exc_info.value)

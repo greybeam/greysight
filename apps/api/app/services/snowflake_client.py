@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from cryptography.hazmat.primitives import serialization
 
@@ -123,16 +124,18 @@ def execute_source_query(
     sql: str,
     bind_params: dict[str, Any],
     config: SnowflakeConnectionConfig | None = None,
+    *,
+    connect: Callable[[SnowflakeConnectionConfig | None], Any] | None = None,
 ) -> list[dict[str, Any]]:
     _validate_window_params(bind_params)
-    connection = _connect(config)
+    connection = (connect or _connect)(config)
     try:
         with connection.cursor() as cursor:
             cursor.execute(sql, bind_params)
             columns = [_column_name(column) for column in cursor.description or ()]
             return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
     except Exception:
-        raise SnowflakeQueryError("Could not query Snowflake Account Usage.") from None
+        raise SnowflakeQueryError("Could not query Snowflake.") from None
     finally:
         connection.close()
 
@@ -163,9 +166,26 @@ def _connect(config: SnowflakeConnectionConfig | None) -> Any:
 
 
 def _validate_window_params(bind_params: dict[str, Any]) -> None:
+    allowed_bind_keys = {"window_days", "account_locator"}
+    unknown_bind_keys = set(bind_params) - allowed_bind_keys
+    if unknown_bind_keys:
+        raise ValueError(f"Unknown Snowflake bind params: {sorted(unknown_bind_keys)}")
+
+    if not bind_params:
+        return
+
     window_days = bind_params.get("window_days")
-    if not isinstance(window_days, int) or not 1 <= window_days <= 365:
+    if window_days is not None and (
+        not isinstance(window_days, int) or not 1 <= window_days <= 365
+    ):
         raise ValueError("window_days must be an integer between 1 and 365")
+
+    account_locator = bind_params.get("account_locator")
+    if account_locator is not None and (
+        not isinstance(account_locator, str)
+        or not re.fullmatch(r"[A-Za-z0-9_]{1,64}", account_locator)
+    ):
+        raise ValueError("account_locator must be 1-64 letters, digits, or underscores")
 
 
 def _column_name(column: Any) -> str:

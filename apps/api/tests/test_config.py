@@ -69,3 +69,31 @@ def test_invalid_query_timeout_seconds_is_rejected(monkeypatch, value):
 
     with pytest.raises(ValidationError):
         Settings()
+
+
+def test_estimated_credit_price_defaults_to_three_usd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ESTIMATED_CREDIT_PRICE_USD", raising=False)
+
+    settings = Settings()
+
+    assert settings.estimated_credit_price_usd == 3.0
+
+
+def test_estimated_credit_price_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ESTIMATED_CREDIT_PRICE_USD", "2.25")
+
+    settings = Settings()
+
+    assert settings.estimated_credit_price_usd == 2.25
+
+
+def test_estimated_credit_price_empty_env_uses_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ESTIMATED_CREDIT_PRICE_USD", "")
+
+    settings = Settings()
+
+    assert settings.estimated_credit_price_usd == 3.0
