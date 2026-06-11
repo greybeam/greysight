@@ -2,18 +2,18 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  fetchDashboardDatasets,
+  fetchDashboardView,
   pollDashboardRun,
   startDashboardRun,
 } from "../../lib/dashboard-api";
-import demoDashboardDatasets from "../../lib/demo-dashboard-data";
+import demoDashboardView from "../../lib/demo-dashboard-view";
 import { FETCH_WINDOW_DAYS } from "../../lib/dashboard-contracts";
 import type { AuthSession, SessionChangeCallback } from "../../lib/supabase-client";
 import DashboardRuntimeShell from "./dashboard-runtime-shell";
 
 vi.mock("../../lib/dashboard-api", () => ({
-  fetchDashboardDatasets: vi.fn(),
-  fetchDemoDashboardDatasets: vi.fn(),
+  fetchDashboardView: vi.fn(),
+  fetchDemoDashboardView: vi.fn(),
   pollDashboardRun: vi.fn(),
   startDashboardRun: vi.fn(),
 }));
@@ -62,7 +62,7 @@ describe("DashboardRuntimeShell integration", () => {
       status: "completed",
       window_days: FETCH_WINDOW_DAYS,
     });
-    vi.mocked(fetchDashboardDatasets).mockResolvedValue(demoDashboardDatasets);
+    vi.mocked(fetchDashboardView).mockResolvedValue(demoDashboardView);
 
     render(<DashboardRuntimeShell authRequired dataSource="snowflake" />);
 
@@ -80,6 +80,11 @@ describe("DashboardRuntimeShell integration", () => {
     expect(organizationId).toBe("22222222-2222-4222-8222-222222222222");
     expect(organizationId).not.toBe("Acme Analytics");
     expect(windowDays).toBe(FETCH_WINDOW_DAYS);
+    expect(fetchDashboardView).toHaveBeenCalledWith(
+      "run-1",
+      { windowDays: 30 },
+      { accessToken: "test-access-token" },
+    );
     expect(screen.getByText("Acme Analytics")).toBeInTheDocument();
   });
 });

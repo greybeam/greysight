@@ -5,10 +5,11 @@ import { BarChart, Card, LineChart, Metric, Text, Title } from "@tremor/react";
 import type {
   ComputeSpendViewModel,
   RankedBarRow,
+  ServicePoint,
   ServiceSpendViewModel,
   StorageSpendViewModel,
   TotalSpendViewModel,
-} from "../../lib/dashboard-transforms";
+} from "../../lib/dashboard-contracts";
 import SectionEmptyState from "./section-empty-state";
 
 function EstimatedBadge() {
@@ -45,6 +46,19 @@ function RankedBars({ rows }: { rows: RankedBarRow[] }) {
       ))}
     </ul>
   );
+}
+
+type ServiceChartPoint = {
+  date: string;
+} & Record<string, string | number>;
+
+export function flattenServiceDailySeries(
+  dailySeries: ServicePoint[],
+): ServiceChartPoint[] {
+  return dailySeries.map((point) => ({
+    date: point.date,
+    ...point.values,
+  }));
 }
 
 export function TotalSpendSection({
@@ -188,6 +202,8 @@ export function ServiceSpendSection({
 }: {
   viewModel: ServiceSpendViewModel;
 }) {
+  const chartData = flattenServiceDailySeries(viewModel.dailySeries);
+
   return (
     <section aria-label="Service spend" className="grid gap-3">
       <Title>Service spend</Title>
@@ -202,7 +218,7 @@ export function ServiceSpendSection({
             </Text>
             <BarChart
               className="mt-2 h-44"
-              data={viewModel.dailySeries}
+              data={chartData}
               index="date"
               categories={viewModel.serviceNames}
               stack

@@ -1,16 +1,14 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
-import demoDashboardData from "../../lib/demo-dashboard-data";
-import { buildDashboardViewModel } from "../../lib/dashboard-transforms";
+import demoDashboardView from "../../lib/demo-dashboard-view";
 import {
   ComputeSpendSection,
   ServiceSpendSection,
   StorageSpendSection,
   TotalSpendSection,
+  flattenServiceDailySeries,
 } from "./spend-sections";
-
-const viewModel = buildDashboardViewModel(demoDashboardData, 30);
 
 describe("spend sections", () => {
   afterEach(() => {
@@ -18,24 +16,26 @@ describe("spend sections", () => {
   });
 
   it("renders total spend dollars with projection basis", () => {
-    render(<TotalSpendSection viewModel={viewModel.totalSpend} />);
+    render(<TotalSpendSection viewModel={demoDashboardView.totalSpend} />);
 
     expect(screen.getByText("Total spend")).toBeInTheDocument();
-    expect(screen.getAllByText(viewModel.totalSpend.totalLabel).length).toBeGreaterThan(
-      0,
-    );
     expect(
-      screen.getByText(new RegExp(viewModel.totalSpend.projectionBasisLabel)),
+      screen.getAllByText(demoDashboardView.totalSpend.totalLabel).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getByText(
+        new RegExp(demoDashboardView.totalSpend.projectionBasisLabel),
+      ),
     ).toBeInTheDocument();
   });
 
   it("labels estimated warehouse and user rankings", () => {
-    render(<ComputeSpendSection viewModel={viewModel.computeSpend} />);
+    render(<ComputeSpendSection viewModel={demoDashboardView.computeSpend} />);
 
     expect(screen.getByText("Compute spend")).toBeInTheDocument();
     expect(screen.getAllByText(/Estimated/).length).toBeGreaterThan(0);
     expect(
-      screen.getByText(viewModel.computeSpend.rankedWarehouses[0].name),
+      screen.getByText(demoDashboardView.computeSpend.rankedWarehouses[0].name),
     ).toBeInTheDocument();
   });
 
@@ -51,7 +51,7 @@ describe("spend sections", () => {
     render(
       <ComputeSpendSection
         viewModel={{
-          ...viewModel.computeSpend,
+          ...demoDashboardView.computeSpend,
           rankedWarehouses: [],
           rankedUsers: [],
           warehouseBars,
@@ -81,11 +81,31 @@ describe("spend sections", () => {
   });
 
   it("renders ranked services", () => {
-    render(<ServiceSpendSection viewModel={viewModel.serviceSpend} />);
+    render(<ServiceSpendSection viewModel={demoDashboardView.serviceSpend} />);
 
     expect(screen.getByText("Service spend")).toBeInTheDocument();
     expect(
-      screen.getByText(viewModel.serviceSpend.rankedServices[0].name),
+      screen.getByText(demoDashboardView.serviceSpend.rankedServices[0].name),
     ).toBeInTheDocument();
+  });
+
+  it("flattens prepared service points for the service bar chart", () => {
+    expect(
+      flattenServiceDailySeries([
+        {
+          date: "2026-06-01",
+          values: {
+            Compute: 12,
+            Storage: 3,
+          },
+        },
+      ]),
+    ).toEqual([
+      {
+        date: "2026-06-01",
+        Compute: 12,
+        Storage: 3,
+      },
+    ]);
   });
 });

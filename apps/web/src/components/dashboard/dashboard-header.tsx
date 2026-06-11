@@ -2,7 +2,7 @@
 
 import { Badge } from "@tremor/react";
 
-import type { HeaderViewModel } from "../../lib/dashboard-transforms";
+import type { HeaderViewModel } from "../../lib/dashboard-contracts";
 
 export type DashboardModeLabel =
   | "Demo"

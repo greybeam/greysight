@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -8,21 +9,68 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  fetchDashboardDatasets,
-  fetchDemoDashboardDatasets,
+  type DashboardViewRangeRequest,
+  fetchDashboardView,
+  fetchDemoDashboardView,
   pollDashboardRun,
   startDashboardRun,
 } from "../../lib/dashboard-api";
-import demoDashboardDatasets from "../../lib/demo-dashboard-data";
+import demoDashboardView from "../../lib/demo-dashboard-view";
 import { FETCH_WINDOW_DAYS, type DashboardRun } from "../../lib/dashboard-contracts";
 import CostDashboard from "./cost-dashboard";
 
 vi.mock("../../lib/dashboard-api", () => ({
-  fetchDashboardDatasets: vi.fn(),
-  fetchDemoDashboardDatasets: vi.fn(),
+  fetchDashboardView: vi.fn(),
+  fetchDemoDashboardView: vi.fn(),
   pollDashboardRun: vi.fn(),
   startDashboardRun: vi.fn(),
 }));
+
+type Deferred<T> = {
+  promise: Promise<T>;
+  reject: (error: Error) => void;
+  resolve: (value: T) => void;
+};
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve: Deferred<T>["resolve"] | undefined;
+  let reject: Deferred<T>["reject"] | undefined;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+
+  if (!resolve || !reject) {
+    throw new Error("Deferred promise callbacks were not initialized");
+  }
+
+  return { promise, reject, resolve };
+}
+
+function demoViewForRange(
+  range: DashboardViewRangeRequest = { windowDays: 30 },
+) {
+  if (range.startDate !== undefined && range.endDate !== undefined) {
+    return {
+      ...demoDashboardView,
+      range: {
+        mode: "custom" as const,
+        windowDays: null,
+        startDate: range.startDate,
+        endDate: range.endDate,
+      },
+    };
+  }
+
+  return {
+    ...demoDashboardView,
+    range: {
+      ...demoDashboardView.range,
+      mode: "relative" as const,
+      windowDays: range.windowDays ?? 30,
+    },
+  };
+}
 
 describe("CostDashboard", () => {
   afterEach(() => {
@@ -31,7 +79,7 @@ describe("CostDashboard", () => {
   });
 
   it("renders required dollar dashboard sections", () => {
-    render(<CostDashboard data={demoDashboardDatasets} />);
+    render(<CostDashboard data={demoDashboardView} />);
 
     expect(screen.getByText("Total spend")).toBeInTheDocument();
     expect(screen.getByText("Compute spend")).toBeInTheDocument();
@@ -43,40 +91,360 @@ describe("CostDashboard", () => {
     expect(screen.getAllByText("Analysis complete").length).toBeGreaterThan(0);
   });
 
-  it("loads demo dashboard datasets in demo mode", async () => {
-    vi.mocked(fetchDemoDashboardDatasets).mockResolvedValue(demoDashboardDatasets);
-
-    render(<CostDashboard />);
-
-    await waitFor(() => {
-      expect(fetchDemoDashboardDatasets).toHaveBeenCalledTimes(1);
-    });
-    expect(screen.getAllByText("Analysis complete").length).toBeGreaterThan(0);
-    expect(fetchDashboardDatasets).not.toHaveBeenCalled();
-  });
-
-  it("changes the local window without another Snowflake round trip", async () => {
-    vi.mocked(fetchDemoDashboardDatasets).mockResolvedValue(demoDashboardDatasets);
+  it("loads demo prepared view and prefetches relative windows", async () => {
+    vi.mocked(fetchDemoDashboardView).mockResolvedValue(demoDashboardView);
 
     render(<CostDashboard demoMode />);
 
     await screen.findByText("Total spend");
-    const callsAfterLoad = vi.mocked(fetchDemoDashboardDatasets).mock.calls.length;
+    expect(fetchDemoDashboardView).toHaveBeenCalledWith({ windowDays: 30 });
+    expect(fetchDemoDashboardView).toHaveBeenCalledWith({ windowDays: 7 });
+    expect(fetchDemoDashboardView).toHaveBeenCalledWith({ windowDays: 90 });
+  });
+
+  it("switches to cached relative prepared view without another request", async () => {
+    vi.mocked(fetchDemoDashboardView).mockImplementation(async (range) =>
+      demoViewForRange(range),
+    );
+
+    render(<CostDashboard demoMode />);
+
+    await screen.findByText("Total spend");
+    await waitFor(() => expect(fetchDemoDashboardView).toHaveBeenCalledTimes(3));
 
     fireEvent.click(screen.getByRole("button", { name: "7 days" }));
 
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "7 days" })).toHaveAttribute(
-        "aria-pressed",
-        "true",
-      ),
+    expect(screen.getByRole("button", { name: "7 days" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
     );
-    expect(fetchDemoDashboardDatasets).toHaveBeenCalledTimes(callsAfterLoad);
-    expect(startDashboardRun).not.toHaveBeenCalled();
+    expect(fetchDemoDashboardView).toHaveBeenCalledTimes(3);
+  });
+
+  it("fetches and caches an uncached custom date range", async () => {
+    vi.mocked(fetchDemoDashboardView).mockImplementation(async (range) =>
+      demoViewForRange(range),
+    );
+
+    render(<CostDashboard demoMode />);
+
+    await screen.findByText("Total spend");
+    fireEvent.change(screen.getByLabelText("Start date"), {
+      target: { value: "2026-06-01" },
+    });
+    fireEvent.change(screen.getByLabelText("End date"), {
+      target: { value: "2026-06-08" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply date range" }));
+
+    await waitFor(() =>
+      expect(fetchDemoDashboardView).toHaveBeenCalledWith({
+        startDate: "2026-06-01",
+        endDate: "2026-06-08",
+      }),
+    );
+    await waitFor(() => expect(fetchDemoDashboardView).toHaveBeenCalledTimes(4));
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply date range" }));
+
+    expect(fetchDemoDashboardView).toHaveBeenCalledTimes(4);
+  });
+
+  it("resets stale prepared view state when the organization changes", async () => {
+    const orgAView = {
+      ...demoDashboardView,
+      run: {
+        ...demoDashboardView.run,
+        id: "run-org-a",
+        source: "snowflake" as const,
+      },
+      header: {
+        ...demoDashboardView.header,
+        accountLocator: "ORG_A",
+      },
+    };
+    const { rerender } = render(
+      <CostDashboard
+        demoMode={false}
+        data={orgAView}
+        runtime={{
+          accessToken: "token-a",
+          organizationId: "org-a",
+          organizationName: "Org A",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("ORG_A")).toBeInTheDocument();
+
+    rerender(
+      <CostDashboard
+        demoMode={false}
+        runtime={{
+          accessToken: "token-b",
+          organizationId: "org-b",
+          organizationName: "Org B",
+        }}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByText("ORG_A")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByLabelText("Loading dashboard")).toBeInTheDocument();
+  });
+
+  it("keeps the latest range response active when custom range requests resolve out of order", async () => {
+    const firstRange = createDeferred<ReturnType<typeof demoViewForRange>>();
+    const secondRange = createDeferred<ReturnType<typeof demoViewForRange>>();
+    vi.mocked(fetchDemoDashboardView).mockImplementation(async (range) => {
+      if (range?.startDate === "2026-06-01") {
+        return firstRange.promise;
+      }
+      if (range?.startDate === "2026-06-02") {
+        return secondRange.promise;
+      }
+      return demoViewForRange(range);
+    });
+
+    render(<CostDashboard demoMode />);
+
+    await screen.findByText("Total spend");
+    fireEvent.change(screen.getByLabelText("Start date"), {
+      target: { value: "2026-06-01" },
+    });
+    fireEvent.change(screen.getByLabelText("End date"), {
+      target: { value: "2026-06-08" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply date range" }));
+    await waitFor(() =>
+      expect(fetchDemoDashboardView).toHaveBeenCalledWith({
+        startDate: "2026-06-01",
+        endDate: "2026-06-08",
+      }),
+    );
+
+    fireEvent.change(screen.getByLabelText("Start date"), {
+      target: { value: "2026-06-02" },
+    });
+    fireEvent.change(screen.getByLabelText("End date"), {
+      target: { value: "2026-06-09" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply date range" }));
+    await waitFor(() =>
+      expect(fetchDemoDashboardView).toHaveBeenCalledWith({
+        startDate: "2026-06-02",
+        endDate: "2026-06-09",
+      }),
+    );
+
+    await act(async () => {
+      secondRange.resolve(
+        demoViewForRange({ startDate: "2026-06-02", endDate: "2026-06-09" }),
+      );
+    });
+    await waitFor(() =>
+      expect(screen.getByLabelText("Start date")).toHaveValue("2026-06-02"),
+    );
+
+    await act(async () => {
+      firstRange.resolve(
+        demoViewForRange({ startDate: "2026-06-01", endDate: "2026-06-08" }),
+      );
+    });
+
+    expect(screen.getByLabelText("Start date")).toHaveValue("2026-06-02");
+    expect(screen.getByLabelText("End date")).toHaveValue("2026-06-09");
+  });
+
+  it("does not let a stale range response replace a newer run", async () => {
+    const pendingRange = createDeferred<ReturnType<typeof demoViewForRange>>();
+    let defaultLoadCount = 0;
+    vi.mocked(fetchDemoDashboardView).mockImplementation(async (range) => {
+      if (range?.startDate === "2026-06-01") {
+        return pendingRange.promise;
+      }
+      if (range?.windowDays === 30) {
+        defaultLoadCount += 1;
+        return {
+          ...demoViewForRange(range),
+          run: {
+            ...demoDashboardView.run,
+            id: defaultLoadCount === 1 ? "initial-run" : "new-run",
+          },
+          header: {
+            ...demoDashboardView.header,
+            accountLocator: defaultLoadCount === 1 ? "INITIAL_RUN" : "NEW_RUN",
+          },
+        };
+      }
+      return demoViewForRange(range);
+    });
+
+    render(<CostDashboard demoMode />);
+
+    expect(await screen.findByText("INITIAL_RUN")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Start date"), {
+      target: { value: "2026-06-01" },
+    });
+    fireEvent.change(screen.getByLabelText("End date"), {
+      target: { value: "2026-06-08" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply date range" }));
+    await waitFor(() =>
+      expect(fetchDemoDashboardView).toHaveBeenCalledWith({
+        startDate: "2026-06-01",
+        endDate: "2026-06-08",
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+    expect(await screen.findByText("NEW_RUN")).toBeInTheDocument();
+
+    await act(async () => {
+      pendingRange.resolve({
+        ...demoViewForRange({ startDate: "2026-06-01", endDate: "2026-06-08" }),
+        run: {
+          ...demoDashboardView.run,
+          id: "stale-range-run",
+        },
+        header: {
+          ...demoDashboardView.header,
+          accountLocator: "STALE_RANGE",
+        },
+      });
+    });
+
+    expect(screen.getByText("NEW_RUN")).toBeInTheDocument();
+    expect(screen.queryByText("STALE_RANGE")).not.toBeInTheDocument();
+  });
+
+  it("does not let a stale range rejection mark a newer run failed", async () => {
+    const pendingRange = createDeferred<ReturnType<typeof demoViewForRange>>();
+    let defaultLoadCount = 0;
+    vi.mocked(fetchDemoDashboardView).mockImplementation(async (range) => {
+      if (range?.startDate === "2026-06-01") {
+        return pendingRange.promise;
+      }
+      if (range?.windowDays === 30) {
+        defaultLoadCount += 1;
+        return {
+          ...demoViewForRange(range),
+          run: {
+            ...demoDashboardView.run,
+            id: defaultLoadCount === 1 ? "initial-run" : "new-run",
+          },
+          header: {
+            ...demoDashboardView.header,
+            accountLocator: defaultLoadCount === 1 ? "INITIAL_RUN" : "NEW_RUN",
+          },
+        };
+      }
+      return demoViewForRange(range);
+    });
+
+    render(<CostDashboard demoMode />);
+
+    expect(await screen.findByText("INITIAL_RUN")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Start date"), {
+      target: { value: "2026-06-01" },
+    });
+    fireEvent.change(screen.getByLabelText("End date"), {
+      target: { value: "2026-06-08" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply date range" }));
+    await waitFor(() =>
+      expect(fetchDemoDashboardView).toHaveBeenCalledWith({
+        startDate: "2026-06-01",
+        endDate: "2026-06-08",
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+    expect(await screen.findByText("NEW_RUN")).toBeInTheDocument();
+
+    await act(async () => {
+      pendingRange.reject(new Error("stale range failure"));
+    });
+
+    expect(screen.getByText("NEW_RUN")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Could not load selected date range."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("reflects the backend range returned for a fetched custom date range", async () => {
+    vi.mocked(fetchDemoDashboardView).mockImplementation(async (range) => {
+      if (range?.startDate === "2026-06-01") {
+        return {
+          ...demoDashboardView,
+          range: {
+            mode: "custom",
+            windowDays: null,
+            startDate: "2026-06-01",
+            endDate: "2026-06-07",
+          },
+        };
+      }
+
+      return demoDashboardView;
+    });
+
+    render(<CostDashboard demoMode />);
+
+    await screen.findByText("Total spend");
+    fireEvent.change(screen.getByLabelText("Start date"), {
+      target: { value: "2026-06-01" },
+    });
+    fireEvent.change(screen.getByLabelText("End date"), {
+      target: { value: "2026-06-08" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply date range" }));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("End date")).toHaveValue("2026-06-07"),
+    );
+    await waitFor(() => expect(fetchDemoDashboardView).toHaveBeenCalledTimes(4));
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply date range" }));
+
+    expect(fetchDemoDashboardView).toHaveBeenCalledTimes(4);
+
+    fireEvent.change(screen.getByLabelText("End date"), {
+      target: { value: "2026-06-08" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply date range" }));
+
+    expect(fetchDemoDashboardView).toHaveBeenCalledTimes(4);
+  });
+
+  it("keeps the current view and shows a range-specific message when range fetch fails", async () => {
+    vi.mocked(fetchDemoDashboardView).mockImplementation(async (range) => {
+      if (range?.startDate === "2026-06-01") {
+        throw new Error("Dashboard API request failed with 400");
+      }
+      return demoViewForRange(range);
+    });
+
+    render(<CostDashboard demoMode />);
+
+    await screen.findByText("Total spend");
+    fireEvent.change(screen.getByLabelText("Start date"), {
+      target: { value: "2026-06-01" },
+    });
+    fireEvent.change(screen.getByLabelText("End date"), {
+      target: { value: "2026-06-08" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply date range" }));
+
+    expect(
+      await screen.findByText("Could not load selected date range."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Total spend")).toBeInTheDocument();
   });
 
   it("shows demo freshness and account locator in the header", async () => {
-    vi.mocked(fetchDemoDashboardDatasets).mockResolvedValue(demoDashboardDatasets);
+    vi.mocked(fetchDemoDashboardView).mockResolvedValue(demoDashboardView);
 
     render(<CostDashboard demoMode />);
 
@@ -87,12 +455,11 @@ describe("CostDashboard", () => {
   });
 
   it("renders the mixed-currency unsupported state from metadata", async () => {
-    vi.mocked(fetchDemoDashboardDatasets).mockResolvedValue({
-      ...demoDashboardDatasets,
-      metadata: {
-        ...demoDashboardDatasets.metadata,
-        unsupported_reason: "mixed_currency",
-        currency: null,
+    vi.mocked(fetchDemoDashboardView).mockResolvedValue({
+      ...demoDashboardView,
+      unsupported: {
+        title: "Mixed currencies are not supported",
+        detail: "Select a single billing currency before running the dashboard.",
       },
     });
 
@@ -105,7 +472,7 @@ describe("CostDashboard", () => {
   });
 
   it("disables the run action and shows placeholders while loading", () => {
-    vi.mocked(fetchDemoDashboardDatasets).mockReturnValue(
+    vi.mocked(fetchDemoDashboardView).mockReturnValue(
       new Promise(() => undefined),
     );
 
@@ -117,7 +484,7 @@ describe("CostDashboard", () => {
 
   it("starts a Snowflake run with selected organization and bearer token", async () => {
     const runningRun: DashboardRun = {
-      ...demoDashboardDatasets.run,
+      ...demoDashboardView.run,
       id: "run-123",
       source: "snowflake",
       status: "running",
@@ -128,8 +495,8 @@ describe("CostDashboard", () => {
     };
     vi.mocked(startDashboardRun).mockResolvedValue(runningRun);
     vi.mocked(pollDashboardRun).mockResolvedValue(completedRun);
-    vi.mocked(fetchDashboardDatasets).mockResolvedValue({
-      ...demoDashboardDatasets,
+    vi.mocked(fetchDashboardView).mockResolvedValue({
+      ...demoDashboardView,
       run: completedRun,
     });
 
@@ -156,15 +523,28 @@ describe("CostDashboard", () => {
       "run-123",
       expect.objectContaining({ accessToken: "test-access-token" }),
     );
-    expect(fetchDashboardDatasets).toHaveBeenCalledWith("run-123", {
-      accessToken: "test-access-token",
-    });
-    expect(fetchDemoDashboardDatasets).not.toHaveBeenCalled();
+    expect(fetchDashboardView).toHaveBeenCalledWith(
+      "run-123",
+      { windowDays: 30 },
+      { accessToken: "test-access-token" },
+    );
+    await waitFor(() => expect(fetchDashboardView).toHaveBeenCalledTimes(3));
+    expect(fetchDashboardView).toHaveBeenCalledWith(
+      "run-123",
+      { windowDays: 7 },
+      { accessToken: "test-access-token" },
+    );
+    expect(fetchDashboardView).toHaveBeenCalledWith(
+      "run-123",
+      { windowDays: 90 },
+      { accessToken: "test-access-token" },
+    );
+    expect(fetchDemoDashboardView).not.toHaveBeenCalled();
   });
 
   it("keeps the run action disabled while a queued Snowflake run is polling", async () => {
     const queuedRun: DashboardRun = {
-      ...demoDashboardDatasets.run,
+      ...demoDashboardView.run,
       id: "run-queued",
       source: "snowflake",
       status: "queued",

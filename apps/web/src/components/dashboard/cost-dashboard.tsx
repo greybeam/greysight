@@ -1,28 +1,25 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
-  fetchDashboardDatasets,
-  fetchDemoDashboardDatasets,
+  fetchDashboardView,
+  fetchDemoDashboardView,
   pollDashboardRun,
   startDashboardRun,
+  type DashboardViewRangeRequest,
 } from "../../lib/dashboard-api";
 import {
   FETCH_WINDOW_DAYS,
-  type DashboardData,
   type DashboardRunStatus,
+  type DashboardView,
+  type DashboardViewRange,
 } from "../../lib/dashboard-contracts";
-import {
-  DEFAULT_WINDOW_DAYS,
-  buildDashboardViewModel,
-  type WindowDays,
-} from "../../lib/dashboard-transforms";
 import DashboardHeader, {
   type DashboardModeLabel,
 } from "./dashboard-header";
 import DetailTables from "./detail-tables";
-import FilterBar from "./filter-bar";
+import FilterBar, { WINDOW_DAYS, type WindowDays } from "./filter-bar";
 import RunStatus from "./run-status";
 import SectionEmptyState from "./section-empty-state";
 import {
@@ -41,7 +38,7 @@ export type CostDashboardRuntime = {
 export type { DashboardModeLabel };
 
 type CostDashboardProps = {
-  data?: DashboardData;
+  data?: DashboardView;
   demoMode?: boolean;
   modeLabel?: DashboardModeLabel;
   runtime?: CostDashboardRuntime | null;
@@ -50,8 +47,36 @@ type CostDashboardProps = {
 type LoadState = {
   status: DashboardRunStatus | "loading";
   message?: string | null;
-  data?: DashboardData;
+  view?: DashboardView;
 };
+
+type ViewFetcher = (
+  range: DashboardViewRangeRequest,
+) => Promise<DashboardView>;
+
+const DEFAULT_VIEW_RANGE: DashboardViewRangeRequest = { windowDays: 30 };
+
+function rangeKey(runId: string, range: DashboardViewRangeRequest): string {
+  if (isCustomRangeRequest(range)) {
+    return `${runId}:custom:${range.startDate}:${range.endDate}`;
+  }
+  return `${runId}:relative:${range.windowDays ?? 30}`;
+}
+
+function isCustomRangeRequest(
+  range: DashboardViewRangeRequest,
+): range is { windowDays?: never; startDate: string; endDate: string } {
+  return range.startDate !== undefined && range.endDate !== undefined;
+}
+
+function requestFromViewRange(
+  range: DashboardViewRange,
+): DashboardViewRangeRequest {
+  if (range.mode === "custom") {
+    return { startDate: range.startDate, endDate: range.endDate };
+  }
+  return { windowDays: range.windowDays ?? 30 };
+}
 
 export default function CostDashboard({
   data,
@@ -60,31 +85,114 @@ export default function CostDashboard({
   runtime,
 }: CostDashboardProps) {
   const shouldUseDemo = demoMode ?? !runtime;
-  const [windowDays, setWindowDays] =
-    useState<WindowDays>(DEFAULT_WINDOW_DAYS);
+  const contextKey = shouldUseDemo
+    ? "demo"
+    : `snowflake:${runtime?.organizationId ?? "none"}`;
+
+  return (
+    <CostDashboardContent
+      key={contextKey}
+      data={data}
+      demoMode={demoMode}
+      modeLabel={modeLabel}
+      runtime={runtime}
+      shouldUseDemo={shouldUseDemo}
+    />
+  );
+}
+
+function isValidDateRange(startDate: string, endDate: string): boolean {
+  return startDate.length > 0 && endDate.length > 0 && startDate <= endDate;
+}
+
+function CostDashboardContent({
+  data,
+  modeLabel,
+  runtime,
+  shouldUseDemo,
+}: CostDashboardProps & { shouldUseDemo: boolean }) {
+  const cacheRef = useRef<Map<string, DashboardView>>(
+    data
+      ? new Map([[rangeKey(data.run.id, requestFromViewRange(data.range)), data]])
+      : new Map(),
+  );
+  const rangeRequestSeqRef = useRef(0);
+  const runGenerationRef = useRef(0);
+  const [activeRange, setActiveRange] = useState<DashboardViewRange | null>(
+    data?.range ?? null,
+  );
+  const [startDate, setStartDate] = useState(data?.range.startDate ?? "");
+  const [endDate, setEndDate] = useState(data?.range.endDate ?? "");
   const [runInFlight, setRunInFlight] = useState(false);
   const [loadState, setLoadState] = useState<LoadState>({
     status: data?.run.status ?? (shouldUseDemo ? "loading" : "queued"),
-    data,
+    view: data,
   });
 
-  const applyDashboardData = useCallback((dashboardData: DashboardData) => {
+  const cacheView = useCallback(
+    (
+      runId: string,
+      request: DashboardViewRangeRequest,
+      dashboardView: DashboardView,
+    ) => {
+      cacheRef.current.set(rangeKey(runId, request), dashboardView);
+      cacheRef.current.set(
+        rangeKey(runId, requestFromViewRange(dashboardView.range)),
+        dashboardView,
+      );
+    },
+    [],
+  );
+
+  const applyDashboardView = useCallback((dashboardView: DashboardView) => {
     setLoadState({
-      status: dashboardData.run.status,
-      message: dashboardData.run.error ?? dashboardData.run.user_safe_message,
-      data: dashboardData,
+      status: dashboardView.run.status,
+      message: dashboardView.run.error ?? dashboardView.run.user_safe_message,
+      view: dashboardView,
     });
+    setActiveRange(dashboardView.range);
+    setStartDate(dashboardView.range.startDate);
+    setEndDate(dashboardView.range.endDate);
   }, []);
 
+  const prefetchRelativeWindows = useCallback(
+    (runId: string, fetchView: ViewFetcher) => {
+      for (const windowDays of WINDOW_DAYS) {
+        if (windowDays === DEFAULT_VIEW_RANGE.windowDays) {
+          continue;
+        }
+
+        const request: DashboardViewRangeRequest = { windowDays };
+        if (cacheRef.current.has(rangeKey(runId, request))) {
+          continue;
+        }
+
+        void fetchView(request)
+          .then((dashboardView) => {
+            cacheView(runId, request, dashboardView);
+          })
+          .catch(() => undefined);
+      }
+    },
+    [cacheView],
+  );
+
   const loadDemoRun = useCallback(async () => {
+    runGenerationRef.current += 1;
     setRunInFlight(true);
     setLoadState((current) => ({ ...current, status: "loading" }));
     try {
-      const dashboardData = await fetchDemoDashboardDatasets();
-      applyDashboardData(dashboardData);
+      const dashboardView = await fetchDemoDashboardView(DEFAULT_VIEW_RANGE);
+      runGenerationRef.current += 1;
+      cacheView(dashboardView.run.id, DEFAULT_VIEW_RANGE, dashboardView);
+      applyDashboardView(dashboardView);
+      prefetchRelativeWindows(dashboardView.run.id, fetchDemoDashboardView);
     } catch {
       if (data) {
-        setLoadState({ status: data.run.status, data });
+        setLoadState({ status: data.run.status, view: data });
+        setActiveRange(data.range);
+        setStartDate(data.range.startDate);
+        setEndDate(data.range.endDate);
         return;
       }
       setLoadState({
@@ -94,7 +202,7 @@ export default function CostDashboard({
     } finally {
       setRunInFlight(false);
     }
-  }, [applyDashboardData, data]);
+  }, [applyDashboardView, cacheView, data, prefetchRelativeWindows]);
 
   const loadSnowflakeRun = useCallback(async () => {
     if (!runtime) {
@@ -106,6 +214,7 @@ export default function CostDashboard({
     }
 
     const options = { accessToken: runtime.accessToken };
+    runGenerationRef.current += 1;
     setRunInFlight(true);
     setLoadState((current) => ({ ...current, status: "loading" }));
 
@@ -133,8 +242,17 @@ export default function CostDashboard({
         return;
       }
 
-      const dashboardData = await fetchDashboardDatasets(completedRun.id, options);
-      applyDashboardData(dashboardData);
+      const dashboardView = await fetchDashboardView(
+        completedRun.id,
+        DEFAULT_VIEW_RANGE,
+        options,
+      );
+      runGenerationRef.current += 1;
+      cacheView(completedRun.id, DEFAULT_VIEW_RANGE, dashboardView);
+      applyDashboardView(dashboardView);
+      prefetchRelativeWindows(completedRun.id, (range) =>
+        fetchDashboardView(completedRun.id, range, options),
+      );
     } catch {
       setLoadState({
         status: "failed",
@@ -143,7 +261,7 @@ export default function CostDashboard({
     } finally {
       setRunInFlight(false);
     }
-  }, [applyDashboardData, runtime]);
+  }, [applyDashboardView, cacheView, prefetchRelativeWindows, runtime]);
 
   const startRun = useCallback(async () => {
     if (shouldUseDemo) {
@@ -160,11 +278,14 @@ export default function CostDashboard({
     }
     let isActive = true;
 
-    async function fetchInitialDemoData() {
+    async function fetchInitialDemoView() {
+      setRunInFlight(true);
       try {
-        const dashboardData = await fetchDemoDashboardDatasets();
+        const dashboardView = await fetchDemoDashboardView(DEFAULT_VIEW_RANGE);
         if (isActive) {
-          applyDashboardData(dashboardData);
+          cacheView(dashboardView.run.id, DEFAULT_VIEW_RANGE, dashboardView);
+          applyDashboardView(dashboardView);
+          prefetchRelativeWindows(dashboardView.run.id, fetchDemoDashboardView);
         }
       } catch {
         if (isActive) {
@@ -173,25 +294,102 @@ export default function CostDashboard({
             message: "Could not load dashboard data.",
           });
         }
+      } finally {
+        if (isActive) {
+          setRunInFlight(false);
+        }
       }
     }
 
-    void fetchInitialDemoData();
+    void fetchInitialDemoView();
 
     return () => {
       isActive = false;
     };
-  }, [applyDashboardData, data, shouldUseDemo]);
+  }, [
+    applyDashboardView,
+    cacheView,
+    data,
+    prefetchRelativeWindows,
+    shouldUseDemo,
+  ]);
 
-  const dashboardData = loadState.data ?? data;
-  const viewModel = useMemo(
-    () =>
-      dashboardData ? buildDashboardViewModel(dashboardData, windowDays) : null,
-    [dashboardData, windowDays],
+  const accessToken = runtime?.accessToken;
+  const loadRange = useCallback(
+    async (request: DashboardViewRangeRequest) => {
+      const currentView = loadState.view;
+      if (!currentView) {
+        return;
+      }
+
+      rangeRequestSeqRef.current += 1;
+      const requestSeq = rangeRequestSeqRef.current;
+      const runGeneration = runGenerationRef.current;
+      const cachedView = cacheRef.current.get(rangeKey(currentView.run.id, request));
+      if (cachedView) {
+        applyDashboardView(cachedView);
+        return;
+      }
+
+      setLoadState((current) => ({
+        ...current,
+        status: "loading",
+        message: null,
+      }));
+
+      try {
+        const dashboardView = shouldUseDemo
+          ? await fetchDemoDashboardView(request)
+          : await fetchDashboardView(currentView.run.id, request, {
+              accessToken,
+            });
+        if (runGeneration !== runGenerationRef.current) {
+          return;
+        }
+        cacheView(currentView.run.id, request, dashboardView);
+        if (requestSeq === rangeRequestSeqRef.current) {
+          applyDashboardView(dashboardView);
+        }
+      } catch {
+        if (
+          runGeneration === runGenerationRef.current &&
+          requestSeq === rangeRequestSeqRef.current
+        ) {
+          setLoadState((current) => ({
+            ...current,
+            status: "failed",
+            message: "Could not load selected date range.",
+          }));
+        }
+      }
+    },
+    [
+      applyDashboardView,
+      cacheView,
+      accessToken,
+      loadState.view,
+      shouldUseDemo,
+    ],
   );
+
+  const handleWindowChange = useCallback(
+    (windowDays: WindowDays) => {
+      void loadRange({ windowDays });
+    },
+    [loadRange],
+  );
+
+  const handleCustomRangeApply = useCallback(() => {
+    if (!isValidDateRange(startDate, endDate)) {
+      return;
+    }
+    void loadRange({ startDate, endDate });
+  }, [endDate, loadRange, startDate]);
+
+  const viewModel = loadState.view ?? data ?? null;
   const runDisabled =
     runInFlight ||
-    loadState.status === "loading" ||
+    (!viewModel && loadState.status === "loading") ||
     loadState.status === "running" ||
     (!shouldUseDemo && !runtime);
   const resolvedModeLabel =
@@ -217,9 +415,14 @@ export default function CostDashboard({
           ) : (
             <>
               <FilterBar
-                windowDays={windowDays}
+                range={activeRange ?? viewModel.range}
                 currency={viewModel.header.currency}
-                onWindowChange={setWindowDays}
+                startDate={startDate}
+                endDate={endDate}
+                onWindowChange={handleWindowChange}
+                onStartDateChange={setStartDate}
+                onEndDateChange={setEndDate}
+                onApplyDateRange={handleCustomRangeApply}
               />
               <TotalSpendSection viewModel={viewModel.totalSpend} />
               <ComputeSpendSection viewModel={viewModel.computeSpend} />

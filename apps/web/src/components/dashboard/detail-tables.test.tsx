@@ -1,11 +1,8 @@
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
-import demoDashboardData from "../../lib/demo-dashboard-data";
-import { buildDashboardViewModel } from "../../lib/dashboard-transforms";
+import demoDashboardView from "../../lib/demo-dashboard-view";
 import DetailTables from "./detail-tables";
-
-const viewModel = buildDashboardViewModel(demoDashboardData, 30);
 
 describe("DetailTables", () => {
   afterEach(() => {
@@ -13,20 +10,23 @@ describe("DetailTables", () => {
   });
 
   it("renders service, warehouse, user, and storage detail tables", () => {
-    render(<DetailTables viewModel={viewModel.detailTables} />);
+    render(<DetailTables viewModel={demoDashboardView.detailTables} />);
 
     expect(screen.getByText("Service spend")).toBeInTheDocument();
     expect(screen.getByText("Warehouse spend")).toBeInTheDocument();
     expect(screen.getByText("User compute spend")).toBeInTheDocument();
     expect(screen.getByText("Storage by database")).toBeInTheDocument();
     expect(
-      screen.getAllByText(viewModel.detailTables.warehouses[0].name).length,
+      screen.getAllByText(demoDashboardView.detailTables.warehouses[0].name)
+        .length,
     ).toBeGreaterThan(0);
-    expect(screen.getByText(viewModel.detailTables.users[0].name)).toBeInTheDocument();
+    expect(
+      screen.getByText(demoDashboardView.detailTables.users[0].name),
+    ).toBeInTheDocument();
   });
 
   it("provides accessible names for each detail table", () => {
-    render(<DetailTables viewModel={viewModel.detailTables} />);
+    render(<DetailTables viewModel={demoDashboardView.detailTables} />);
 
     expect(
       screen.getByRole("table", { name: "Service spend" }),
@@ -53,7 +53,7 @@ describe("DetailTables", () => {
     render(
       <DetailTables
         viewModel={{
-          ...viewModel.detailTables,
+          ...demoDashboardView.detailTables,
           services,
         }}
       />,

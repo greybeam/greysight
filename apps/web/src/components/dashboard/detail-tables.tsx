@@ -5,7 +5,7 @@ import {
   Text,
 } from "@tremor/react";
 
-import type { DetailTablesViewModel } from "../../lib/dashboard-transforms";
+import type { DetailTablesViewModel } from "../../lib/dashboard-contracts";
 
 function formatNumber(value: number): string {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value);

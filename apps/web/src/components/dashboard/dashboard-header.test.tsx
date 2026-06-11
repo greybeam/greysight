@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 
-import type { HeaderViewModel } from "../../lib/dashboard-transforms";
+import type { HeaderViewModel } from "../../lib/dashboard-contracts";
 import DashboardHeader from "./dashboard-header";
 
 const headerViewModel: HeaderViewModel = {
