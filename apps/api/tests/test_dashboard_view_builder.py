@@ -1,10 +1,14 @@
+from copy import deepcopy
 from datetime import date
 
 import pytest
 
+from app.models import DashboardDatasetMetadata, DashboardRun, SourceAvailability
+from app.services.demo_data import build_demo_dashboard_dataset
 from app.services.dashboard_view_builder import (
     DEFAULT_VIEW_WINDOW_DAYS,
     DashboardRangeOutOfBoundsError,
+    build_dashboard_view,
     resolve_dashboard_view_range,
 )
 from app.services.dashboard_view_models import DashboardViewRange
@@ -145,3 +149,235 @@ def test_rejects_inverted_stored_source_bounds_as_invalid_input() -> None:
         )
 
     assert type(exc_info.value) is ValueError
+
+
+def _demo_run() -> DashboardRun:
+    payload = build_demo_dashboard_dataset()
+    return DashboardRun.model_validate(payload.run.model_dump(mode="json"))
+
+
+def _demo_datasets() -> dict[str, list[dict[str, object]]]:
+    return deepcopy(build_demo_dashboard_dataset().datasets)
+
+
+def _demo_metadata() -> DashboardDatasetMetadata:
+    return build_demo_dashboard_dataset().metadata
+
+
+def _source_bounds(datasets: dict[str, list[dict[str, object]]]) -> tuple[date, date]:
+    dates = [
+        date.fromisoformat(str(row["usage_date"]))
+        for rows in datasets.values()
+        for row in rows
+        if "usage_date" in row
+    ]
+    return min(dates), max(dates)
+
+
+def _sum_org_spend(
+    rows: list[dict[str, object]], start_date: date, end_date: date
+) -> float:
+    return sum(
+        float(row["spend"])
+        for row in rows
+        if row["billing_type"] == "CONSUMPTION"
+        and start_date.isoformat() <= str(row["usage_date"]) <= end_date.isoformat()
+    )
+
+
+def test_builds_demo_view_with_billed_like_totals_and_labels() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+
+    view = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=_demo_metadata(),
+        source_start_date=source_start,
+        source_end_date=source_end,
+        window_days=30,
+    )
+
+    expected_total = _sum_org_spend(
+        datasets["org_spend_daily"],
+        view.range.start_date,
+        view.range.end_date,
+    )
+    assert view.header.data_mode_label == "Demo"
+    assert view.header.account_locator == "DEMO123"
+    assert view.header.freshness_label == "Demo data through Jun 8, 2026"
+    assert view.total_spend.basis == "billed"
+    assert view.total_spend.total == pytest.approx(expected_total, abs=0.01)
+    assert view.total_spend.total_label.startswith("$")
+    assert view.unsupported is None
+
+
+def test_builds_billed_view_with_negative_adjustments_included() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    baseline = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=_demo_metadata(),
+        source_start_date=source_start,
+        source_end_date=source_end,
+        window_days=7,
+    )
+    adjusted_datasets = deepcopy(datasets)
+    adjusted_datasets["org_spend_daily"].append(
+        {
+            "usage_date": "2026-06-08",
+            "service_type": "CLOUD_SERVICES",
+            "rating_type": "COMPUTE",
+            "billing_type": "CONSUMPTION",
+            "is_adjustment": True,
+            "currency": "USD",
+            "spend": -10.0,
+        }
+    )
+
+    adjusted = build_dashboard_view(
+        run=_demo_run(),
+        datasets=adjusted_datasets,
+        metadata=_demo_metadata(),
+        source_start_date=source_start,
+        source_end_date=source_end,
+        window_days=7,
+    )
+
+    assert adjusted.total_spend.total == pytest.approx(
+        baseline.total_spend.total - 10,
+        abs=0.01,
+    )
+
+
+def test_projection_uses_latest_30_days_regardless_of_selected_range() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+
+    seven = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=_demo_metadata(),
+        source_start_date=source_start,
+        source_end_date=source_end,
+        window_days=7,
+    )
+    thirty = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=_demo_metadata(),
+        source_start_date=source_start,
+        source_end_date=source_end,
+        window_days=30,
+    )
+    custom = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=_demo_metadata(),
+        source_start_date=source_start,
+        source_end_date=source_end,
+        start_date=date(2026, 6, 1),
+        end_date=date(2026, 6, 8),
+    )
+
+    assert seven.total_spend.projected_monthly == pytest.approx(
+        thirty.total_spend.projected_monthly,
+        abs=0.01,
+    )
+    assert custom.total_spend.projected_monthly == pytest.approx(
+        thirty.total_spend.projected_monthly,
+        abs=0.01,
+    )
+    assert seven.total_spend.projection_basis_label == "latest 30 days"
+
+
+def test_estimated_mode_uses_account_usage_through_date_and_estimated_basis() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    # NOTE: model_copy(update=...) does NOT re-validate, so pass a real
+    # SourceAvailability instance here, not a dict. A raw dict would leave
+    # metadata.organization_usage as a dict and break attribute access
+    # (metadata.organization_usage.available) inside the builder.
+    metadata = _demo_metadata().model_copy(
+        update={
+            "data_mode": "estimated",
+            "billing_through_date": None,
+            "organization_usage": SourceAvailability(
+                available=False, detail="org unavailable"
+            ),
+        }
+    )
+    datasets["org_spend_daily"] = []
+    datasets["rate_sheet_daily"] = []
+
+    view = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=metadata,
+        source_start_date=source_start,
+        source_end_date=source_end,
+        window_days=7,
+    )
+
+    assert view.header.data_mode_label == "Estimated"
+    assert view.header.through_date == "2026-06-08"
+    assert view.total_spend.basis == "estimated"
+    assert view.compute_spend.compute_basis == "estimated"
+    assert view.compute_spend.ranked_warehouses
+
+
+def test_mixed_currency_returns_prepared_unsupported_view() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    metadata = _demo_metadata().model_copy(
+        update={"currency": None, "unsupported_reason": "mixed_currency"}
+    )
+
+    view = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=metadata,
+        source_start_date=source_start,
+        source_end_date=source_end,
+        window_days=30,
+    )
+
+    assert view.unsupported is not None
+    assert view.unsupported.title == "Mixed currencies are not supported"
+    assert view.total_spend.is_empty is True
+
+
+def test_capped_bars_and_detail_rows_match_dashboard_limits() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    service_rows = []
+    for index in range(55):
+        service_number = index + 1
+        service_rows.append(
+            {
+                "usage_date": "2026-06-08",
+                "service_type": f"SERVICE_{service_number:02}",
+                "rating_type": "COMPUTE",
+                "billing_type": "CONSUMPTION",
+                "is_adjustment": False,
+                "currency": "USD",
+                "spend": float(service_number),
+            }
+        )
+    datasets["org_spend_daily"] = service_rows
+
+    view = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=_demo_metadata(),
+        source_start_date=source_start,
+        source_end_date=source_end,
+        window_days=7,
+    )
+
+    assert len(view.service_spend.ranked_services) == 55
+    assert len(view.service_spend.service_bars) == 8
+    assert view.service_spend.service_bars[0].name == "SERVICE_55"
+    assert view.service_spend.service_bars[0].bar_width_percent == 100
+    assert len(view.detail_tables.services) == 50
