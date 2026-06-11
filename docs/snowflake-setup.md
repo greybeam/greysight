@@ -18,6 +18,26 @@ SQL files live in `sql/snowflake/` and are registered by
 `sql/dashboard_sources.yml`. The API executes only approved, bounded, read-only
 source queries from that registry.
 
+## Organization Usage Access (Billed Dollars)
+
+Greysight V0 reads billed spend from `SNOWFLAKE.ORGANIZATION_USAGE.USAGE_IN_CURRENCY_DAILY`
+and effective rates from `SNOWFLAKE.ORGANIZATION_USAGE.RATE_SHEET_DAILY`. These views
+require an Organization Usage grant on the Greysight role:
+
+```sql
+grant database role SNOWFLAKE.ORGANIZATION_BILLING_VIEWER to role <GREYSIGHT_ROLE>;
+```
+
+Notes:
+
+- The account locator used to filter Organization Usage rows is derived at run
+  time via `select current_account()`; no extra environment variable is needed.
+- If the grant is missing, Greysight degrades to estimated dollars computed from
+  Account Usage credits and `ESTIMATED_CREDIT_PRICE_USD`; setup validation does
+  not require Organization Usage access.
+- Verified populated in the Greybeam dev account `GOPGUKF-JO19546`
+  (locator `TU24199`) on 2026-06-10.
+
 ## Local Environment
 
 Use `.env.example` as a checklist and set Snowflake mode. A root `.env.local` is
@@ -38,6 +58,7 @@ SNOWFLAKE_PRIVATE_KEY_PATH=/absolute/path/to/key.p8
 SNOWFLAKE_PRIVATE_KEY_PASSPHRASE=
 GREYSIGHT_DEFAULT_WINDOW_DAYS=30
 STORAGE_PRICE_USD_PER_TB_MONTH=
+ESTIMATED_CREDIT_PRICE_USD=3.00
 ```
 
 `SNOWFLAKE_PRIVATE_KEY_PATH` must point to a local private key file. Do not
