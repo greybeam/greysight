@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import demoDashboardData from "../../lib/demo-dashboard-data";
@@ -40,5 +40,28 @@ describe("DetailTables", () => {
     expect(
       screen.getByRole("table", { name: "Storage by database" }),
     ).toBeInTheDocument();
+  });
+
+  it("renders all rows provided by the detail table view model", () => {
+    const services = Array.from({ length: 51 }, (_, index) => ({
+      name: `SERVICE_${index}`,
+      spend: index,
+      spendLabel: `$${index}.00`,
+      credits: index,
+    }));
+
+    render(
+      <DetailTables
+        viewModel={{
+          ...viewModel.detailTables,
+          services,
+        }}
+      />,
+    );
+
+    const serviceTable = screen.getByRole("table", { name: "Service spend" });
+    expect(within(serviceTable).getAllByRole("row")).toHaveLength(
+      services.length + 1,
+    );
   });
 });

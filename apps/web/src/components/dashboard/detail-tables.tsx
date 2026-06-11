@@ -7,8 +7,6 @@ import {
 
 import type { DetailTablesViewModel } from "../../lib/dashboard-transforms";
 
-const MAX_ROWS = 50;
-
 function formatNumber(value: number): string {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value);
 }
@@ -41,7 +39,7 @@ function DetailTable({ title, headers, rows }: DetailTableProps) {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200 align-top">
-            {rows.slice(0, MAX_ROWS).map((row) => (
+            {rows.map((row) => (
               <tr key={row.key}>
                 {row.cells.map((cell) => (
                   <td key={cell.key} className="whitespace-nowrap px-4 py-1.5">

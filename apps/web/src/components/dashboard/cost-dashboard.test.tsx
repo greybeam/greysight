@@ -75,13 +75,13 @@ describe("CostDashboard", () => {
     expect(startDashboardRun).not.toHaveBeenCalled();
   });
 
-  it("shows billed freshness and account locator in the header", async () => {
+  it("shows demo freshness and account locator in the header", async () => {
     vi.mocked(fetchDemoDashboardDatasets).mockResolvedValue(demoDashboardDatasets);
 
     render(<CostDashboard demoMode />);
 
     expect(
-      await screen.findByText("Billing data through Jun 8, 2026"),
+      await screen.findByText("Demo data through Jun 8, 2026"),
     ).toBeInTheDocument();
     expect(screen.getByText("DEMO123")).toBeInTheDocument();
   });

@@ -11,6 +11,8 @@ import type {
 
 export const DEFAULT_WINDOW_DAYS = 30;
 export const WINDOW_DAYS = [7, 30, 90] as const;
+export const DASHBOARD_RANKED_BAR_LIMIT = 8;
+export const DASHBOARD_DETAIL_ROW_LIMIT = 50;
 
 export type WindowDays = (typeof WINDOW_DAYS)[number];
 export type SpendBasis = "billed" | "estimated";
@@ -149,12 +151,17 @@ export type RankedSpendRow = {
   credits: number | null;
 };
 
+export type RankedBarRow = RankedSpendRow & {
+  barWidthPercent: number;
+};
+
 export type HeaderViewModel = {
   dataModeLabel: "Billed" | "Estimated" | "Demo";
   accountLocator: string | null;
   currency: string;
   throughDate: string | null;
   throughDateLabel: string | null;
+  freshnessLabel: string | null;
   estimatedCreditPriceLabel: string;
   storagePriceLabel: string;
 };
@@ -178,6 +185,8 @@ export type ComputeSpendViewModel = {
   dailySeries: DollarPoint[];
   rankedWarehouses: RankedSpendRow[];
   rankedUsers: RankedSpendRow[];
+  warehouseBars: RankedBarRow[];
+  userBars: RankedBarRow[];
   isEmpty: boolean;
 };
 
@@ -191,6 +200,7 @@ export type StorageSpendViewModel = {
     monthlySpend: number;
     monthlySpendLabel: string;
   }>;
+  databaseBars: RankedBarRow[];
   isEmpty: boolean;
 };
 
@@ -199,6 +209,7 @@ export type ServiceSpendViewModel = {
   dailySeries: ServicePoint[];
   serviceNames: string[];
   rankedServices: RankedSpendRow[];
+  serviceBars: RankedBarRow[];
   isEmpty: boolean;
 };
 
@@ -288,6 +299,8 @@ function emptyComputeSpend(): ComputeSpendViewModel {
     dailySeries: [],
     rankedWarehouses: [],
     rankedUsers: [],
+    warehouseBars: [],
+    userBars: [],
     isEmpty: true,
   };
 }
@@ -298,6 +311,7 @@ function emptyStorageSpend(): StorageSpendViewModel {
     databaseBasis: "estimated",
     dailySeries: [],
     databases: [],
+    databaseBars: [],
     isEmpty: true,
   };
 }
@@ -308,6 +322,7 @@ function emptyServiceSpend(): ServiceSpendViewModel {
     dailySeries: [],
     serviceNames: [],
     rankedServices: [],
+    serviceBars: [],
     isEmpty: true,
   };
 }
@@ -457,13 +472,17 @@ export function buildDashboardViewModel(
     storageSpend,
     serviceSpend,
     detailTables: {
-      services: serviceSpend.rankedServices,
-      warehouses: buildWarehouseDetails(warehouseRows, currency, convert),
-      users: computeSpend.rankedUsers.map((row) => ({
-        ...row,
-        warehouseName: userWarehouseLabel(userRows, row.name),
-      })),
-      storage: storageSpend.databases,
+      services: capDetailRows(serviceSpend.rankedServices),
+      warehouses: capDetailRows(
+        buildWarehouseDetails(warehouseRows, currency, convert),
+      ),
+      users: capDetailRows(
+        computeSpend.rankedUsers.map((row) => ({
+          ...row,
+          warehouseName: userWarehouseLabel(userRows, row.name),
+        })),
+      ),
+      storage: capDetailRows(storageSpend.databases),
     },
   };
 }
@@ -473,12 +492,15 @@ function buildHeaderViewModel(
   currency: string,
   throughDate: string | null,
 ): HeaderViewModel {
+  const throughDateLabel = throughDate ? formatUsageDate(throughDate) : null;
+
   return {
     dataModeLabel: dataModeLabel(metadata.data_mode),
     accountLocator: metadata.account_locator,
     currency,
     throughDate,
-    throughDateLabel: throughDate ? formatUsageDate(throughDate) : null,
+    throughDateLabel,
+    freshnessLabel: buildFreshnessLabel(metadata, throughDateLabel),
     estimatedCreditPriceLabel: formatCurrency(
       metadata.estimated_credit_price_usd,
       currency,
@@ -488,6 +510,21 @@ function buildHeaderViewModel(
       currency,
     ),
   };
+}
+
+function buildFreshnessLabel(
+  metadata: DashboardTransformMetadata,
+  throughDateLabel: string | null,
+): string | null {
+  if (!throughDateLabel) return null;
+  if (metadata.data_mode === "demo") {
+    return `Demo data through ${throughDateLabel}`;
+  }
+  if (metadata.data_mode === "estimated" || !metadata.billing_through_date) {
+    return `Account Usage data through ${throughDateLabel}`;
+  }
+
+  return `Billing data through ${throughDateLabel}`;
 }
 
 function dataModeLabel(
@@ -588,6 +625,32 @@ function buildComputeSpend(
     ratingType?: string | null,
   ) => number,
 ): ComputeSpendViewModel {
+  const rankedWarehouses = rankNamedAmounts(
+    warehouseRows.map((row) => ({
+      name: row.warehouse_name,
+      credits: row.credits_used_compute,
+      spend: convert(
+        row.credits_used_compute,
+        row.usage_date,
+        "WAREHOUSE_METERING",
+        "COMPUTE",
+      ),
+    })),
+    currency,
+  );
+  const rankedUsers = rankNamedAmounts(
+    userRows.map((row) => ({
+      name: row.user_name,
+      credits: row.credits_attributed_compute,
+      spend: convert(
+        row.credits_attributed_compute,
+        row.usage_date,
+        "WAREHOUSE_METERING",
+        "COMPUTE",
+      ),
+    })),
+    currency,
+  );
   const dailySeries = dates.map((date) => {
     const spend = warehouseRows
       .filter((row) => row.usage_date === date)
@@ -608,32 +671,10 @@ function buildComputeSpend(
   return {
     computeBasis: "estimated",
     dailySeries,
-    rankedWarehouses: rankNamedAmounts(
-      warehouseRows.map((row) => ({
-        name: row.warehouse_name,
-        credits: row.credits_used_compute,
-        spend: convert(
-          row.credits_used_compute,
-          row.usage_date,
-          "WAREHOUSE_METERING",
-          "COMPUTE",
-        ),
-      })),
-      currency,
-    ),
-    rankedUsers: rankNamedAmounts(
-      userRows.map((row) => ({
-        name: row.user_name,
-        credits: row.credits_attributed_compute,
-        spend: convert(
-          row.credits_attributed_compute,
-          row.usage_date,
-          "WAREHOUSE_METERING",
-          "COMPUTE",
-        ),
-      })),
-      currency,
-    ),
+    rankedWarehouses,
+    rankedUsers,
+    warehouseBars: buildRankedBarRows(rankedWarehouses),
+    userBars: buildRankedBarRows(rankedUsers),
     isEmpty: dailySeries.every((row) => row.spend === 0),
   };
 }
@@ -677,12 +718,21 @@ function buildStorageSpend(
     pricePerTbMonth,
     currency,
   );
+  const databaseBars = buildRankedBarRows(
+    databases.map((database) => ({
+      name: database.name,
+      spend: database.monthlySpend,
+      spendLabel: database.monthlySpendLabel,
+      credits: null,
+    })),
+  );
 
   return {
     basis,
     databaseBasis: "estimated",
     dailySeries,
     databases,
+    databaseBars,
     isEmpty: dailySeries.every((row) => row.spend === 0),
   };
 }
@@ -727,6 +777,7 @@ function buildServiceSpend(
     dailySeries,
     serviceNames,
     rankedServices,
+    serviceBars: buildRankedBarRows(rankedServices),
     isEmpty: rankedServices.length === 0,
   };
 }
@@ -767,6 +818,20 @@ function rankNamedAmounts(
     spendLabel: formatCurrency(value.spend, currency),
     credits: value.credits,
   })).sort((a, b) => b.spend - a.spend);
+}
+
+function buildRankedBarRows(rows: RankedSpendRow[]): RankedBarRow[] {
+  const shown = rows.slice(0, DASHBOARD_RANKED_BAR_LIMIT);
+  const top = shown[0]?.spend ?? 0;
+
+  return shown.map((row) => ({
+    ...row,
+    barWidthPercent: top > 0 ? Math.max(0, (row.spend / top) * 100) : 0,
+  }));
+}
+
+function capDetailRows<T>(rows: T[]): T[] {
+  return rows.slice(0, DASHBOARD_DETAIL_ROW_LIMIT);
 }
 
 function rankStorageRows(

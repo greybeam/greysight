@@ -4,7 +4,7 @@ import { BarChart, Card, LineChart, Metric, Text, Title } from "@tremor/react";
 
 import type {
   ComputeSpendViewModel,
-  RankedSpendRow,
+  RankedBarRow,
   ServiceSpendViewModel,
   StorageSpendViewModel,
   TotalSpendViewModel,
@@ -19,17 +19,14 @@ function EstimatedBadge() {
   );
 }
 
-function RankedBars({ rows, max = 8 }: { rows: RankedSpendRow[]; max?: number }) {
-  const shown = rows.slice(0, max);
-  const top = shown[0]?.spend || 1;
-
-  if (shown.length === 0) {
+function RankedBars({ rows }: { rows: RankedBarRow[] }) {
+  if (rows.length === 0) {
     return <p className="mt-3 text-xs text-slate-500">No ranked spend data</p>;
   }
 
   return (
     <ul className="mt-3 grid gap-1.5">
-      {shown.map((row) => (
+      {rows.map((row) => (
         <li
           key={row.name}
           className="grid grid-cols-[minmax(6rem,8rem)_1fr_auto] items-center gap-2"
@@ -38,7 +35,7 @@ function RankedBars({ rows, max = 8 }: { rows: RankedSpendRow[]; max?: number })
           <span className="h-2 rounded bg-slate-200">
             <span
               className="block h-2 rounded bg-blue-600"
-              style={{ width: `${Math.max(0, (row.spend / top) * 100)}%` }}
+              style={{ width: `${row.barWidthPercent}%` }}
             />
           </span>
           <span className="text-xs font-semibold tabular-nums text-slate-900">
@@ -133,13 +130,13 @@ export function ComputeSpendSection({
             <Text>
               Warehouses <EstimatedBadge />
             </Text>
-            <RankedBars rows={viewModel.rankedWarehouses} />
+            <RankedBars rows={viewModel.warehouseBars} />
           </Card>
           <Card className="p-4">
             <Text>
               Users <EstimatedBadge />
             </Text>
-            <RankedBars rows={viewModel.rankedUsers} />
+            <RankedBars rows={viewModel.userBars} />
           </Card>
         </div>
       )}
@@ -178,14 +175,7 @@ export function StorageSpendSection({
               Latest storage by database{" "}
               {viewModel.databaseBasis === "estimated" ? <EstimatedBadge /> : null}
             </Text>
-            <RankedBars
-              rows={viewModel.databases.map((database) => ({
-                name: database.name,
-                spend: database.monthlySpend,
-                spendLabel: database.monthlySpendLabel,
-                credits: null,
-              }))}
-            />
+            <RankedBars rows={viewModel.databaseBars} />
           </Card>
         </div>
       )}
@@ -221,7 +211,7 @@ export function ServiceSpendSection({
           </Card>
           <Card className="p-4">
             <Text>Ranked services</Text>
-            <RankedBars rows={viewModel.rankedServices} />
+            <RankedBars rows={viewModel.serviceBars} />
           </Card>
         </div>
       )}

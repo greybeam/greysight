@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  DASHBOARD_DETAIL_ROW_LIMIT,
+  DASHBOARD_RANKED_BAR_LIMIT,
   DEFAULT_WINDOW_DAYS,
   WINDOW_DAYS,
   buildDashboardViewModel,
@@ -252,6 +254,7 @@ describe("buildDashboardViewModel", () => {
     expect(vm.header.dataModeLabel).toBe("Demo");
     expect(vm.header.accountLocator).toBe("DEMO123");
     expect(vm.header.currency).toBe("USD");
+    expect(vm.header.freshnessLabel).toBe("Demo data through Jun 8, 2026");
     expect(vm.unsupported).toBeNull();
     expect(vm.totalSpend.basis).toBe("billed");
     expect(vm.totalSpend.total).toBeCloseTo(expected, 2);
@@ -357,8 +360,28 @@ describe("buildDashboardViewModel", () => {
     );
 
     expect(vm.header.dataModeLabel).toBe("Billed");
+    expect(vm.header.freshnessLabel).toBe("Billing data through Jun 8, 2026");
     expect(vm.totalSpend.basis).toBe("billed");
     expect(vm.totalSpend.total).toBe(0);
+  });
+
+  it("labels billed freshness fallback as Account Usage data", () => {
+    const vm = buildDashboardViewModel(
+      dataWith({
+        metadata: {
+          ...demoDashboardData.metadata,
+          data_mode: "billed",
+          billing_through_date: null,
+          account_usage_through_date: "2026-06-09",
+        },
+      }),
+      7,
+    );
+
+    expect(vm.header.throughDate).toBe("2026-06-09");
+    expect(vm.header.freshnessLabel).toBe(
+      "Account Usage data through Jun 9, 2026",
+    );
   });
 
   it("uses billed organization usage storage rows when billed data is available", () => {
@@ -482,6 +505,97 @@ describe("buildDashboardViewModel", () => {
     expect(vm.storageSpend.basis).toBe("billed");
     expect(vm.storageSpend.databaseBasis).toBe("estimated");
     expect(vm.storageSpend.databases.length).toBeGreaterThan(0);
+  });
+
+  it("prepares capped ranked bar rows for dashboard sections", () => {
+    const serviceRows: OrgSpendDaily[] = Array.from({ length: 12 }, (_, index) => {
+      const serviceNumber = index + 1;
+      return {
+        usage_date: "2026-06-08",
+        service_type: `SERVICE_${String(serviceNumber).padStart(2, "0")}`,
+        rating_type: "COMPUTE",
+        billing_type: "CONSUMPTION",
+        is_adjustment: false,
+        currency: "USD",
+        spend: serviceNumber,
+      };
+    });
+
+    const vm = buildDashboardViewModel(
+      dataWith({
+        datasets: {
+          ...demoDashboardData.datasets,
+          org_spend_daily: serviceRows,
+          service_spend_daily: [],
+        },
+      }),
+      7,
+    );
+
+    expect(vm.serviceSpend.rankedServices).toHaveLength(12);
+    expect(vm.serviceSpend.serviceBars).toHaveLength(DASHBOARD_RANKED_BAR_LIMIT);
+    expect(vm.serviceSpend.serviceBars[0]).toMatchObject({
+      name: "SERVICE_12",
+      spend: 12,
+      barWidthPercent: 100,
+    });
+    expect(vm.serviceSpend.serviceBars[1]?.barWidthPercent).toBeCloseTo(
+      (11 / 12) * 100,
+      2,
+    );
+    expect(vm.serviceSpend.serviceBars.at(-1)?.name).toBe("SERVICE_05");
+  });
+
+  it("prepares capped ranked bar rows for compute and storage sections", () => {
+    const vm = buildDashboardViewModel(demoDashboardData, 30);
+
+    expect(vm.computeSpend.warehouseBars.length).toBeLessThanOrEqual(
+      DASHBOARD_RANKED_BAR_LIMIT,
+    );
+    expect(vm.computeSpend.userBars.length).toBeLessThanOrEqual(
+      DASHBOARD_RANKED_BAR_LIMIT,
+    );
+    expect(vm.storageSpend.databaseBars.length).toBeLessThanOrEqual(
+      DASHBOARD_RANKED_BAR_LIMIT,
+    );
+    expect(vm.computeSpend.warehouseBars[0]?.barWidthPercent).toBe(100);
+    expect(vm.computeSpend.userBars[0]?.barWidthPercent).toBe(100);
+    expect(vm.storageSpend.databaseBars[0]?.barWidthPercent).toBe(100);
+  });
+
+  it("caps detail table view-model rows before rendering", () => {
+    const serviceRows: OrgSpendDaily[] = Array.from(
+      { length: DASHBOARD_DETAIL_ROW_LIMIT + 5 },
+      (_, index) => {
+        const serviceNumber = index + 1;
+        return {
+          usage_date: "2026-06-08",
+          service_type: `SERVICE_${String(serviceNumber).padStart(2, "0")}`,
+          rating_type: "COMPUTE",
+          billing_type: "CONSUMPTION",
+          is_adjustment: false,
+          currency: "USD",
+          spend: serviceNumber,
+        };
+      },
+    );
+
+    const vm = buildDashboardViewModel(
+      dataWith({
+        datasets: {
+          ...demoDashboardData.datasets,
+          org_spend_daily: serviceRows,
+          service_spend_daily: [],
+        },
+      }),
+      7,
+    );
+
+    expect(vm.serviceSpend.rankedServices).toHaveLength(
+      DASHBOARD_DETAIL_ROW_LIMIT + 5,
+    );
+    expect(vm.detailTables.services).toHaveLength(DASHBOARD_DETAIL_ROW_LIMIT);
+    expect(vm.detailTables.services.at(-1)?.name).toBe("SERVICE_06");
   });
 });
 

@@ -16,24 +16,12 @@ type DashboardHeaderProps = {
   onRun: () => void;
 };
 
-function freshnessLabel(header: HeaderViewModel): string | null {
-  if (!header.throughDateLabel) return null;
-
-  if (header.dataModeLabel === "Estimated") {
-    return `Account Usage data through ${header.throughDateLabel}`;
-  }
-
-  return `Billing data through ${header.throughDateLabel}`;
-}
-
 export default function DashboardHeader({
   header,
   modeLabel,
   runDisabled,
   onRun,
 }: DashboardHeaderProps) {
-  const freshness = header ? freshnessLabel(header) : null;
-
   return (
     <header className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3">
       <div className="flex flex-wrap items-center gap-3">
@@ -49,8 +37,10 @@ export default function DashboardHeader({
                 {header.accountLocator}
               </span>
             ) : null}
-            {freshness ? (
-              <span className="text-xs text-slate-500">{freshness}</span>
+            {header.freshnessLabel ? (
+              <span className="text-xs text-slate-500">
+                {header.freshnessLabel}
+              </span>
             ) : null}
           </>
         ) : null}

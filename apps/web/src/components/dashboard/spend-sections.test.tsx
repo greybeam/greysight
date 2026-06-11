@@ -39,6 +39,30 @@ describe("spend sections", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders the ranked bar rows provided by the view model", () => {
+    const warehouseBars = Array.from({ length: 9 }, (_, index) => ({
+      name: `WH_${index + 1}`,
+      spend: 9 - index,
+      spendLabel: `$${9 - index}.00`,
+      credits: 9 - index,
+      barWidthPercent: 100 - index,
+    }));
+
+    render(
+      <ComputeSpendSection
+        viewModel={{
+          ...viewModel.computeSpend,
+          rankedWarehouses: [],
+          rankedUsers: [],
+          warehouseBars,
+          userBars: [],
+        }}
+      />,
+    );
+
+    expect(screen.getByText("WH_9")).toBeInTheDocument();
+  });
+
   it("renders a storage empty state when storage data is missing", () => {
     render(
       <StorageSpendSection
@@ -47,6 +71,7 @@ describe("spend sections", () => {
           databaseBasis: "estimated",
           dailySeries: [],
           databases: [],
+          databaseBars: [],
           isEmpty: true,
         }}
       />,
