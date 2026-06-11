@@ -1,0 +1,76 @@
+"use client";
+
+import { Badge } from "@tremor/react";
+
+import type { HeaderViewModel } from "../../lib/dashboard-transforms";
+
+export type DashboardModeLabel =
+  | "Demo"
+  | "Local Snowflake"
+  | "Authenticated Snowflake";
+
+type DashboardHeaderProps = {
+  header: HeaderViewModel | null;
+  modeLabel: DashboardModeLabel;
+  runDisabled: boolean;
+  onRun: () => void;
+};
+
+function freshnessLabel(header: HeaderViewModel): string | null {
+  if (!header.throughDateLabel) return null;
+
+  if (header.dataModeLabel === "Estimated") {
+    return `Account Usage data through ${header.throughDateLabel}`;
+  }
+
+  return `Billing data through ${header.throughDateLabel}`;
+}
+
+export default function DashboardHeader({
+  header,
+  modeLabel,
+  runDisabled,
+  onRun,
+}: DashboardHeaderProps) {
+  const freshness = header ? freshnessLabel(header) : null;
+
+  return (
+    <header className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <h1 className="text-lg font-semibold text-slate-950">Greysight</h1>
+        <Badge color="slate">{modeLabel}</Badge>
+        {header ? (
+          <>
+            <Badge color={header.dataModeLabel === "Estimated" ? "amber" : "blue"}>
+              {header.dataModeLabel}
+            </Badge>
+            {header.accountLocator ? (
+              <span className="font-mono text-xs text-slate-500">
+                {header.accountLocator}
+              </span>
+            ) : null}
+            {freshness ? (
+              <span className="text-xs text-slate-500">{freshness}</span>
+            ) : null}
+          </>
+        ) : null}
+      </div>
+      <div className="flex flex-wrap items-center justify-end gap-3">
+        {header?.dataModeLabel === "Estimated" ? (
+          <span className="text-xs font-medium text-amber-700">
+            Estimated spend at {header.estimatedCreditPriceLabel}/credit - billed data
+            unavailable
+          </span>
+        ) : null}
+        <button
+          className="h-9 rounded-md bg-slate-950 px-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+          disabled={runDisabled}
+          type="button"
+          onClick={onRun}
+        >
+          Run analysis
+        </button>
+      </div>
+    </header>
+  );
+}
