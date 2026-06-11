@@ -17,6 +17,8 @@ rewrite, persistence overhaul, or visual redesign.
   FastAPI backend.
 - Keep filter interactions fast for common relative windows.
 - Support custom date ranges by asking the backend for a prepared view.
+- In the first implementation slice, support only date ranges that are already
+  inside the existing 100-day source fetch.
 - Preserve existing Snowflake source-query safety: only approved bounded SQL
   assets from `sql/dashboard_sources.yml` execute against Snowflake.
 - Keep credentials and billing source data server-side.
@@ -26,8 +28,8 @@ rewrite, persistence overhaul, or visual redesign.
 - Do not introduce DuckDB in this slice.
 - Do not introduce browser DuckDB or IndexedDB caching.
 - Do not persist run datasets to Supabase yet.
-- Do not rewrite the Snowflake source SQL layer except where date-range binds
-  are required.
+- Do not rewrite the Snowflake source SQL layer in slice 1.
+- Do not support out-of-bounds custom date ranges in slice 1.
 - Do not redesign the dashboard UI.
 
 ## Current State
@@ -59,12 +61,13 @@ The new flow:
 
 The backend becomes the owner of:
 
-- billed vs estimated mode selection
+- billed vs estimated vs demo mode selection
 - rate-sheet fallback
 - credit-to-dollar conversion
 - included adjustment row inclusion
 - freshness labels
 - window/date-range filtering
+- projected monthly semantics
 - rankings
 - detail row caps
 - unsupported and empty-state decisions
@@ -84,17 +87,30 @@ The frontend becomes the owner of:
 `POST /api/dashboard-runs`
 
 This continues to create a run and fetch bounded source datasets from Snowflake.
-For the first implementation, the default run fetch remains the existing
+For slice 1, the default run fetch remains the existing
 100-day rolling window.
 
-This endpoint should also accept an optional explicit source range:
+The run snapshot should persist source bounds:
 
-- `start_date`: optional ISO date.
-- `end_date`: optional ISO date.
+- `source_start_date`: earliest source date available for the run.
+- `source_end_date`: latest source date available for the run.
 
-If both dates are provided, Snowflake source queries should fetch that inclusive
-range instead of the default rolling 100-day window. If neither date is
-provided, behavior stays unchanged.
+For slice 1, derive these bounds from the fetched source datasets. Do not add
+explicit source-range request fields to this endpoint yet.
+
+Out-of-bounds reruns are deferred to slice 2 because supporting explicit source
+ranges requires safety-critical changes to all date-bearing Snowflake SQL
+assets and bind plumbing:
+
+- `sql/snowflake/database_storage_daily.sql`
+- `sql/snowflake/org_spend_daily.sql`
+- `sql/snowflake/query_compute_by_user_daily.sql`
+- `sql/snowflake/rate_sheet_daily.sql`
+- `sql/snowflake/service_spend_daily.sql`
+- `sql/snowflake/warehouse_spend_daily.sql`
+- `build_snowflake_dashboard_data()`
+- `_fetch_source_group()`
+- Snowflake bind validation
 
 The response can stay as the existing `DashboardRun`.
 
@@ -115,10 +131,28 @@ Rules:
   `start_date` + `end_date`.
 - If no range is provided, the endpoint returns the default 30-day view.
 - Date ranges are inclusive.
+- Relative windows always end on the run's data through-date, not wall-clock
+  today. That through-date comes from metadata: billing freshness for billed and
+  demo views, Account Usage freshness for estimated views.
+- Custom ranges with `end_date` after the run's through-date are invalid for
+  slice 1 and should return `range_out_of_bounds`; do not append trailing
+  zero-spend days.
 - Date ranges must be inside the source data bounds stored for that run.
 - If a requested range is outside the stored source data bounds, return a
   typed `range_out_of_bounds` error with the stored bounds so the frontend can
-  start a broader run with the requested explicit range.
+  show that broader ranges are not supported yet.
+
+Projection:
+
+- `projected_monthly` is always computed from the latest 30 calendar days of
+  the stored source data ending at the run's through-date.
+- This projection window is independent of the selected view range. A 7-day
+  view and a custom 12-day view still project from the latest 30 days.
+- The builder must receive the full stored source datasets plus the requested
+  view range. It must not receive only a pre-filtered selected-range slice.
+- If a future explicit-range run contains fewer than the latest 30 source days,
+  preserve current transform behavior: evaluate the 30 calendar-day projection
+  window and treat missing days as zero.
 
 Response shape:
 
@@ -131,6 +165,11 @@ Response shape:
     "window_days": 30,
     "start_date": "2026-05-12",
     "end_date": "2026-06-10"
+  },
+  "projection_range": {
+    "start_date": "2026-05-12",
+    "end_date": "2026-06-10",
+    "basis_label": "latest 30 days"
   },
   "header": {},
   "unsupported": null,
@@ -167,6 +206,11 @@ Defines Pydantic response models for the prepared dashboard view:
 - detail tables
 - unsupported state
 
+The response model should carry data mode as first-class state:
+`"billed"`, `"estimated"`, or `"demo"`. The builder can share billed-row math
+for billed and demo views internally, but model fields, labels, freshness, and
+tests must treat demo explicitly.
+
 These models should closely mirror the current TypeScript view-model types so
 the frontend migration is mechanical.
 
@@ -182,7 +226,12 @@ Responsibilities:
 
 - Determine the through date from metadata.
 - Resolve relative windows into inclusive `start_date` and `end_date`.
-- Filter source rows to the selected range.
+- Validate the requested range against stored source bounds and through-date.
+- Use the full source datasets plus the selected range; do not require callers
+  to pre-filter source rows.
+- Filter source rows to the selected range for visible cards, charts, rankings,
+  and details.
+- Build the fixed latest-30-days projection range from the full source data.
 - Build the rate index.
 - Convert credits to dollars.
 - Build total spend, compute spend, storage spend, service spend, and detail
@@ -207,7 +256,9 @@ The route should:
 2. Load stored source datasets and metadata.
 3. Validate range parameters.
 4. Call `dashboard_view_builder.py`.
-5. Return the prepared view response.
+5. Record a `dashboard_run.view_retrieved` audit event with `run_id`,
+   `range_mode`, `start_date`, `end_date`, and `window_days`.
+6. Return the prepared view response.
 
 ## Frontend Changes
 
@@ -218,7 +269,7 @@ rendering.
 
 - create a run
 - fetch the default prepared view
-- cache prepared views by a stable range key
+- cache prepared views by a stable `(run_id, range)` key
 - switch instantly when a relative/custom range is already cached
 - fetch `/view` when the selected range is not cached
 - render loading state only for uncached range fetches
@@ -243,10 +294,10 @@ Custom date ranges:
 - If a custom date range has already been fetched, switch instantly from cache.
 - If it has not been fetched and is inside the run's source bounds, call the
   backend `/view` endpoint and cache the response.
-- If it is outside the run's source bounds, start a new dashboard run with the
-  requested explicit source range, then fetch and cache the prepared view for
-  that range. The backend must still use bounded Snowflake SQL with date bind
-  parameters.
+- If it is outside the run's source bounds in slice 1, show that broader ranges
+  are not supported yet and include the available source bounds.
+- In slice 2, out-of-bounds ranges can start a new dashboard run with explicit
+  source bounds, then fetch and cache the prepared view for that range.
 
 ## Error Handling
 
@@ -254,7 +305,8 @@ Custom date ranges:
 - Missing/expired source datasets: existing expired/not-found behavior.
 - Invalid range parameters: `422`.
 - Range outside stored source bounds: `409` with a user-safe
-  `range_out_of_bounds` code and stored source bounds.
+  `range_out_of_bounds` code, stored source bounds, and copy explaining that
+  broader ranges are not supported yet in slice 1.
 - Mixed currency: return a prepared unsupported view, not a frontend-invented
   state.
 - Missing Organization Usage: return an estimated prepared view when Account
@@ -266,20 +318,29 @@ Backend tests:
 
 - Unit tests for range resolution.
 - Unit tests for billed totals including negative adjustment rows.
+- Unit tests for demo mode labels, freshness, and billed-like use of demo
+  Organization Usage rows.
 - Unit tests for estimated mode fallback using rate sheet and configured
   estimated credit price.
+- Unit tests proving projected monthly always uses the latest 30-day source
+  window, independent of selected range and custom range.
 - Unit tests for storage daily spend and latest database rankings.
 - Unit tests for ranking caps and detail row caps.
 - Route tests for `/view` default, relative windows, custom ranges, invalid
   ranges, and out-of-bounds ranges.
+- A temporary parity test comparing backend prepared-view output against the
+  current TypeScript `buildDashboardViewModel()` output for the same fixture
+  before deleting or reducing `dashboard-transforms.ts`.
 
 Frontend tests:
 
 - Run analysis fetches a prepared view.
 - Relative window switch uses cache when present.
 - Uncached custom date range calls `/view`.
-- Out-of-bounds response shows rerun guidance.
+- Out-of-bounds response shows the stored source bounds and explains that
+  broader ranges are not supported yet.
 - Components render prepared view models without importing analytics helpers.
+- Cache keys include both `run_id` and range.
 
 Verification:
 
@@ -293,12 +354,34 @@ Verification:
 
 1. Add backend view-model types and pure view-builder tests.
 2. Port the existing `dashboard-transforms.ts` analytics logic into the backend
-   view builder.
-3. Add the `/view` endpoint.
-4. Update frontend API client and `cost-dashboard.tsx` to fetch prepared views.
-5. Remove analytics responsibilities from `dashboard-transforms.ts`.
-6. Keep the existing `/datasets` endpoint for debug compatibility.
-7. Run full automated and live verification.
+   view builder, preserving latest-30-day projection behavior.
+3. Add source-bound storage to completed run snapshots.
+4. Add the `/view` endpoint and view-retrieved audit event.
+5. Update frontend API client and `cost-dashboard.tsx` to fetch prepared views
+   and cache by `(run_id, range)`.
+6. Add relative-window prefetch for 7-day and 90-day prepared views after the
+   default 30-day view loads.
+7. Keep out-of-bounds custom ranges as a clear unsupported state in slice 1.
+8. Add backend/TypeScript transform parity coverage, then remove analytics
+   responsibilities from `dashboard-transforms.ts`.
+9. Keep the existing `/datasets` endpoint for debug compatibility.
+10. Run full automated and live verification.
+
+## Deferred Slice 2: Explicit Source Ranges
+
+Slice 2 can add out-of-bounds custom date ranges by introducing explicit
+Snowflake source date binds.
+
+This slice must be planned separately because it touches the safety-critical
+source-query layer:
+
+- Add `start_date` and `end_date` request fields to run creation.
+- Update Snowflake bind validation to allow date binds.
+- Replace `window_days` date predicates in all date-bearing Snowflake SQL files
+  with bounded inclusive/exclusive date predicates.
+- Preserve the current default 100-day rolling behavior when explicit dates are
+  absent.
+- Verify live Snowflake results for billed, estimated, and demo parity.
 
 ## Success Criteria
 
@@ -306,6 +389,9 @@ Verification:
 - React dashboard components render prepared view models and do not perform
   billed/estimated/rate/ranking/window analytics.
 - Relative window interactions feel instant after cache warmup.
-- Custom ranges work through backend prepared-view requests.
+- Custom ranges inside stored source bounds work through backend prepared-view
+  requests.
+- Custom ranges outside stored source bounds show an explicit unsupported state
+  in slice 1.
 - No Snowflake credentials or billing source-query logic move into the browser.
 - No DuckDB runtime is introduced in this refactor.
