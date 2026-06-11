@@ -34,11 +34,38 @@ CURRENCY_SYMBOL_PREFIXES = {
     "EUR": "€",
     "GBP": "£",
     "JPY": "¥",
+    "KRW": "₩",
     "CAD": "CA$",
     "AUD": "A$",
+    "NZD": "NZ$",
+    "MXN": "MX$",
+    "INR": "₹",
+    "CNY": "CN¥",
+    "HKD": "HK$",
+    "BRL": "R$",
+    "ILS": "₪",
+    "TWD": "NT$",
+    "PHP": "₱",
 }
-CURRENCY_CODE_PREFIXES = frozenset({"CHF", "NOK", "SGD"})
+CURRENCY_CODE_PREFIXES = frozenset(
+    {
+        "CHF",
+        "CZK",
+        "DKK",
+        "HUF",
+        "IDR",
+        "MYR",
+        "NOK",
+        "PLN",
+        "SEK",
+        "SGD",
+        "THB",
+        "TRY",
+        "ZAR",
+    }
+)
 CURRENCY_CODE_SEPARATOR = "\u00a0"
+CURRENCY_COMPACT_DECIMAL_CODES = frozenset({"HUF", "IDR", "JPY", "KRW"})
 
 DatasetRow = dict[str, Any]
 RateIndex = dict[str, "RateIndexEntry"]
@@ -391,15 +418,11 @@ def _format_currency(value: float, currency: str | None) -> str:
             return f"-${amount}"
         return f"${amount}"
     if resolved_currency in CURRENCY_SYMBOL_PREFIXES:
-        amount = (
-            _format_compact_amount(abs(value))
-            if resolved_currency == "JPY"
-            else f"{abs(value):,.2f}"
-        )
+        amount = _format_currency_amount(abs(value), resolved_currency)
         sign = "-" if value < 0 else ""
         return f"{sign}{CURRENCY_SYMBOL_PREFIXES[resolved_currency]}{amount}"
     if resolved_currency in CURRENCY_CODE_PREFIXES:
-        amount = f"{abs(value):,.2f}"
+        amount = _format_currency_amount(abs(value), resolved_currency)
         sign = "-" if value < 0 else ""
         return f"{sign}{resolved_currency}{CURRENCY_CODE_SEPARATOR}{amount}"
     amount = f"{value:,.2f}"
@@ -408,6 +431,12 @@ def _format_currency(value: float, currency: str | None) -> str:
 
 def _format_compact_amount(value: float) -> str:
     return f"{value:,.2f}".rstrip("0").rstrip(".")
+
+
+def _format_currency_amount(value: float, currency: str) -> str:
+    if currency in CURRENCY_COMPACT_DECIMAL_CODES:
+        return _format_compact_amount(value)
+    return f"{value:,.2f}"
 
 
 def _format_usage_date(value: date) -> str:

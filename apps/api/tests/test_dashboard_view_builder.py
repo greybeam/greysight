@@ -340,6 +340,41 @@ def test_negative_chf_billed_total_uses_code_prefix_with_nbsp() -> None:
     assert view.total_spend.total_label == "-CHF\u00a01,234.50"
 
 
+def test_mxn_billed_total_uses_symbol_prefix_label() -> None:
+    view = _single_org_spend_view(spend=1234.5, currency="MXN")
+
+    assert view.total_spend.total == pytest.approx(1234.5, abs=0.01)
+    assert view.total_spend.total_label == "MX$1,234.50"
+
+
+def test_sek_billed_total_uses_code_prefix_with_nbsp() -> None:
+    view = _single_org_spend_view(spend=1234.5, currency="SEK")
+
+    assert view.total_spend.total == pytest.approx(1234.5, abs=0.01)
+    assert view.total_spend.total_label == "SEK\u00a01,234.50"
+
+
+def test_inr_billed_total_uses_symbol_prefix_label() -> None:
+    view = _single_org_spend_view(spend=1234.5, currency="INR")
+
+    assert view.total_spend.total == pytest.approx(1234.5, abs=0.01)
+    assert view.total_spend.total_label == "₹1,234.50"
+
+
+def test_krw_billed_total_uses_symbol_prefix_with_compact_decimals() -> None:
+    view = _single_org_spend_view(spend=1234.5, currency="KRW")
+
+    assert view.total_spend.total == pytest.approx(1234.5, abs=0.01)
+    assert view.total_spend.total_label == "₩1,234.5"
+
+
+def test_zar_billed_total_uses_code_prefix_with_nbsp() -> None:
+    view = _single_org_spend_view(spend=1234.5, currency="ZAR")
+
+    assert view.total_spend.total == pytest.approx(1234.5, abs=0.01)
+    assert view.total_spend.total_label == "ZAR\u00a01,234.50"
+
+
 def test_projection_uses_latest_30_days_regardless_of_selected_range() -> None:
     datasets = _demo_datasets()
     source_start, source_end = _source_bounds(datasets)
