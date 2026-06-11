@@ -14,7 +14,11 @@ import {
   type DashboardTransformMetadata,
 } from "./dashboard-transforms";
 import demoDashboardData from "./demo-dashboard-data";
-import type { DashboardData, OrgSpendDaily } from "./dashboard-contracts";
+import type {
+  DashboardData,
+  OrgSpendDaily,
+  RateSheetDaily,
+} from "./dashboard-contracts";
 
 const metadata: DashboardTransformMetadata = {
   data_mode: "billed",
@@ -135,6 +139,35 @@ describe("creditsToDollars", () => {
         "CLOUD_SERVICES",
       ),
     ).toBe(12.5);
+  });
+
+  it("prefers compute rates for service-only conversion", () => {
+    const rates = buildRateIndex([
+      {
+        usage_date: "2026-06-08",
+        service_type: "WAREHOUSE_METERING",
+        rating_type: "CLOUD_SERVICES",
+        currency: "USD",
+        effective_rate: 0.5,
+      },
+      {
+        usage_date: "2026-06-08",
+        service_type: "WAREHOUSE_METERING",
+        rating_type: "COMPUTE",
+        currency: "USD",
+        effective_rate: 2.25,
+      },
+    ]);
+
+    expect(
+      creditsToDollars(
+        10,
+        "2026-06-08",
+        "WAREHOUSE_METERING",
+        rates,
+        metadata,
+      ),
+    ).toBe(22.5);
   });
 
   it("falls back to metadata estimated USD price when no rate exists", () => {
@@ -353,6 +386,7 @@ describe("buildDashboardViewModel", () => {
     );
 
     expect(vm.storageSpend.basis).toBe("billed");
+    expect(vm.storageSpend.databaseBasis).toBe("estimated");
     expect(vm.storageSpend.dailySeries.at(-1)?.spend).toBe(123.45);
   });
 
@@ -371,4 +405,46 @@ describe("buildDashboardViewModel", () => {
     );
     expect(seven.totalSpend.projectionBasisLabel).toBe("latest 30 days");
   });
+
+  it("aggregates detail table users to one row per user", () => {
+    const vm = buildDashboardViewModel(demoDashboardData, 7);
+    const userNames = vm.detailTables.users.map((row) => row.name);
+
+    expect(userNames).toEqual(Array.from(new Set(userNames)));
+    expect(vm.detailTables.users).toHaveLength(vm.computeSpend.rankedUsers.length);
+    expect(vm.detailTables.users[0]?.spend).toBe(
+      vm.computeSpend.rankedUsers[0]?.spend,
+    );
+  });
+
+  it("keeps warehouse total credits distinct from compute credits", () => {
+    const vm = buildDashboardViewModel(demoDashboardData, 7);
+
+    expect(vm.detailTables.warehouses.length).toBeGreaterThan(0);
+    expect(
+      vm.detailTables.warehouses.some(
+        (row) => row.creditsTotal > row.creditsCompute,
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps billed storage database breakdown marked as estimated", () => {
+    const vm = buildDashboardViewModel(
+      dataWith({
+        metadata: {
+          ...demoDashboardData.metadata,
+          data_mode: "billed",
+        },
+      }),
+      7,
+    );
+
+    expect(vm.storageSpend.basis).toBe("billed");
+    expect(vm.storageSpend.databaseBasis).toBe("estimated");
+    expect(vm.storageSpend.databases.length).toBeGreaterThan(0);
+  });
 });
+
+const _rateSheetTypeCheck: RateSheetDaily[] =
+  demoDashboardData.datasets.rate_sheet_daily;
+void _rateSheetTypeCheck;

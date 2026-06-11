@@ -1,8 +1,10 @@
 import type {
   DashboardData,
+  DashboardDatasetMetadata,
   DatabaseStorageDaily,
   OrgSpendDaily,
   QueryComputeByUserDaily,
+  RateSheetDaily,
   ServiceSpendDaily,
   WarehouseSpendDaily,
 } from "./dashboard-contracts";
@@ -13,31 +15,7 @@ export const WINDOW_DAYS = [7, 30, 90] as const;
 export type WindowDays = (typeof WINDOW_DAYS)[number];
 export type SpendBasis = "billed" | "estimated";
 
-type SourceAvailability = {
-  available: boolean;
-  detail: string | null;
-};
-
-export type DashboardTransformMetadata = {
-  data_mode: "demo" | "billed" | "estimated";
-  account_locator: string | null;
-  currency: string | null;
-  billing_through_date: string | null;
-  account_usage_through_date: string | null;
-  estimated_credit_price_usd: number;
-  storage_price_usd_per_tb_month: number;
-  unsupported_reason?: "mixed_currency" | null;
-  organization_usage: SourceAvailability;
-  account_usage: SourceAvailability;
-};
-
-export type RateSheetDaily = {
-  usage_date: string;
-  service_type: string;
-  rating_type: string | null;
-  currency: string | null;
-  effective_rate: number;
-};
+export type DashboardTransformMetadata = DashboardDatasetMetadata;
 
 type RateIndexEntry = {
   currency: string | null;
@@ -111,7 +89,7 @@ export function buildRateIndex(rows: readonly RateSheetDaily[]): RateIndex {
     rates.set(rateKey(row.usage_date, row.service_type, row.rating_type), entry);
 
     const serviceOnlyKey = rateKey(row.usage_date, row.service_type);
-    if (!rates.has(serviceOnlyKey)) {
+    if (!rates.has(serviceOnlyKey) || row.rating_type === "COMPUTE") {
       rates.set(serviceOnlyKey, entry);
     }
   }
@@ -205,6 +183,7 @@ export type ComputeSpendViewModel = {
 
 export type StorageSpendViewModel = {
   basis: SpendBasis;
+  databaseBasis: SpendBasis;
   dailySeries: DollarPoint[];
   databases: Array<{
     name: string;
@@ -316,6 +295,7 @@ function emptyComputeSpend(): ComputeSpendViewModel {
 function emptyStorageSpend(): StorageSpendViewModel {
   return {
     basis: "estimated",
+    databaseBasis: "estimated",
     dailySeries: [],
     databases: [],
     isEmpty: true,
@@ -478,33 +458,11 @@ export function buildDashboardViewModel(
     serviceSpend,
     detailTables: {
       services: serviceSpend.rankedServices,
-      warehouses: computeSpend.rankedWarehouses.map((row) => ({
+      warehouses: buildWarehouseDetails(warehouseRows, currency, convert),
+      users: computeSpend.rankedUsers.map((row) => ({
         ...row,
-        creditsCompute: row.credits ?? 0,
-        creditsTotal: row.credits ?? 0,
+        warehouseName: "Multiple warehouses",
       })),
-      users: userRows
-        .map((row) => ({
-          name: row.user_name,
-          warehouseName: row.warehouse_name,
-          credits: row.credits_attributed_compute,
-          spend: convert(
-            row.credits_attributed_compute,
-            row.usage_date,
-            "WAREHOUSE_METERING",
-            "COMPUTE",
-          ),
-          spendLabel: formatCurrency(
-            convert(
-              row.credits_attributed_compute,
-              row.usage_date,
-              "WAREHOUSE_METERING",
-              "COMPUTE",
-            ),
-            currency,
-          ),
-        }))
-        .sort((a, b) => b.spend - a.spend),
       storage: storageSpend.databases,
     },
   };
@@ -722,6 +680,7 @@ function buildStorageSpend(
 
   return {
     basis,
+    databaseBasis: "estimated",
     dailySeries,
     databases,
     isEmpty: dailySeries.every((row) => row.spend === 0),
@@ -796,9 +755,10 @@ function rankNamedAmounts(
   const byName = new Map<string, { spend: number; credits: number }>();
   for (const row of rows) {
     const current = byName.get(row.name) ?? { spend: 0, credits: 0 };
-    current.spend += row.spend;
-    current.credits += row.credits;
-    byName.set(row.name, current);
+    byName.set(row.name, {
+      spend: current.spend + row.spend,
+      credits: current.credits + row.credits,
+    });
   }
 
   return Array.from(byName, ([name, value]) => ({
@@ -827,4 +787,49 @@ function rankStorageRows(
       };
     })
     .sort((a, b) => b.monthlySpend - a.monthlySpend);
+}
+
+function buildWarehouseDetails(
+  rows: WarehouseSpendDaily[],
+  currency: string,
+  convert: (
+    credits: number,
+    usageDate: string,
+    serviceType: string,
+    ratingType?: string | null,
+  ) => number,
+): DetailTablesViewModel["warehouses"] {
+  const byWarehouse = new Map<
+    string,
+    { spend: number; creditsCompute: number; creditsTotal: number }
+  >();
+
+  for (const row of rows) {
+    const current = byWarehouse.get(row.warehouse_name) ?? {
+      spend: 0,
+      creditsCompute: 0,
+      creditsTotal: 0,
+    };
+    byWarehouse.set(row.warehouse_name, {
+      spend:
+        current.spend +
+        convert(
+          row.credits_used_compute,
+          row.usage_date,
+          "WAREHOUSE_METERING",
+          "COMPUTE",
+        ),
+      creditsCompute: current.creditsCompute + row.credits_used_compute,
+      creditsTotal: current.creditsTotal + row.credits_used,
+    });
+  }
+
+  return Array.from(byWarehouse, ([name, value]) => ({
+    name,
+    spend: value.spend,
+    spendLabel: formatCurrency(value.spend, currency),
+    credits: value.creditsCompute,
+    creditsCompute: value.creditsCompute,
+    creditsTotal: value.creditsTotal,
+  })).sort((a, b) => b.spend - a.spend);
 }
