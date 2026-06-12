@@ -14,6 +14,8 @@ import {
   Title,
 } from "@tremor/react";
 
+import { PRIMARY_CHART_COLOR } from "../../lib/chart-colors";
+
 const spendTrend = [
   { usage_date: "Jun 1", credits: 32 },
   { usage_date: "Jun 2", credits: 41 },
@@ -37,7 +39,7 @@ export default function TremorCompat() {
           data={spendTrend}
           index="usage_date"
           categories={["credits"]}
-          colors={["blue"]}
+          colors={[PRIMARY_CHART_COLOR]}
           yAxisWidth={40}
         />
       </Card>
@@ -49,7 +51,7 @@ export default function TremorCompat() {
           data={warehouseSpend}
           index="warehouse"
           categories={["credits"]}
-          colors={["emerald"]}
+          colors={[PRIMARY_CHART_COLOR]}
           yAxisWidth={40}
         />
         <Table className="mt-4">

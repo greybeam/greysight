@@ -6,24 +6,17 @@ import { BarChart, Card, LineChart, Text } from "@tremor/react";
 import type { CustomTooltipProps, IntervalType } from "@tremor/react";
 
 import type { DollarPoint, RankedBarRow } from "../../lib/dashboard-contracts";
+import {
+  getSeriesColors,
+  PRIMARY_CHART_COLOR,
+  resolveChartColor,
+} from "../../lib/chart-colors";
 
 type DashboardGridColumns = 2 | 3 | 4;
 
 type ChartPoint = {
   date: string;
 } & Record<string, string | number>;
-
-export const CHART_PALETTE = [
-  "blue",
-  "cyan",
-  "indigo",
-  "violet",
-  "amber",
-  "emerald",
-  "rose",
-  "teal",
-] as const;
-export const PRIMARY_CHART_COLOR: string = CHART_PALETTE[0];
 
 function cx(...classes: Array<string | undefined>): string {
   return classes.filter(Boolean).join(" ");
@@ -119,7 +112,7 @@ export function RankedSpendBars({ rows }: { rows: RankedBarRow[] }) {
           <span className="truncate text-xs text-slate-600">{row.name}</span>
           <span className="h-2 rounded bg-slate-200">
             <span
-              className="block h-2 rounded bg-blue-600"
+              className="block h-2 rounded bg-chart-purple"
               style={{ width: `${row.barWidthPercent}%` }}
             />
           </span>
@@ -249,7 +242,7 @@ export function SpendBarChart({
     <BarChart
       categories={categories}
       className={cx("mt-4 w-full", heightClass)}
-      colors={categories.map((_, i) => CHART_PALETTE[i % CHART_PALETTE.length])}
+      colors={getSeriesColors(categories)}
       customTooltip={createChartTooltip(valueFormatter)}
       data={chartData}
       data-chart-library="tremor"
@@ -290,7 +283,7 @@ export function createChartTooltip(
                 <span className="flex items-center gap-1.5">
                   <span
                     className="h-2 w-2 rounded-full"
-                    style={{ backgroundColor: entry.color }}
+                    style={{ backgroundColor: resolveChartColor(entry.color) }}
                   />
                   {String(name ?? "")}
                 </span>

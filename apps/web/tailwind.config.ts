@@ -1,5 +1,7 @@
 import type { Config } from "tailwindcss";
 
+import { CHART_COLORS } from "./src/lib/chart-colors";
+
 const tremorChartColors = [
   "slate",
   "gray",
@@ -25,9 +27,17 @@ const tremorChartColors = [
   "rose",
 ] as const;
 
+const greybeamChartColorNames = Object.keys(CHART_COLORS);
+
 export const tremorChartColorSafelist = [
   {
     pattern: new RegExp(`^(stroke|fill|text)-(${tremorChartColors.join("|")})-500$`),
+  },
+  {
+    pattern: new RegExp(
+      `^(bg|stroke|fill|text|border|ring)-(${greybeamChartColorNames.join("|")})$`,
+    ),
+    variants: ["dark"],
   },
 ] satisfies NonNullable<Config["safelist"]>;
 
@@ -45,6 +55,7 @@ const config: Config = {
           500: "#1477b8",
           700: "#0c4c7c",
         },
+        ...CHART_COLORS,
       },
     },
   },
