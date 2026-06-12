@@ -19,6 +19,7 @@ type OrganizationIdGenerator = () => string;
 type OrgShellProps = {
   authClient?: BrowserAuthClient | null;
   authRequired?: boolean;
+  bypassModeLabel?: string;
   children: React.ReactNode;
   organizationIdGenerator?: OrganizationIdGenerator;
   onAccessTokenChange?: (accessToken: string | null) => void;
@@ -70,6 +71,7 @@ function getMembershipOrganizationIds(session: AuthSession | null): string[] {
 export default function OrgShell({
   authClient: providedAuthClient,
   authRequired = getAuthMode().authRequired,
+  bypassModeLabel = "Demo mode",
   children,
   organizationIdGenerator = createLocalOrganizationId,
   onAccessTokenChange,
@@ -139,7 +141,7 @@ export default function OrgShell({
     return (
       <div className="min-h-screen bg-slate-50">
         <div className="border-b border-amber-200 bg-amber-50 px-6 py-3 text-sm text-amber-900">
-          Demo mode
+          {bypassModeLabel}
         </div>
         {children}
       </div>

@@ -4,6 +4,7 @@ from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_STORAGE_PRICE_USD_PER_TB_MONTH = 23.0
+DEFAULT_ESTIMATED_CREDIT_PRICE_USD = 3.0
 
 
 class Settings(BaseSettings):
@@ -31,14 +32,25 @@ class Settings(BaseSettings):
         ge=0,
         validation_alias=AliasChoices("STORAGE_PRICE_USD_PER_TB_MONTH"),
     )
+    estimated_credit_price_usd: float = Field(
+        default=DEFAULT_ESTIMATED_CREDIT_PRICE_USD,
+        gt=0,
+        validation_alias=AliasChoices("ESTIMATED_CREDIT_PRICE_USD"),
+    )
     cors_allowed_origins: tuple[str, ...] = Field(
         default=("http://localhost:3000",),
         validation_alias=AliasChoices("GREYSIGHT_CORS_ALLOWED_ORIGINS"),
     )
 
-    @field_validator("storage_price_usd_per_tb_month", mode="before")
+    @field_validator(
+        "storage_price_usd_per_tb_month",
+        "estimated_credit_price_usd",
+        mode="before",
+    )
     @classmethod
-    def default_empty_storage_price(cls, value: object) -> object:
+    def default_empty_price(cls, value: object, info: object) -> object:
         if value == "":
+            if getattr(info, "field_name", "") == "estimated_credit_price_usd":
+                return DEFAULT_ESTIMATED_CREDIT_PRICE_USD
             return DEFAULT_STORAGE_PRICE_USD_PER_TB_MONTH
         return value

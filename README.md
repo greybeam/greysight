@@ -32,6 +32,21 @@ Snowflake credentials.
 - `supabase/migrations/`: Supabase schema, RLS policies, org memberships, audit events, and aggregate dataset tables.
 - `docs/`: setup, Snowflake, deployment, security, specs, and implementation plans.
 
+## Dashboard Architecture
+
+The dashboard renders prepared view models from the FastAPI backend. Snowflake
+or demo datasets are normalized on the API side, and
+`apps/api/app/services/dashboard_view_builder.py` owns analytics, date-window
+semantics, pricing, rankings, projections, and unsupported states. The Next.js
+app fetches, validates, caches, and renders that prepared `DashboardView`
+contract through `apps/web/src/lib/dashboard-contracts.ts`.
+
+When adding a chart, use existing `DashboardView` fields when possible. If the
+chart needs new derived numbers, add them to the backend view model and builder
+first, then mirror the contract and render the new graphic in `apps/web`. If it
+needs a new Snowflake source, add the approved SQL asset, registry entry, demo
+data, backend builder logic, frontend rendering, and tests together.
+
 ## Docs
 
 - Local development: `docs/local-development.md`

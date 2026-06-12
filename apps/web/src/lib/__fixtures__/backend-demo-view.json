@@ -1,0 +1,1054 @@
+{
+  "compute_spend": {
+    "compute_basis": "estimated",
+    "daily_series": [
+      {
+        "date": "2026-05-10",
+        "spend": 80.37,
+        "spend_label": "$80.37"
+      },
+      {
+        "date": "2026-05-11",
+        "spend": 82.8495,
+        "spend_label": "$82.85"
+      },
+      {
+        "date": "2026-05-12",
+        "spend": 85.32900000000001,
+        "spend_label": "$85.33"
+      },
+      {
+        "date": "2026-05-13",
+        "spend": 87.8085,
+        "spend_label": "$87.81"
+      },
+      {
+        "date": "2026-05-14",
+        "spend": 90.288,
+        "spend_label": "$90.29"
+      },
+      {
+        "date": "2026-05-15",
+        "spend": 92.76525,
+        "spend_label": "$92.77"
+      },
+      {
+        "date": "2026-05-16",
+        "spend": 95.24699999999999,
+        "spend_label": "$95.25"
+      },
+      {
+        "date": "2026-05-17",
+        "spend": 82.764,
+        "spend_label": "$82.76"
+      },
+      {
+        "date": "2026-05-18",
+        "spend": 85.2435,
+        "spend_label": "$85.24"
+      },
+      {
+        "date": "2026-05-19",
+        "spend": 87.723,
+        "spend_label": "$87.72"
+      },
+      {
+        "date": "2026-05-20",
+        "spend": 90.20025000000001,
+        "spend_label": "$90.20"
+      },
+      {
+        "date": "2026-05-21",
+        "spend": 92.68199999999999,
+        "spend_label": "$92.68"
+      },
+      {
+        "date": "2026-05-22",
+        "spend": 95.16149999999999,
+        "spend_label": "$95.16"
+      },
+      {
+        "date": "2026-05-23",
+        "spend": 97.641,
+        "spend_label": "$97.64"
+      },
+      {
+        "date": "2026-05-24",
+        "spend": 85.158,
+        "spend_label": "$85.16"
+      },
+      {
+        "date": "2026-05-25",
+        "spend": 87.63525,
+        "spend_label": "$87.64"
+      },
+      {
+        "date": "2026-05-26",
+        "spend": 90.117,
+        "spend_label": "$90.12"
+      },
+      {
+        "date": "2026-05-27",
+        "spend": 92.5965,
+        "spend_label": "$92.60"
+      },
+      {
+        "date": "2026-05-28",
+        "spend": 95.076,
+        "spend_label": "$95.08"
+      },
+      {
+        "date": "2026-05-29",
+        "spend": 97.55550000000001,
+        "spend_label": "$97.56"
+      },
+      {
+        "date": "2026-05-30",
+        "spend": 89.775,
+        "spend_label": "$89.78"
+      },
+      {
+        "date": "2026-05-31",
+        "spend": 77.29199999999999,
+        "spend_label": "$77.29"
+      },
+      {
+        "date": "2026-06-01",
+        "spend": 79.7715,
+        "spend_label": "$79.77"
+      },
+      {
+        "date": "2026-06-02",
+        "spend": 82.25099999999999,
+        "spend_label": "$82.25"
+      },
+      {
+        "date": "2026-06-03",
+        "spend": 84.7305,
+        "spend_label": "$84.73"
+      },
+      {
+        "date": "2026-06-04",
+        "spend": 87.21000000000001,
+        "spend_label": "$87.21"
+      },
+      {
+        "date": "2026-06-05",
+        "spend": 89.6895,
+        "spend_label": "$89.69"
+      },
+      {
+        "date": "2026-06-06",
+        "spend": 92.169,
+        "spend_label": "$92.17"
+      },
+      {
+        "date": "2026-06-07",
+        "spend": 79.68599999999999,
+        "spend_label": "$79.69"
+      },
+      {
+        "date": "2026-06-08",
+        "spend": 82.16550000000001,
+        "spend_label": "$82.17"
+      }
+    ],
+    "is_empty": false,
+    "ranked_users": [
+      {
+        "credits": 398.7759999999999,
+        "name": "ANALYST_A",
+        "spend": 897.2459999999999,
+        "spend_label": "$897.25"
+      },
+      {
+        "credits": 351.861,
+        "name": "DATA_ENGINEER",
+        "spend": 791.6872499999998,
+        "spend_label": "$791.69"
+      },
+      {
+        "credits": 258.03099999999995,
+        "name": "ANALYST_B",
+        "spend": 580.56975,
+        "spend_label": "$580.57"
+      },
+      {
+        "credits": 164.202,
+        "name": "AIRFLOW_SVC",
+        "spend": 369.45450000000005,
+        "spend_label": "$369.45"
+      }
+    ],
+    "ranked_warehouses": [
+      {
+        "credits": 586.435,
+        "name": "BI_WH",
+        "spend": 1319.4787500000002,
+        "spend_label": "$1,319.48"
+      },
+      {
+        "credits": 410.503,
+        "name": "ETL_WH",
+        "spend": 923.63175,
+        "spend_label": "$923.63"
+      },
+      {
+        "credits": 175.92900000000003,
+        "name": "ADHOC_WH",
+        "spend": 395.8402499999999,
+        "spend_label": "$395.84"
+      }
+    ],
+    "user_bars": [
+      {
+        "bar_width_percent": 100.0,
+        "credits": 398.7759999999999,
+        "name": "ANALYST_A",
+        "spend": 897.2459999999999,
+        "spend_label": "$897.25"
+      },
+      {
+        "bar_width_percent": 88.23524986458563,
+        "credits": 351.861,
+        "name": "DATA_ENGINEER",
+        "spend": 791.6872499999998,
+        "spend_label": "$791.69"
+      },
+      {
+        "bar_width_percent": 64.7057495937569,
+        "credits": 258.03099999999995,
+        "name": "ANALYST_B",
+        "spend": 580.56975,
+        "spend_label": "$580.57"
+      },
+      {
+        "bar_width_percent": 41.17650009027626,
+        "credits": 164.202,
+        "name": "AIRFLOW_SVC",
+        "spend": 369.45450000000005,
+        "spend_label": "$369.45"
+      }
+    ],
+    "warehouse_bars": [
+      {
+        "bar_width_percent": 100.0,
+        "credits": 586.435,
+        "name": "BI_WH",
+        "spend": 1319.4787500000002,
+        "spend_label": "$1,319.48"
+      },
+      {
+        "bar_width_percent": 69.99974421717667,
+        "credits": 410.503,
+        "name": "ETL_WH",
+        "spend": 923.63175,
+        "spend_label": "$923.63"
+      },
+      {
+        "bar_width_percent": 29.999744217176655,
+        "credits": 175.92900000000003,
+        "name": "ADHOC_WH",
+        "spend": 395.8402499999999,
+        "spend_label": "$395.84"
+      }
+    ]
+  },
+  "detail_tables": {
+    "services": [
+      {
+        "credits": 0.0,
+        "name": "WAREHOUSE_METERING",
+        "spend": 2638.9700000000007,
+        "spend_label": "$2,638.97"
+      },
+      {
+        "credits": 0.0,
+        "name": "CLOUD_SERVICES",
+        "spend": 277.78999999999996,
+        "spend_label": "$277.79"
+      },
+      {
+        "credits": 0.0,
+        "name": "AUTO_CLUSTERING",
+        "spend": 104.15000000000002,
+        "spend_label": "$104.15"
+      }
+    ],
+    "storage": [
+      {
+        "bytes": 4657824000000.0,
+        "monthly_spend": 116.4456,
+        "monthly_spend_label": "$116.45",
+        "name": "RAW"
+      },
+      {
+        "bytes": 2975832000000.0,
+        "monthly_spend": 74.3958,
+        "monthly_spend_label": "$74.40",
+        "name": "ANALYTICS"
+      },
+      {
+        "bytes": 1423224000000.0,
+        "monthly_spend": 35.580600000000004,
+        "monthly_spend_label": "$35.58",
+        "name": "APP"
+      }
+    ],
+    "users": [
+      {
+        "credits": 398.7759999999999,
+        "name": "ANALYST_A",
+        "spend": 897.2459999999999,
+        "spend_label": "$897.25",
+        "warehouse_name": "BI_WH"
+      },
+      {
+        "credits": 351.861,
+        "name": "DATA_ENGINEER",
+        "spend": 791.6872499999998,
+        "spend_label": "$791.69",
+        "warehouse_name": "ETL_WH"
+      },
+      {
+        "credits": 258.03099999999995,
+        "name": "ANALYST_B",
+        "spend": 580.56975,
+        "spend_label": "$580.57",
+        "warehouse_name": "ADHOC_WH"
+      },
+      {
+        "credits": 164.202,
+        "name": "AIRFLOW_SVC",
+        "spend": 369.45450000000005,
+        "spend_label": "$369.45",
+        "warehouse_name": "ETL_WH"
+      }
+    ],
+    "warehouses": [
+      {
+        "credits": 586.435,
+        "credits_compute": 586.435,
+        "credits_total": 633.3489999999999,
+        "name": "BI_WH",
+        "spend": 1319.4787500000002,
+        "spend_label": "$1,319.48"
+      },
+      {
+        "credits": 410.503,
+        "credits_compute": 410.503,
+        "credits_total": 443.342,
+        "name": "ETL_WH",
+        "spend": 923.63175,
+        "spend_label": "$923.63"
+      },
+      {
+        "credits": 175.92900000000003,
+        "credits_compute": 175.92900000000003,
+        "credits_total": 190.004,
+        "name": "ADHOC_WH",
+        "spend": 395.8402499999999,
+        "spend_label": "$395.84"
+      }
+    ]
+  },
+  "header": {
+    "account_locator": "DEMO123",
+    "currency": "USD",
+    "data_mode_label": "Demo",
+    "estimated_credit_price_label": "$2.25",
+    "freshness_label": "Demo data through Jun 8, 2026",
+    "storage_price_label": "$25.00",
+    "through_date": "2026-06-08",
+    "through_date_label": "Jun 8, 2026"
+  },
+  "projection_range": {
+    "end_date": "2026-06-08",
+    "start_date": "2026-05-10"
+  },
+  "range": {
+    "end_date": "2026-06-08",
+    "mode": "relative",
+    "start_date": "2026-05-10",
+    "window_days": 30
+  },
+  "run": {
+    "completed_at": "2026-06-10T00:00:00Z",
+    "created_at": null,
+    "error": null,
+    "error_code": null,
+    "id": "demo-run",
+    "organization_id": null,
+    "source": "demo",
+    "started_at": "2026-06-10T00:00:00Z",
+    "status": "completed",
+    "updated_at": null,
+    "user_safe_message": null,
+    "window_days": 100
+  },
+  "schema_version": 1,
+  "service_spend": {
+    "basis": "billed",
+    "daily_series": [
+      {
+        "date": "2026-05-10",
+        "values": {
+          "AUTO_CLUSTERING": 3.17,
+          "CLOUD_SERVICES": 8.46,
+          "WAREHOUSE_METERING": 80.37
+        }
+      },
+      {
+        "date": "2026-05-11",
+        "values": {
+          "AUTO_CLUSTERING": 3.27,
+          "CLOUD_SERVICES": 8.72,
+          "WAREHOUSE_METERING": 82.85
+        }
+      },
+      {
+        "date": "2026-05-12",
+        "values": {
+          "AUTO_CLUSTERING": 3.37,
+          "CLOUD_SERVICES": 8.98,
+          "WAREHOUSE_METERING": 85.33
+        }
+      },
+      {
+        "date": "2026-05-13",
+        "values": {
+          "AUTO_CLUSTERING": 3.46,
+          "CLOUD_SERVICES": 9.24,
+          "WAREHOUSE_METERING": 87.81
+        }
+      },
+      {
+        "date": "2026-05-14",
+        "values": {
+          "AUTO_CLUSTERING": 3.56,
+          "CLOUD_SERVICES": 9.5,
+          "WAREHOUSE_METERING": 90.29
+        }
+      },
+      {
+        "date": "2026-05-15",
+        "values": {
+          "AUTO_CLUSTERING": 3.66,
+          "CLOUD_SERVICES": 9.77,
+          "WAREHOUSE_METERING": 92.77
+        }
+      },
+      {
+        "date": "2026-05-16",
+        "values": {
+          "AUTO_CLUSTERING": 3.76,
+          "CLOUD_SERVICES": 10.03,
+          "WAREHOUSE_METERING": 95.25
+        }
+      },
+      {
+        "date": "2026-05-17",
+        "values": {
+          "AUTO_CLUSTERING": 3.27,
+          "CLOUD_SERVICES": 8.71,
+          "WAREHOUSE_METERING": 82.76
+        }
+      },
+      {
+        "date": "2026-05-18",
+        "values": {
+          "AUTO_CLUSTERING": 3.37,
+          "CLOUD_SERVICES": 8.97,
+          "WAREHOUSE_METERING": 85.24
+        }
+      },
+      {
+        "date": "2026-05-19",
+        "values": {
+          "AUTO_CLUSTERING": 3.46,
+          "CLOUD_SERVICES": 9.23,
+          "WAREHOUSE_METERING": 87.72
+        }
+      },
+      {
+        "date": "2026-05-20",
+        "values": {
+          "AUTO_CLUSTERING": 3.56,
+          "CLOUD_SERVICES": 9.49,
+          "WAREHOUSE_METERING": 90.2
+        }
+      },
+      {
+        "date": "2026-05-21",
+        "values": {
+          "AUTO_CLUSTERING": 3.66,
+          "CLOUD_SERVICES": 9.76,
+          "WAREHOUSE_METERING": 92.68
+        }
+      },
+      {
+        "date": "2026-05-22",
+        "values": {
+          "AUTO_CLUSTERING": 3.76,
+          "CLOUD_SERVICES": 10.02,
+          "WAREHOUSE_METERING": 95.16
+        }
+      },
+      {
+        "date": "2026-05-23",
+        "values": {
+          "AUTO_CLUSTERING": 3.85,
+          "CLOUD_SERVICES": 10.28,
+          "WAREHOUSE_METERING": 97.64
+        }
+      },
+      {
+        "date": "2026-05-24",
+        "values": {
+          "AUTO_CLUSTERING": 3.36,
+          "CLOUD_SERVICES": 8.96,
+          "WAREHOUSE_METERING": 85.16
+        }
+      },
+      {
+        "date": "2026-05-25",
+        "values": {
+          "AUTO_CLUSTERING": 3.46,
+          "CLOUD_SERVICES": 9.22,
+          "WAREHOUSE_METERING": 87.64
+        }
+      },
+      {
+        "date": "2026-05-26",
+        "values": {
+          "AUTO_CLUSTERING": 3.56,
+          "CLOUD_SERVICES": 9.49,
+          "WAREHOUSE_METERING": 90.12
+        }
+      },
+      {
+        "date": "2026-05-27",
+        "values": {
+          "AUTO_CLUSTERING": 3.65,
+          "CLOUD_SERVICES": 9.75,
+          "WAREHOUSE_METERING": 92.6
+        }
+      },
+      {
+        "date": "2026-05-28",
+        "values": {
+          "AUTO_CLUSTERING": 3.75,
+          "CLOUD_SERVICES": 10.01,
+          "WAREHOUSE_METERING": 95.08
+        }
+      },
+      {
+        "date": "2026-05-29",
+        "values": {
+          "AUTO_CLUSTERING": 3.85,
+          "CLOUD_SERVICES": 10.27,
+          "WAREHOUSE_METERING": 97.56
+        }
+      },
+      {
+        "date": "2026-05-30",
+        "values": {
+          "AUTO_CLUSTERING": 3.54,
+          "CLOUD_SERVICES": 9.45,
+          "WAREHOUSE_METERING": 89.77
+        }
+      },
+      {
+        "date": "2026-05-31",
+        "values": {
+          "AUTO_CLUSTERING": 3.05,
+          "CLOUD_SERVICES": 8.14,
+          "WAREHOUSE_METERING": 77.29
+        }
+      },
+      {
+        "date": "2026-06-01",
+        "values": {
+          "AUTO_CLUSTERING": 3.15,
+          "CLOUD_SERVICES": 8.4,
+          "WAREHOUSE_METERING": 79.77
+        }
+      },
+      {
+        "date": "2026-06-02",
+        "values": {
+          "AUTO_CLUSTERING": 3.25,
+          "CLOUD_SERVICES": 8.66,
+          "WAREHOUSE_METERING": 82.25
+        }
+      },
+      {
+        "date": "2026-06-03",
+        "values": {
+          "AUTO_CLUSTERING": 3.34,
+          "CLOUD_SERVICES": 8.92,
+          "WAREHOUSE_METERING": 84.73
+        }
+      },
+      {
+        "date": "2026-06-04",
+        "values": {
+          "AUTO_CLUSTERING": 3.44,
+          "CLOUD_SERVICES": 9.18,
+          "WAREHOUSE_METERING": 87.21
+        }
+      },
+      {
+        "date": "2026-06-05",
+        "values": {
+          "AUTO_CLUSTERING": 3.54,
+          "CLOUD_SERVICES": 9.44,
+          "WAREHOUSE_METERING": 89.69
+        }
+      },
+      {
+        "date": "2026-06-06",
+        "values": {
+          "AUTO_CLUSTERING": 3.64,
+          "CLOUD_SERVICES": 9.7,
+          "WAREHOUSE_METERING": 92.17
+        }
+      },
+      {
+        "date": "2026-06-07",
+        "values": {
+          "AUTO_CLUSTERING": 3.15,
+          "CLOUD_SERVICES": 8.39,
+          "WAREHOUSE_METERING": 79.69
+        }
+      },
+      {
+        "date": "2026-06-08",
+        "values": {
+          "AUTO_CLUSTERING": 3.24,
+          "CLOUD_SERVICES": 8.65,
+          "WAREHOUSE_METERING": 82.17
+        }
+      }
+    ],
+    "is_empty": false,
+    "ranked_services": [
+      {
+        "credits": 0.0,
+        "name": "WAREHOUSE_METERING",
+        "spend": 2638.9700000000007,
+        "spend_label": "$2,638.97"
+      },
+      {
+        "credits": 0.0,
+        "name": "CLOUD_SERVICES",
+        "spend": 277.78999999999996,
+        "spend_label": "$277.79"
+      },
+      {
+        "credits": 0.0,
+        "name": "AUTO_CLUSTERING",
+        "spend": 104.15000000000002,
+        "spend_label": "$104.15"
+      }
+    ],
+    "service_bars": [
+      {
+        "bar_width_percent": 100.0,
+        "credits": 0.0,
+        "name": "WAREHOUSE_METERING",
+        "spend": 2638.9700000000007,
+        "spend_label": "$2,638.97"
+      },
+      {
+        "bar_width_percent": 10.52645539737094,
+        "credits": 0.0,
+        "name": "CLOUD_SERVICES",
+        "spend": 277.78999999999996,
+        "spend_label": "$277.79"
+      },
+      {
+        "bar_width_percent": 3.946615535606695,
+        "credits": 0.0,
+        "name": "AUTO_CLUSTERING",
+        "spend": 104.15000000000002,
+        "spend_label": "$104.15"
+      }
+    ],
+    "service_names": [
+      "AUTO_CLUSTERING",
+      "CLOUD_SERVICES",
+      "WAREHOUSE_METERING"
+    ]
+  },
+  "storage_spend": {
+    "basis": "billed",
+    "daily_series": [
+      {
+        "date": "2026-05-10",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-05-11",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-05-12",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-05-13",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-05-14",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-05-15",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-05-16",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-05-17",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-05-18",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-05-19",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-05-20",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-05-21",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-05-22",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-05-23",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-05-24",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-05-25",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-05-26",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-05-27",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-05-28",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-05-29",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-05-30",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-05-31",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-06-01",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-06-02",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-06-03",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-06-04",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-06-05",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-06-06",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-06-07",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      },
+      {
+        "date": "2026-06-08",
+        "spend": 0.0,
+        "spend_label": "$0.00"
+      }
+    ],
+    "database_bars": [
+      {
+        "bar_width_percent": 100.0,
+        "credits": null,
+        "name": "RAW",
+        "spend": 116.4456,
+        "spend_label": "$116.45"
+      },
+      {
+        "bar_width_percent": 63.888888888888886,
+        "credits": null,
+        "name": "ANALYTICS",
+        "spend": 74.3958,
+        "spend_label": "$74.40"
+      },
+      {
+        "bar_width_percent": 30.555555555555557,
+        "credits": null,
+        "name": "APP",
+        "spend": 35.580600000000004,
+        "spend_label": "$35.58"
+      }
+    ],
+    "database_basis": "estimated",
+    "databases": [
+      {
+        "bytes": 4657824000000.0,
+        "monthly_spend": 116.4456,
+        "monthly_spend_label": "$116.45",
+        "name": "RAW"
+      },
+      {
+        "bytes": 2975832000000.0,
+        "monthly_spend": 74.3958,
+        "monthly_spend_label": "$74.40",
+        "name": "ANALYTICS"
+      },
+      {
+        "bytes": 1423224000000.0,
+        "monthly_spend": 35.580600000000004,
+        "monthly_spend_label": "$35.58",
+        "name": "APP"
+      }
+    ],
+    "is_empty": true
+  },
+  "total_spend": {
+    "average_daily": 100.69699999999999,
+    "average_daily_label": "$100.70",
+    "basis": "billed",
+    "daily_series": [
+      {
+        "date": "2026-05-10",
+        "spend": 92.00000000000001,
+        "spend_label": "$92.00"
+      },
+      {
+        "date": "2026-05-11",
+        "spend": 94.83999999999999,
+        "spend_label": "$94.84"
+      },
+      {
+        "date": "2026-05-12",
+        "spend": 97.68,
+        "spend_label": "$97.68"
+      },
+      {
+        "date": "2026-05-13",
+        "spend": 100.50999999999999,
+        "spend_label": "$100.51"
+      },
+      {
+        "date": "2026-05-14",
+        "spend": 103.35000000000001,
+        "spend_label": "$103.35"
+      },
+      {
+        "date": "2026-05-15",
+        "spend": 106.19999999999999,
+        "spend_label": "$106.20"
+      },
+      {
+        "date": "2026-05-16",
+        "spend": 109.04,
+        "spend_label": "$109.04"
+      },
+      {
+        "date": "2026-05-17",
+        "spend": 94.74,
+        "spend_label": "$94.74"
+      },
+      {
+        "date": "2026-05-18",
+        "spend": 97.58,
+        "spend_label": "$97.58"
+      },
+      {
+        "date": "2026-05-19",
+        "spend": 100.41,
+        "spend_label": "$100.41"
+      },
+      {
+        "date": "2026-05-20",
+        "spend": 103.25,
+        "spend_label": "$103.25"
+      },
+      {
+        "date": "2026-05-21",
+        "spend": 106.10000000000001,
+        "spend_label": "$106.10"
+      },
+      {
+        "date": "2026-05-22",
+        "spend": 108.94,
+        "spend_label": "$108.94"
+      },
+      {
+        "date": "2026-05-23",
+        "spend": 111.77,
+        "spend_label": "$111.77"
+      },
+      {
+        "date": "2026-05-24",
+        "spend": 97.48,
+        "spend_label": "$97.48"
+      },
+      {
+        "date": "2026-05-25",
+        "spend": 100.32,
+        "spend_label": "$100.32"
+      },
+      {
+        "date": "2026-05-26",
+        "spend": 103.17,
+        "spend_label": "$103.17"
+      },
+      {
+        "date": "2026-05-27",
+        "spend": 106.0,
+        "spend_label": "$106.00"
+      },
+      {
+        "date": "2026-05-28",
+        "spend": 108.84,
+        "spend_label": "$108.84"
+      },
+      {
+        "date": "2026-05-29",
+        "spend": 111.67999999999999,
+        "spend_label": "$111.68"
+      },
+      {
+        "date": "2026-05-30",
+        "spend": 102.76,
+        "spend_label": "$102.76"
+      },
+      {
+        "date": "2026-05-31",
+        "spend": 88.48,
+        "spend_label": "$88.48"
+      },
+      {
+        "date": "2026-06-01",
+        "spend": 91.32000000000001,
+        "spend_label": "$91.32"
+      },
+      {
+        "date": "2026-06-02",
+        "spend": 94.16,
+        "spend_label": "$94.16"
+      },
+      {
+        "date": "2026-06-03",
+        "spend": 96.99000000000001,
+        "spend_label": "$96.99"
+      },
+      {
+        "date": "2026-06-04",
+        "spend": 99.82999999999998,
+        "spend_label": "$99.83"
+      },
+      {
+        "date": "2026-06-05",
+        "spend": 102.67,
+        "spend_label": "$102.67"
+      },
+      {
+        "date": "2026-06-06",
+        "spend": 105.51,
+        "spend_label": "$105.51"
+      },
+      {
+        "date": "2026-06-07",
+        "spend": 91.23,
+        "spend_label": "$91.23"
+      },
+      {
+        "date": "2026-06-08",
+        "spend": 94.06,
+        "spend_label": "$94.06"
+      }
+    ],
+    "is_empty": false,
+    "projected_monthly": 3020.91,
+    "projected_monthly_label": "$3,020.91",
+    "projection_basis_label": "latest 30 days",
+    "top_driver": {
+      "credits": 0.0,
+      "name": "WAREHOUSE_METERING",
+      "spend": 2638.9700000000007,
+      "spend_label": "$2,638.97"
+    },
+    "total": 3020.91,
+    "total_label": "$3,020.91"
+  },
+  "unsupported": null
+}

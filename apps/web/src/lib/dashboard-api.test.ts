@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   fetchDashboardDatasets,
+  fetchDashboardView,
   fetchDemoDashboardDatasets,
+  fetchDemoDashboardView,
   pollDashboardRun,
   startDashboardRun,
 } from "./dashboard-api";
 import demoDashboardDatasets from "./demo-dashboard-data";
+import demoDashboardView from "./demo-dashboard-view";
 
 describe("dashboard-api", () => {
   afterEach(() => {
@@ -26,6 +29,46 @@ describe("dashboard-api", () => {
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/dashboard-runs/demo/datasets",
       expect.objectContaining({ cache: "no-store" }),
+    );
+  });
+
+  it("fetches demo prepared dashboard view", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify(demoDashboardView), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    const view = await fetchDemoDashboardView({ windowDays: 30 });
+
+    expect(view.header.dataModeLabel).toBe("Demo");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/dashboard-runs/demo/view?window_days=30",
+      expect.objectContaining({ cache: "no-store" }),
+    );
+  });
+
+  it("fetches run prepared view with bearer auth and custom range", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify(demoDashboardView), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await fetchDashboardView(
+      "run-123",
+      { startDate: "2026-06-01", endDate: "2026-06-08" },
+      { accessToken: "token-123" },
+    );
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "/api/dashboard-runs/run-123/view?start_date=2026-06-01&end_date=2026-06-08",
+    );
+    expect(new Headers(init.headers).get("authorization")).toBe(
+      "Bearer token-123",
     );
   });
 

@@ -24,6 +24,29 @@ sources:
     grain:
       - usage_date
       - database_name
+  - id: org_spend_daily
+    kind: snowflake_organization_usage
+    sql_path: sql/snowflake/org_spend_daily.sql
+    grain:
+      - usage_date
+      - service_type
+      - rating_type
+      - billing_type
+      - is_adjustment
+      - currency
+  - id: rate_sheet_daily
+    kind: snowflake_organization_usage
+    sql_path: sql/snowflake/rate_sheet_daily.sql
+    grain:
+      - usage_date
+      - service_type
+      - rating_type
+      - currency
+  - id: current_account
+    kind: snowflake_metadata
+    sql_path: sql/snowflake/current_account.sql
+    grain:
+      - account_locator
 
 derived_datasets:
   - id: account_spend_daily

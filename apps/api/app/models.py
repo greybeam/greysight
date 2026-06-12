@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 from uuid import UUID
 
@@ -12,15 +12,23 @@ DashboardRunStatus = Literal[
     "queued", "running", "completed", "failed", "expired", "deleted"
 ]
 DashboardRunCreateSource = Literal["snowflake"]
+SCHEMA_VERSION = 1
+DashboardDataMode = Literal["demo", "billed", "estimated"]
+UnsupportedReason = Literal["mixed_currency"]
 
 SAFE_DATASET_ROW_FIELDS: dict[str, frozenset[str]] = {
     "account_spend_daily": frozenset({"usage_date", "credits_used"}),
     "warehouse_spend_daily": frozenset(
-        {"usage_date", "warehouse_name", "credits_used"}
+        {"usage_date", "warehouse_name", "credits_used", "credits_used_compute"}
     ),
     "service_spend_daily": frozenset({"usage_date", "service_type", "credits_used"}),
     "query_compute_by_user_daily": frozenset(
-        {"usage_date", "user_name", "warehouse_name", "credits_used"}
+        {
+            "usage_date",
+            "user_name",
+            "warehouse_name",
+            "credits_attributed_compute",
+        }
     ),
     "database_storage_daily": frozenset(
         {
@@ -31,6 +39,21 @@ SAFE_DATASET_ROW_FIELDS: dict[str, frozenset[str]] = {
         }
     ),
     "top_warehouses_table": frozenset({"warehouse_name", "credits_used"}),
+    "org_spend_daily": frozenset(
+        {
+            "usage_date",
+            "service_type",
+            "rating_type",
+            "billing_type",
+            "is_adjustment",
+            "currency",
+            "spend",
+        }
+    ),
+    "rate_sheet_daily": frozenset(
+        {"usage_date", "service_type", "rating_type", "currency", "effective_rate"}
+    ),
+    "current_account": frozenset({"account_locator"}),
 }
 REQUIRED_DATASET_KEYS = frozenset(SAFE_DATASET_ROW_FIELDS)
 
@@ -89,10 +112,50 @@ class DashboardRunCreateRequest(BaseModel):
                         f"Dataset {dataset_key}[{row_index}] is invalid: "
                         + "; ".join(problems)
                     )
+                if "usage_date" in row:
+                    _validate_usage_date(dataset_key, row_index, row["usage_date"])
         return self
 
 
+def _validate_usage_date(dataset_key: str, row_index: int, value: Any) -> None:
+    if isinstance(value, date):
+        return
+    if isinstance(value, str):
+        try:
+            date.fromisoformat(value)
+        except ValueError:
+            raise ValueError(
+                f"Dataset {dataset_key}[{row_index}] has invalid usage_date: "
+                "expected ISO YYYY-MM-DD"
+            ) from None
+        return
+    raise ValueError(
+        f"Dataset {dataset_key}[{row_index}] has invalid usage_date: "
+        "expected ISO YYYY-MM-DD"
+    )
+
+
+class SourceAvailability(BaseModel):
+    available: bool
+    detail: str | None = None
+
+
+class DashboardDatasetMetadata(BaseModel):
+    data_mode: DashboardDataMode
+    account_locator: str | None
+    currency: str | None
+    billing_through_date: date | None
+    account_usage_through_date: date | None
+    estimated_credit_price_usd: float
+    storage_price_usd_per_tb_month: float
+    unsupported_reason: UnsupportedReason | None = None
+    organization_usage: SourceAvailability
+    account_usage: SourceAvailability
+
+
 class DashboardDatasetResponse(BaseModel):
+    schema_version: int = SCHEMA_VERSION
     run: DashboardRun
     summary: dict[str, Any]
     datasets: dict[str, list[dict[str, Any]]]
+    metadata: DashboardDatasetMetadata | None = None

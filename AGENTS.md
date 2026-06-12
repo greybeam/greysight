@@ -27,9 +27,17 @@ needed. Run shell commands through `rtk` when it is available.
 - **Dataset pipeline.** Every dashboard metric flows one path: approved
   read-only SQL in `sql/snowflake/` → registered as a source (or composed
   into a derived dataset) in `sql/dashboard_sources.yml` → computed in
-  `apps/api/app/services/cost_metrics.py` → fetched and rendered by
-  `apps/web` dashboard components. Demo mode serves the same dataset keys
-  from `apps/api/app/services/demo_data.py`.
+  `apps/api/app/services/cost_metrics.py` → prepared into a dashboard view by
+  `apps/api/app/services/dashboard_view_builder.py` → fetched, validated, and
+  rendered by `apps/web` dashboard components. Demo mode serves the same
+  dataset keys from `apps/api/app/services/demo_data.py`.
+- **Prepared dashboard views.** Backend code owns analytics, currency/storage
+  pricing, date-window semantics, rankings, projections, and unsupported-state
+  decisions. Frontend code owns API fetching, cache/prefetch behavior, view
+  contracts, and presentation. Do not add frontend-only analytics transforms;
+  if a chart needs new derived numbers, add them to the backend
+  `DashboardView` model/builder and mirror the contract in
+  `apps/web/src/lib/dashboard-contracts.ts`.
 - **Dataset key alignment.** Demo data, Snowflake metrics, and frontend
   dataset keys must stay in sync. A new dataset lands as one change touching
   SQL asset + registry entry + metrics + demo data + frontend + tests.
@@ -54,6 +62,7 @@ needed. Run shell commands through `rtk` when it is available.
 | Dashboard UI | `apps/web/src/app/`, `apps/web/src/components/dashboard/` | First screen routes to `/dashboard`; keep UI app-like, not marketing-first. |
 | API routes | `apps/api/app/routes/` | Mounted from `apps/api/app/main.py`; `dashboard_runs.py` is the main surface. |
 | Metric calculations | `apps/api/app/services/cost_metrics.py` | Dataset keys must match `demo_data.py` and the frontend. |
+| Prepared dashboard views | `apps/api/app/services/dashboard_view_builder.py`, `apps/api/app/services/dashboard_view_models.py`, `apps/web/src/lib/dashboard-contracts.ts` | Backend owns derived dashboard numbers; frontend renders the prepared contract. |
 | Demo fixtures | `apps/api/app/services/demo_data.py` | Same keys and shapes as live datasets. |
 | Snowflake source queries | `sql/snowflake/`, `sql/dashboard_sources.yml` | Execute only registry-approved read-only SQL assets. |
 | Supabase schema/RLS | `supabase/migrations/` | Preserve member read access and owner/admin-only sensitive mutations. |

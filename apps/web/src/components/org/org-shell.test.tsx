@@ -81,6 +81,17 @@ describe("OrgShell", () => {
     expect(createBrowserAuthClient).not.toHaveBeenCalled();
   });
 
+  it("renders a custom bypass mode label when auth is disabled", () => {
+    render(
+      <OrgShell authRequired={false} bypassModeLabel="Local Snowflake mode">
+        <p>Dashboard body</p>
+      </OrgShell>,
+    );
+
+    expect(screen.getByText("Local Snowflake mode")).toBeInTheDocument();
+    expect(screen.queryByText("Demo mode")).not.toBeInTheDocument();
+  });
+
   it("does not recreate the browser auth client on rerender", () => {
     const { rerender } = render(
       <OrgShell authRequired>

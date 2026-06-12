@@ -1,12 +1,46 @@
-from datetime import date, datetime, timezone
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from pydantic import BaseModel
 
+from app.models import SCHEMA_VERSION, DashboardDatasetMetadata, SourceAvailability
 from app.services.cost_metrics import (
     DashboardSummary,
     build_dashboard_summary,
     derive_account_spend_daily,
+)
+from app.services.dashboard_datasets import build_top_warehouses_table
+
+DEMO_FETCH_DAYS = 100
+DEMO_TODAY = date(2026, 6, 10)
+DEMO_BILLING_THROUGH = date(2026, 6, 8)
+DEMO_ACCOUNT_USAGE_THROUGH = DEMO_BILLING_THROUGH
+DEMO_ACCOUNT_LOCATOR = "DEMO123"
+DEMO_CREDIT_RATE_USD = 2.25
+DEMO_STORAGE_RATE_USD = 25.0
+
+_DEMO_SERVICES = (
+    ("WAREHOUSE_METERING", "COMPUTE", 38.0),
+    ("CLOUD_SERVICES", "COMPUTE", 4.0),
+    ("AUTO_CLUSTERING", "COMPUTE", 1.5),
+)
+_DEMO_WAREHOUSES = (
+    ("BI_WH", 0.50),
+    ("ETL_WH", 0.35),
+    ("ADHOC_WH", 0.15),
+)
+_DEMO_USERS = (
+    ("ANALYST_A", "BI_WH", 0.34),
+    ("ANALYST_B", "ADHOC_WH", 0.22),
+    ("DATA_ENGINEER", "ETL_WH", 0.30),
+    ("AIRFLOW_SVC", "ETL_WH", 0.14),
+)
+_DEMO_DATABASES = (
+    ("RAW", 3.6),
+    ("ANALYTICS", 2.3),
+    ("APP", 1.1),
 )
 
 
@@ -17,229 +51,198 @@ class DemoRun(BaseModel):
     window_days: int
     started_at: datetime
     completed_at: datetime
-    error: str | None = None
 
 
 class DashboardDatasetPayload(BaseModel):
+    schema_version: int
     run: DemoRun
     summary: DashboardSummary
     datasets: dict[str, list[dict[str, Any]]]
+    metadata: DashboardDatasetMetadata
 
 
 def build_demo_dashboard_dataset() -> DashboardDatasetPayload:
-    current_usage_date = date(2026, 6, 8)
-    service_spend_daily = [
-        {
-            "usage_date": date(2026, 6, 5),
-            "service_type": "WAREHOUSE_METERING",
-            "credits_used": 37.5,
-        },
-        {
-            "usage_date": date(2026, 6, 5),
-            "service_type": "CLOUD_SERVICES",
-            "credits_used": 4.0,
-        },
-        {
-            "usage_date": date(2026, 6, 6),
-            "service_type": "WAREHOUSE_METERING",
-            "credits_used": 39.0,
-        },
-        {
-            "usage_date": date(2026, 6, 6),
-            "service_type": "CLOUD_SERVICES",
-            "credits_used": 4.5,
-        },
-        {
-            "usage_date": date(2026, 6, 7),
-            "service_type": "WAREHOUSE_METERING",
-            "credits_used": 42.0,
-        },
-        {
-            "usage_date": date(2026, 6, 7),
-            "service_type": "CLOUD_SERVICES",
-            "credits_used": 5.0,
-        },
+    usage_dates = [
+        DEMO_BILLING_THROUGH - timedelta(days=day_offset)
+        for day_offset in reversed(range(DEMO_FETCH_DAYS))
     ]
-    warehouse_spend_daily = [
-        {
-            "usage_date": date(2026, 6, 5),
-            "warehouse_name": "BI_WH",
-            "credits_used": 18.0,
-        },
-        {
-            "usage_date": date(2026, 6, 5),
-            "warehouse_name": "ETL_WH",
-            "credits_used": 14.5,
-        },
-        {
-            "usage_date": date(2026, 6, 5),
-            "warehouse_name": "ADHOC_WH",
-            "credits_used": 5.0,
-        },
-        {
-            "usage_date": date(2026, 6, 6),
-            "warehouse_name": "BI_WH",
-            "credits_used": 19.0,
-        },
-        {
-            "usage_date": date(2026, 6, 6),
-            "warehouse_name": "ETL_WH",
-            "credits_used": 15.5,
-        },
-        {
-            "usage_date": date(2026, 6, 6),
-            "warehouse_name": "ADHOC_WH",
-            "credits_used": 4.5,
-        },
-        {
-            "usage_date": date(2026, 6, 7),
-            "warehouse_name": "BI_WH",
-            "credits_used": 21.0,
-        },
-        {
-            "usage_date": date(2026, 6, 7),
-            "warehouse_name": "ETL_WH",
-            "credits_used": 16.0,
-        },
-        {
-            "usage_date": date(2026, 6, 7),
-            "warehouse_name": "ADHOC_WH",
-            "credits_used": 5.0,
-        },
-    ]
-    database_storage_daily = [
-        {
-            "usage_date": date(2026, 6, 5),
-            "database_name": "RAW",
-            "average_database_bytes": 3_500_000_000_000,
-            "average_failsafe_bytes": 400_000_000_000,
-        },
-        {
-            "usage_date": date(2026, 6, 5),
-            "database_name": "ANALYTICS",
-            "average_database_bytes": 2_200_000_000_000,
-            "average_failsafe_bytes": 200_000_000_000,
-        },
-        {
-            "usage_date": date(2026, 6, 7),
-            "database_name": "RAW",
-            "average_database_bytes": 3_700_000_000_000,
-            "average_failsafe_bytes": 450_000_000_000,
-        },
-        {
-            "usage_date": date(2026, 6, 7),
-            "database_name": "ANALYTICS",
-            "average_database_bytes": 2_300_000_000_000,
-            "average_failsafe_bytes": 250_000_000_000,
-        },
-    ]
-
-    account_spend_daily = derive_account_spend_daily(
-        service_spend_daily,
-        current_usage_date=current_usage_date,
-    )
+    service_spend_daily = _build_service_spend_daily(usage_dates)
+    warehouse_spend_daily = _build_warehouse_spend_daily(usage_dates)
+    query_compute_by_user_daily = _build_query_compute_by_user_daily(usage_dates)
+    database_storage_daily = _build_database_storage_daily(usage_dates)
+    org_spend_daily = _build_org_spend_daily(service_spend_daily)
+    rate_sheet_daily = _build_rate_sheet_daily(usage_dates)
+    account_spend_daily = derive_account_spend_daily(service_spend_daily)
+    top_warehouses_table = build_top_warehouses_table(warehouse_spend_daily)
+    datasets = {
+        "account_spend_daily": _json_ready_rows(account_spend_daily),
+        "warehouse_spend_daily": _json_ready_rows(warehouse_spend_daily),
+        "service_spend_daily": _json_ready_rows(service_spend_daily),
+        "query_compute_by_user_daily": _json_ready_rows(query_compute_by_user_daily),
+        "database_storage_daily": _json_ready_rows(database_storage_daily),
+        "top_warehouses_table": top_warehouses_table,
+        "org_spend_daily": _json_ready_rows(org_spend_daily),
+        "rate_sheet_daily": _json_ready_rows(rate_sheet_daily),
+        "current_account": [{"account_locator": DEMO_ACCOUNT_LOCATOR}],
+    }
     summary = build_dashboard_summary(
         account_spend_daily=account_spend_daily,
         warehouse_spend_daily=warehouse_spend_daily,
         database_storage_daily=database_storage_daily,
-        current_usage_date=current_usage_date,
-        window_days=30,
-        storage_price_usd_per_tb_month=None,
+        current_usage_date=DEMO_BILLING_THROUGH,
+        window_days=DEMO_FETCH_DAYS,
+        storage_price_usd_per_tb_month=DEMO_STORAGE_RATE_USD,
+    )
+    metadata = DashboardDatasetMetadata(
+        data_mode="demo",
+        account_locator=DEMO_ACCOUNT_LOCATOR,
+        currency="USD",
+        billing_through_date=DEMO_BILLING_THROUGH,
+        account_usage_through_date=DEMO_ACCOUNT_USAGE_THROUGH,
+        estimated_credit_price_usd=DEMO_CREDIT_RATE_USD,
+        storage_price_usd_per_tb_month=DEMO_STORAGE_RATE_USD,
+        unsupported_reason=None,
+        organization_usage=SourceAvailability(available=True),
+        account_usage=SourceAvailability(available=True),
+    )
+    completed_at = datetime.combine(
+        DEMO_TODAY, datetime.min.time(), tzinfo=timezone.utc
     )
 
-    datasets = {
-        "account_spend_daily": _dump_rows(account_spend_daily),
-        "warehouse_spend_daily": _dump_rows(warehouse_spend_daily),
-        "service_spend_daily": _dump_rows(service_spend_daily),
-        "query_compute_by_user_daily": _dump_rows(_user_compute_rows()),
-        "database_storage_daily": _dump_rows(database_storage_daily),
-        "top_warehouses_table": _top_warehouse_rows(warehouse_spend_daily),
-    }
-
     return DashboardDatasetPayload(
+        schema_version=SCHEMA_VERSION,
         run=DemoRun(
             id="demo-run",
             status="completed",
             source="demo",
-            window_days=30,
-            started_at=datetime(2026, 6, 8, 0, 0, 0, tzinfo=timezone.utc),
-            completed_at=datetime(2026, 6, 8, 0, 0, 1, tzinfo=timezone.utc),
+            window_days=DEMO_FETCH_DAYS,
+            started_at=completed_at,
+            completed_at=completed_at,
         ),
         summary=summary,
         datasets=datasets,
+        metadata=metadata,
     )
 
 
-def _user_compute_rows() -> list[dict[str, Any]]:
-    return [
-        {
-            "usage_date": date(2026, 6, 5),
-            "user_name": "ANALYST_A",
-            "warehouse_name": "BI_WH",
-            "credits_used": 12.0,
-        },
-        {
-            "usage_date": date(2026, 6, 5),
-            "user_name": "ANALYST_B",
-            "warehouse_name": "ADHOC_WH",
-            "credits_used": 8.5,
-        },
-        {
-            "usage_date": date(2026, 6, 6),
-            "user_name": "ANALYST_A",
-            "warehouse_name": "BI_WH",
-            "credits_used": 13.0,
-        },
-        {
-            "usage_date": date(2026, 6, 6),
-            "user_name": "DATA_ENGINEER",
-            "warehouse_name": "ETL_WH",
-            "credits_used": 10.5,
-        },
-        {
-            "usage_date": date(2026, 6, 7),
-            "user_name": "DATA_ENGINEER",
-            "warehouse_name": "ETL_WH",
-            "credits_used": 14.0,
-        },
-        {
-            "usage_date": date(2026, 6, 7),
-            "user_name": "ANALYST_B",
-            "warehouse_name": "ADHOC_WH",
-            "credits_used": 9.0,
-        },
-    ]
-
-
-def _top_warehouse_rows(
-    warehouse_spend_daily: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    credits_by_warehouse: dict[str, float] = {}
-    for row in warehouse_spend_daily:
-        warehouse_name = str(row["warehouse_name"])
-        credits_by_warehouse[warehouse_name] = credits_by_warehouse.get(
-            warehouse_name, 0.0
-        ) + float(row["credits_used"])
-
-    return [
-        {"warehouse_name": warehouse_name, "credits_used": credits_used}
-        for warehouse_name, credits_used in sorted(
-            credits_by_warehouse.items(),
-            key=lambda item: (-item[1], item[0]),
-        )
-    ]
-
-
-def _dump_rows(rows: list[Any]) -> list[dict[str, Any]]:
-    dumped_rows: list[dict[str, Any]] = []
-    for row in rows:
-        if isinstance(row, BaseModel):
-            dumped_rows.append(row.model_dump(mode="json"))
-        else:
-            dumped_rows.append(
+def _build_service_spend_daily(usage_dates: list[date]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for index, usage_date in enumerate(usage_dates):
+        multiplier = _daily_multiplier(index)
+        for service_type, _rating_type, base_credits in _DEMO_SERVICES:
+            rows.append(
                 {
-                    key: value.isoformat() if isinstance(value, date) else value
-                    for key, value in row.items()
+                    "usage_date": usage_date,
+                    "service_type": service_type,
+                    "credits_used": round(base_credits * multiplier, 3),
                 }
             )
-    return dumped_rows
+    return rows
+
+
+def _build_warehouse_spend_daily(usage_dates: list[date]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for index, usage_date in enumerate(usage_dates):
+        total_compute = 38.0 * _daily_multiplier(index)
+        for warehouse_name, share in _DEMO_WAREHOUSES:
+            compute_credits = round(total_compute * share, 3)
+            rows.append(
+                {
+                    "usage_date": usage_date,
+                    "warehouse_name": warehouse_name,
+                    "credits_used": round(compute_credits * 1.08, 3),
+                    "credits_used_compute": compute_credits,
+                }
+            )
+    return rows
+
+
+def _build_query_compute_by_user_daily(usage_dates: list[date]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for index, usage_date in enumerate(usage_dates):
+        total_compute = 38.0 * _daily_multiplier(index)
+        for user_name, warehouse_name, share in _DEMO_USERS:
+            rows.append(
+                {
+                    "usage_date": usage_date,
+                    "user_name": user_name,
+                    "warehouse_name": warehouse_name,
+                    "credits_attributed_compute": round(total_compute * share, 3),
+                }
+            )
+    return rows
+
+
+def _build_database_storage_daily(usage_dates: list[date]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for index, usage_date in enumerate(usage_dates):
+        growth_factor = 1 + (index / 500)
+        for database_name, base_tb in _DEMO_DATABASES:
+            rows.append(
+                {
+                    "usage_date": usage_date,
+                    "database_name": database_name,
+                    "average_database_bytes": round(
+                        base_tb * growth_factor * 1_000_000_000_000
+                    ),
+                    "average_failsafe_bytes": round(
+                        base_tb * 0.08 * growth_factor * 1_000_000_000_000
+                    ),
+                }
+            )
+    return rows
+
+
+def _build_org_spend_daily(
+    service_spend_daily: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in service_spend_daily:
+        service_type = str(row["service_type"])
+        rating_type = "COMPUTE" if service_type != "STORAGE" else "STORAGE"
+        rows.append(
+            {
+                "usage_date": row["usage_date"],
+                "service_type": service_type,
+                "rating_type": rating_type,
+                "billing_type": "CONSUMPTION",
+                "is_adjustment": False,
+                "currency": "USD",
+                "spend": round(float(row["credits_used"]) * DEMO_CREDIT_RATE_USD, 2),
+            }
+        )
+    return rows
+
+
+def _build_rate_sheet_daily(usage_dates: list[date]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for usage_date in usage_dates:
+        for service_type, rating_type, _base_credits in _DEMO_SERVICES:
+            rows.append(
+                {
+                    "usage_date": usage_date,
+                    "service_type": service_type,
+                    "rating_type": rating_type,
+                    "currency": "USD",
+                    "effective_rate": DEMO_CREDIT_RATE_USD,
+                }
+            )
+    return rows
+
+
+def _daily_multiplier(index: int) -> float:
+    weekday_shape = (index % 7) * 0.025
+    month_shape = (index % 30) * 0.004
+    return round(0.9 + weekday_shape + month_shape, 4)
+
+
+def _json_ready_rows(rows: list[dict[str, Any] | BaseModel]) -> list[dict[str, Any]]:
+    return [
+        {
+            key: value.isoformat() if isinstance(value, date) else value
+            for key, value in (
+                row.model_dump().items() if isinstance(row, BaseModel) else row.items()
+            )
+        }
+        for row in rows
+    ]

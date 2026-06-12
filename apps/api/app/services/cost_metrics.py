@@ -20,6 +20,7 @@ class WarehouseSpendDaily(BaseModel):
     usage_date: date
     warehouse_name: str
     credits_used: float
+    credits_used_compute: float = 0.0
 
 
 class DatabaseStorageDaily(BaseModel):

@@ -10,6 +10,13 @@ import yaml
 _ROOT_PATH = Path(__file__).resolve().parents[4]
 _REGISTRY_PATH = _ROOT_PATH / "sql" / "dashboard_sources.yml"
 _SQL_ROOT = _ROOT_PATH / "sql"
+ALLOWED_SOURCE_KINDS = frozenset(
+    {
+        "snowflake_account_usage",
+        "snowflake_organization_usage",
+        "snowflake_metadata",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -64,6 +71,9 @@ def _load_sources(raw_sources: Any) -> dict[str, DashboardSource]:
             raise ValueError("Dashboard registry source entries must be mappings")
 
         source_id = _required_str(raw_source, "id")
+        kind = _required_str(raw_source, "kind")
+        if kind not in ALLOWED_SOURCE_KINDS:
+            raise ValueError(f"Dashboard source {source_id} has unknown kind: {kind}")
         sql_path = Path(_required_str(raw_source, "sql_path"))
         resolved_sql_path = (_ROOT_PATH / sql_path).resolve()
         if sql_path.is_absolute() or not resolved_sql_path.is_relative_to(_SQL_ROOT):
@@ -73,7 +83,7 @@ def _load_sources(raw_sources: Any) -> dict[str, DashboardSource]:
 
         sources[source_id] = DashboardSource(
             id=source_id,
-            kind=_required_str(raw_source, "kind"),
+            kind=kind,
             sql_path=sql_path,
             grain=_required_str_tuple(raw_source, "grain"),
             resolved_sql_path=resolved_sql_path,

@@ -3,7 +3,10 @@
 import { useState } from "react";
 
 import OrgShell, { type SelectedOrganization } from "../org/org-shell";
-import CostDashboard, { type CostDashboardRuntime } from "./cost-dashboard";
+import CostDashboard, {
+  type CostDashboardRuntime,
+  type DashboardModeLabel,
+} from "./cost-dashboard";
 
 type DashboardDataSource = "demo" | "snowflake";
 
@@ -42,15 +45,24 @@ export default function DashboardRuntimeShell({
         }
       : null;
   const runtime = authenticatedRuntime ?? localSnowflakeRuntime;
+  const modeLabel: DashboardModeLabel = authRequired
+    ? "Authenticated Snowflake"
+    : dataSource === "snowflake"
+      ? "Local Snowflake"
+      : "Demo";
+  const bypassModeLabel =
+    dataSource === "snowflake" ? "Local Snowflake mode" : "Demo mode";
 
   return (
     <OrgShell
       authRequired={authRequired}
+      bypassModeLabel={bypassModeLabel}
       onAccessTokenChange={setAccessToken}
       onOrganizationChange={setOrganization}
     >
       <CostDashboard
         demoMode={!authRequired && dataSource !== "snowflake"}
+        modeLabel={modeLabel}
         runtime={runtime}
       />
     </OrgShell>

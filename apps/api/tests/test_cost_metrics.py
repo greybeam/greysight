@@ -7,6 +7,7 @@ from app.services.cost_metrics import (
     build_dashboard_summary,
     DatabaseStorageDaily,
     derive_account_spend_daily,
+    WarehouseSpendDaily,
 )
 
 
@@ -172,6 +173,31 @@ def test_database_storage_daily_accepts_fractional_average_bytes() -> None:
 
     assert row.average_database_bytes == 1.5
     assert row.average_failsafe_bytes == 0.25
+
+
+def test_warehouse_spend_daily_accepts_credits_used_compute() -> None:
+    row = WarehouseSpendDaily.model_validate(
+        {
+            "usage_date": date(2026, 6, 5),
+            "warehouse_name": "BI_WH",
+            "credits_used": 10.0,
+            "credits_used_compute": 9.2,
+        }
+    )
+
+    assert row.credits_used_compute == 9.2
+
+
+def test_warehouse_spend_daily_defaults_credits_used_compute_to_zero() -> None:
+    row = WarehouseSpendDaily.model_validate(
+        {
+            "usage_date": date(2026, 6, 5),
+            "warehouse_name": "BI_WH",
+            "credits_used": 10.0,
+        }
+    )
+
+    assert row.credits_used_compute == 0.0
 
 
 def test_build_dashboard_summary_uses_float_storage_bytes_and_cost() -> None:
