@@ -39,6 +39,7 @@ describe("parseDashboardDatasets", () => {
     expect(parsed.datasets.service_spend_daily.length).toBeGreaterThan(0);
     expect(parsed.datasets.org_spend_daily.length).toBeGreaterThan(0);
     expect(parsed.datasets.rate_sheet_daily.length).toBeGreaterThan(0);
+    expect(parsed.datasets.capacity_balance_daily).toHaveLength(100);
     expect(parsed.datasets.current_account).toEqual([
       { account_locator: "DEMO123" },
     ]);
@@ -55,6 +56,13 @@ describe("parseDashboardDatasets", () => {
         is_adjustment: false,
         rating_type: expect.any(String),
         spend: expect.any(Number),
+      }),
+    );
+    expect(parsed.datasets.capacity_balance_daily[0]).toEqual(
+      expect.objectContaining({
+        balance: expect.any(Number),
+        currency: "USD",
+        usage_date: expect.any(String),
       }),
     );
   });
@@ -221,6 +229,19 @@ describe("parseDashboardView", () => {
       storage_price_label: "$25.00 / TB-month",
     },
     unsupported: null,
+    capacity_balance: {
+      current_balance: 11875.25,
+      current_balance_label: "$11,875.25",
+      current_balance_date: "2026-06-08",
+      daily_series: [
+        {
+          date: "2026-06-08",
+          balance: 11875.25,
+          balance_label: "$11,875.25",
+        },
+      ],
+      is_empty: false,
+    },
     total_spend: {
       basis: "billed",
       total: 123.45,
@@ -307,6 +328,12 @@ describe("parseDashboardView", () => {
       spend: 123.45,
       spendLabel: "$123.45",
     });
+    expect(parsed.capacityBalance.currentBalanceLabel).toBe("$11,875.25");
+    expect(parsed.capacityBalance.dailySeries[0]).toEqual({
+      date: "2026-06-08",
+      balance: 11875.25,
+      balanceLabel: "$11,875.25",
+    });
     expect(parsed.serviceSpend.dailySeries[0]).toEqual({
       date: "2026-06-08",
       values: { CLOUD_SERVICES: 123.45 },
@@ -314,6 +341,21 @@ describe("parseDashboardView", () => {
     expect(parsed.detailTables.warehouses[0]?.creditsCompute).toBe(3);
     expect(parsed.detailTables.users[0]?.warehouseName).toBe("COMPUTE_WH");
     expect(parsed.detailTables.storage[0]?.monthlySpendLabel).toBe("$0.01");
+  });
+
+  it("defaults missing capacity balance on older prepared dashboard views", () => {
+    const legacyPayload: Record<string, unknown> = { ...preparedViewPayload };
+    delete legacyPayload.capacity_balance;
+
+    const parsed = parseDashboardView(legacyPayload);
+
+    expect(parsed.capacityBalance).toEqual({
+      currentBalance: 0,
+      currentBalanceLabel: "",
+      currentBalanceDate: null,
+      dailySeries: [],
+      isEmpty: true,
+    });
   });
 
   it("rejects malformed prepared dashboard view responses", () => {

@@ -23,6 +23,7 @@ EXPECTED_SOURCE_SQL = {
     "database_storage_daily": Path("sql/snowflake/database_storage_daily.sql"),
     "org_spend_daily": Path("sql/snowflake/org_spend_daily.sql"),
     "rate_sheet_daily": Path("sql/snowflake/rate_sheet_daily.sql"),
+    "capacity_balance_daily": Path("sql/snowflake/capacity_balance_daily.sql"),
     "current_account": Path("sql/snowflake/current_account.sql"),
 }
 
@@ -334,6 +335,13 @@ def test_registry_includes_organization_usage_and_metadata_sources() -> None:
     assert rate_sheet.kind == "snowflake_organization_usage"
     assert "rate_sheet_daily" in rate_sheet.sql.lower()
     assert "%(account_locator)s" in rate_sheet.sql
+
+    capacity_balance = registry.sources["capacity_balance_daily"]
+    assert capacity_balance.kind == "snowflake_organization_usage"
+    assert "remaining_balance_daily" in capacity_balance.sql.lower()
+    assert "capacity_balance" in capacity_balance.sql.lower()
+    assert "rollover_balance" in capacity_balance.sql.lower()
+    assert "%(window_days)s" in capacity_balance.sql
 
     current_account = registry.sources["current_account"]
     assert current_account.kind == "snowflake_metadata"

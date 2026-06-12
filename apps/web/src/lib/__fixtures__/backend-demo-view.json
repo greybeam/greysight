@@ -1,4 +1,162 @@
 {
+  "capacity_balance": {
+    "current_balance": 64940.92,
+    "current_balance_date": "2026-06-08",
+    "current_balance_label": "$64,940.92",
+    "daily_series": [
+      {
+        "balance": 67869.83,
+        "balance_label": "$67,869.83",
+        "date": "2026-05-10"
+      },
+      {
+        "balance": 67774.99,
+        "balance_label": "$67,774.99",
+        "date": "2026-05-11"
+      },
+      {
+        "balance": 67677.31,
+        "balance_label": "$67,677.31",
+        "date": "2026-05-12"
+      },
+      {
+        "balance": 67576.8,
+        "balance_label": "$67,576.80",
+        "date": "2026-05-13"
+      },
+      {
+        "balance": 67473.45,
+        "balance_label": "$67,473.45",
+        "date": "2026-05-14"
+      },
+      {
+        "balance": 67367.25,
+        "balance_label": "$67,367.25",
+        "date": "2026-05-15"
+      },
+      {
+        "balance": 67258.21,
+        "balance_label": "$67,258.21",
+        "date": "2026-05-16"
+      },
+      {
+        "balance": 67163.47,
+        "balance_label": "$67,163.47",
+        "date": "2026-05-17"
+      },
+      {
+        "balance": 67065.89,
+        "balance_label": "$67,065.89",
+        "date": "2026-05-18"
+      },
+      {
+        "balance": 66965.48,
+        "balance_label": "$66,965.48",
+        "date": "2026-05-19"
+      },
+      {
+        "balance": 66862.23,
+        "balance_label": "$66,862.23",
+        "date": "2026-05-20"
+      },
+      {
+        "balance": 66756.13,
+        "balance_label": "$66,756.13",
+        "date": "2026-05-21"
+      },
+      {
+        "balance": 66647.19,
+        "balance_label": "$66,647.19",
+        "date": "2026-05-22"
+      },
+      {
+        "balance": 66535.42,
+        "balance_label": "$66,535.42",
+        "date": "2026-05-23"
+      },
+      {
+        "balance": 66437.94,
+        "balance_label": "$66,437.94",
+        "date": "2026-05-24"
+      },
+      {
+        "balance": 66337.62,
+        "balance_label": "$66,337.62",
+        "date": "2026-05-25"
+      },
+      {
+        "balance": 66234.45,
+        "balance_label": "$66,234.45",
+        "date": "2026-05-26"
+      },
+      {
+        "balance": 66128.45,
+        "balance_label": "$66,128.45",
+        "date": "2026-05-27"
+      },
+      {
+        "balance": 66019.61,
+        "balance_label": "$66,019.61",
+        "date": "2026-05-28"
+      },
+      {
+        "balance": 65907.93,
+        "balance_label": "$65,907.93",
+        "date": "2026-05-29"
+      },
+      {
+        "balance": 65805.17,
+        "balance_label": "$65,805.17",
+        "date": "2026-05-30"
+      },
+      {
+        "balance": 65716.69,
+        "balance_label": "$65,716.69",
+        "date": "2026-05-31"
+      },
+      {
+        "balance": 65625.37,
+        "balance_label": "$65,625.37",
+        "date": "2026-06-01"
+      },
+      {
+        "balance": 65531.21,
+        "balance_label": "$65,531.21",
+        "date": "2026-06-02"
+      },
+      {
+        "balance": 65434.22,
+        "balance_label": "$65,434.22",
+        "date": "2026-06-03"
+      },
+      {
+        "balance": 65334.39,
+        "balance_label": "$65,334.39",
+        "date": "2026-06-04"
+      },
+      {
+        "balance": 65231.72,
+        "balance_label": "$65,231.72",
+        "date": "2026-06-05"
+      },
+      {
+        "balance": 65126.21,
+        "balance_label": "$65,126.21",
+        "date": "2026-06-06"
+      },
+      {
+        "balance": 65034.98,
+        "balance_label": "$65,034.98",
+        "date": "2026-06-07"
+      },
+      {
+        "balance": 64940.92,
+        "balance_label": "$64,940.92",
+        "date": "2026-06-08"
+      }
+    ],
+    "is_empty": false
+  },
   "compute_spend": {
     "compute_basis": "estimated",
     "daily_series": [

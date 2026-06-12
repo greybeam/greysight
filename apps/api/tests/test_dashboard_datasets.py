@@ -79,12 +79,20 @@ def _org_rows() -> dict[str, list[dict[str, Any]]]:
                 "effective_rate": 3.0,
             }
         ],
+        "capacity_balance_daily": [
+            {
+                "usage_date": date(2026, 6, 5),
+                "currency": "USD",
+                "balance": 15_000.0,
+            }
+        ],
     }
 
 
 def _fake_execute(
     *,
     org_fails: bool = False,
+    capacity_fails: bool = False,
     account_fails: bool = False,
     org_rows: dict[str, list[dict[str, Any]]] | None = None,
     account_rows: dict[str, list[dict[str, Any]]] | None = None,
@@ -98,6 +106,14 @@ def _fake_execute(
         if "current_account()" in lowered:
             assert bind_params == {}
             return [{"account_locator": account_locator}]
+        if "remaining_balance_daily" in lowered:
+            assert bind_params == {
+                "window_days": FETCH_WINDOW_DAYS,
+                "account_locator": account_locator,
+            }
+            if capacity_fails:
+                raise SnowflakeQueryError("capacity balance unavailable")
+            return org_datasets["capacity_balance_daily"]
         if "organization_usage" in lowered:
             assert bind_params == {
                 "window_days": FETCH_WINDOW_DAYS,
@@ -148,10 +164,24 @@ def test_builds_billed_dashboard_data_with_metadata_and_bounded_rows() -> None:
     assert data.datasets["account_spend_daily"] == [
         {"usage_date": "2026-06-05", "credits_used": 10.0}
     ]
+    assert data.datasets["capacity_balance_daily"] == [
+        {"usage_date": "2026-06-05", "currency": "USD", "balance": 15000}
+    ]
     assert data.datasets["top_warehouses_table"] == [
         {"warehouse_name": "LOAD_WH", "credits_used": 8.0}
     ]
     assert len(data.datasets["query_compute_by_user_daily"]) == TOP_USER_COUNT + 1
+
+
+def test_capacity_balance_failure_does_not_drop_billed_org_usage() -> None:
+    data = build_snowflake_dashboard_data(
+        Settings(), execute=_fake_execute(capacity_fails=True)
+    )
+
+    assert data.metadata.data_mode == "billed"
+    assert data.datasets["org_spend_daily"]
+    assert data.datasets["rate_sheet_daily"]
+    assert data.datasets["capacity_balance_daily"] == []
 
 
 def test_normalizes_decimal_snowflake_numbers_for_json_payloads() -> None:

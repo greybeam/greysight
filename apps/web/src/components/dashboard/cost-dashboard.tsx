@@ -28,9 +28,9 @@ import RunStatus from "./run-status";
 import SectionEmptyState from "./section-empty-state";
 import {
   ComputeSpendSection,
+  OverviewSection,
   ServiceSpendSection,
   StorageSpendSection,
-  TotalSpendSection,
 } from "./spend-sections";
 
 export type CostDashboardRuntime = {
@@ -404,7 +404,7 @@ function CostDashboardContent({
     modeLabel ?? (shouldUseDemo ? "Demo" : "Local Snowflake");
 
   return (
-    <main className="min-h-screen bg-slate-50">
+    <main className="dark min-h-screen bg-canvas [color-scheme:dark]">
       <DashboardHeader
         header={viewModel?.header ?? null}
         modeLabel={resolvedModeLabel}
@@ -435,9 +435,10 @@ function CostDashboardContent({
                 onEndDateChange={setEndDate}
                 onApplyDateRange={handleCustomRangeApply}
               />
-              <TotalSpendSection
+              <OverviewSection
+                capacityBalance={viewModel.capacityBalance}
                 currency={viewModel.header.currency}
-                viewModel={viewModel.totalSpend}
+                totalSpend={viewModel.totalSpend}
               />
               <ComputeSpendSection
                 currency={viewModel.header.currency}
@@ -462,7 +463,7 @@ function CostDashboardContent({
             {[0, 1, 2].map((placeholder) => (
               <div
                 key={placeholder}
-                className="h-40 animate-pulse rounded-lg border border-slate-200 bg-white"
+                className="h-40 animate-pulse rounded-lg border border-hairline bg-surface"
               />
             ))}
           </section>

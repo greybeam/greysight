@@ -86,6 +86,7 @@ def test_org_dashboard_run_lifecycle_records_sanitized_audit_events() -> None:
         "window_days": 30,
         "dataset_keys": [
             "account_spend_daily",
+            "capacity_balance_daily",
             "current_account",
             "database_storage_daily",
             "org_spend_daily",
@@ -100,6 +101,7 @@ def test_org_dashboard_run_lifecycle_records_sanitized_audit_events() -> None:
         "run_id": run_id,
         "dataset_keys": [
             "account_spend_daily",
+            "capacity_balance_daily",
             "current_account",
             "database_storage_daily",
             "org_spend_daily",

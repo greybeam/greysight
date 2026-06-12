@@ -50,6 +50,11 @@ def test_demo_dashboard_dataset_matches_v0_contract() -> None:
     )
     assert payload.datasets["org_spend_daily"]
     assert payload.datasets["rate_sheet_daily"]
+    assert payload.datasets["capacity_balance_daily"]
+    assert all(
+        row["currency"] == "USD" and row["balance"] > 0
+        for row in payload.datasets["capacity_balance_daily"]
+    )
 
 
 def test_demo_usage_date_datasets_cover_100_days() -> None:

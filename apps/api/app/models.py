@@ -53,6 +53,7 @@ SAFE_DATASET_ROW_FIELDS: dict[str, frozenset[str]] = {
     "rate_sheet_daily": frozenset(
         {"usage_date", "service_type", "rating_type", "currency", "effective_rate"}
     ),
+    "capacity_balance_daily": frozenset({"usage_date", "currency", "balance"}),
     "current_account": frozenset({"account_locator"}),
 }
 REQUIRED_DATASET_KEYS = frozenset(SAFE_DATASET_ROW_FIELDS)

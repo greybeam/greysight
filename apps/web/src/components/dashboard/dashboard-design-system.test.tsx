@@ -3,6 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  CapacityBalanceCard,
   createChartTooltip,
   createCurrencyTickFormatter,
   formatChartDateLabel,
@@ -60,6 +61,30 @@ describe("formatChartDateLabel", () => {
   });
 });
 
+describe("CapacityBalanceCard", () => {
+  it("renders the KPI with the dark dashboard metric color", () => {
+    render(
+      <CapacityBalanceCard
+        ariaLabel="Capacity balance summary"
+        chartTestId="capacity-balance-chart"
+        currency="USD"
+        data={[
+          {
+            date: "2026-06-11",
+            balance: 12345,
+            balanceLabel: "$12,345.00",
+          },
+        ]}
+        label="Current Balance"
+        value="$12,345.00"
+        testId="capacity-balance-card"
+      />,
+    );
+
+    expect(screen.getByText("$12,345.00")).toHaveClass("text-slate-50");
+  });
+});
+
 describe("createChartTooltip", () => {
   const usdFormatter = createCurrencyTickFormatter("USD");
   const sampleProps: CustomTooltipProps = {
@@ -84,7 +109,7 @@ describe("createChartTooltip", () => {
     expect(screen.getByText(usdFormatter(12.5))).toBeInTheDocument();
 
     const container = screen.getByText("Jun 09").parentElement;
-    expect(container).toHaveClass("bg-white");
+    expect(container).toHaveClass("bg-surface");
   });
 
   it("renders nothing when inactive", () => {

@@ -23,6 +23,7 @@ from app.services.snowflake_client import (
 
 FETCH_WINDOW_DAYS = 100
 _ACCOUNT_LOCATOR_PATTERN = re.compile(r"^[A-Za-z0-9_]{1,64}$")
+OPTIONAL_ORG_SOURCE_IDS = frozenset({"capacity_balance_daily"})
 
 ExecuteFn = Callable[[str, dict[str, Any]], list[dict[str, Any]]]
 
@@ -45,7 +46,17 @@ def build_snowflake_dashboard_data(
     execute_source = execute or execute_source_query
     registry = load_dashboard_registry()
     account_sources = _sources_by_kind(registry.sources, "snowflake_account_usage")
-    org_sources = _sources_by_kind(registry.sources, "snowflake_organization_usage")
+    all_org_sources = _sources_by_kind(registry.sources, "snowflake_organization_usage")
+    optional_org_sources = {
+        key: source
+        for key, source in all_org_sources.items()
+        if key in OPTIONAL_ORG_SOURCE_IDS
+    }
+    org_sources = {
+        key: source
+        for key, source in all_org_sources.items()
+        if key not in OPTIONAL_ORG_SOURCE_IDS
+    }
 
     account_locator, locator_error = _derive_account_locator(
         registry.sources["current_account"], execute_source
@@ -61,6 +72,14 @@ def build_snowflake_dashboard_data(
         skip=account_locator is None,
         skip_detail=locator_error,
         unavailable_detail="Could not query Snowflake Organization Usage data.",
+    )
+    capacity_datasets, _capacity_availability = _fetch_source_group(
+        optional_org_sources,
+        execute_source,
+        bind_params=org_bind_params,
+        skip=account_locator is None,
+        skip_detail=locator_error,
+        unavailable_detail="Could not query Snowflake capacity balance data.",
     )
     account_datasets, account_availability = _fetch_source_group(
         account_sources,
@@ -94,6 +113,7 @@ def build_snowflake_dashboard_data(
     datasets = {
         **account_datasets,
         **org_datasets,
+        **capacity_datasets,
         "current_account": current_account,
     }
     metadata = _build_metadata(

@@ -30,6 +30,12 @@ class DollarPoint(BaseModel):
     spend_label: str
 
 
+class BalancePoint(BaseModel):
+    date: str
+    balance: float
+    balance_label: str
+
+
 class ServicePoint(BaseModel):
     date: str
     values: dict[str, float]
@@ -68,6 +74,14 @@ class TotalSpendViewModel(BaseModel):
     projection_basis_label: str
     daily_series: list[DollarPoint]
     top_driver: RankedSpendRow | None
+    is_empty: bool
+
+
+class CapacityBalanceViewModel(BaseModel):
+    current_balance: float
+    current_balance_label: str
+    current_balance_date: str | None
+    daily_series: list[BalancePoint]
     is_empty: bool
 
 
@@ -134,6 +148,7 @@ class DashboardViewResponse(BaseModel):
     projection_range: DashboardProjectionRange
     header: HeaderViewModel
     unsupported: UnsupportedViewModel | None
+    capacity_balance: CapacityBalanceViewModel
     total_spend: TotalSpendViewModel
     compute_spend: ComputeSpendViewModel
     storage_spend: StorageSpendViewModel

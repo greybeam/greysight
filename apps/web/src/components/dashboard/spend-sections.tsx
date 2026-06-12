@@ -1,6 +1,7 @@
 "use client";
 
 import type {
+  CapacityBalanceViewModel,
   ComputeSpendViewModel,
   ServicePoint,
   ServiceSpendViewModel,
@@ -8,6 +9,7 @@ import type {
   TotalSpendViewModel,
 } from "../../lib/dashboard-contracts";
 import {
+  CapacityBalanceCard,
   DashboardGrid,
   DashboardPanel,
   DashboardSection,
@@ -29,6 +31,60 @@ export function flattenServiceDailySeries(
     ...point.values,
     date: point.date,
   }));
+}
+
+export function OverviewSection({
+  capacityBalance,
+  currency,
+  totalSpend,
+}: {
+  capacityBalance?: CapacityBalanceViewModel | null;
+  currency: string;
+  totalSpend: TotalSpendViewModel;
+}) {
+  return (
+    <DashboardSection
+      ariaLabel="Overview"
+      testId="dashboard-section-overview"
+      title="Overview"
+    >
+      <DashboardGrid columns={2} testId="dashboard-grid-overview">
+        {!capacityBalance || capacityBalance.isEmpty ? (
+          <DashboardPanel
+            ariaLabel="Capacity balance summary"
+            title="Current Balance"
+          >
+            <SectionEmptyState message="No capacity balance data" />
+          </DashboardPanel>
+        ) : (
+          <CapacityBalanceCard
+            ariaLabel="Capacity balance summary"
+            currency={currency}
+            label="Current Balance"
+            value={capacityBalance.currentBalanceLabel}
+            data={capacityBalance.dailySeries}
+            testId="capacity-balance-card"
+            chartTestId="capacity-balance-tremor-line-chart"
+          />
+        )}
+        {totalSpend.isEmpty ? (
+          <DashboardPanel ariaLabel="Total spend summary" title="Total Spend">
+            <SectionEmptyState message="No total spend data" />
+          </DashboardPanel>
+        ) : (
+          <TotalSpendCard
+            ariaLabel="Total spend summary"
+            currency={currency}
+            label="Total Spend in Period"
+            value={totalSpend.totalLabel}
+            data={totalSpend.dailySeries}
+            testId="total-spend-card"
+            chartTestId="total-spend-tremor-line-chart"
+          />
+        )}
+      </DashboardGrid>
+    </DashboardSection>
+  );
 }
 
 export function TotalSpendSection({

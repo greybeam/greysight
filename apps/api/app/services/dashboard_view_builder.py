@@ -8,6 +8,8 @@ from typing import Any, Callable
 
 from app.models import DashboardDatasetMetadata, DashboardRun
 from app.services.dashboard_view_models import (
+    BalancePoint,
+    CapacityBalanceViewModel,
     ComputeSpendViewModel,
     DashboardProjectionRange,
     DashboardViewRange,
@@ -339,6 +341,11 @@ def _build_dashboard_view_for_ranges(
         view_range.start_date,
         view_range.end_date,
     )
+    capacity_balance_rows = _rows_in_window(
+        _dataset_rows(datasets, "capacity_balance_daily"),
+        view_range.start_date,
+        view_range.end_date,
+    )
     billed_storage_rows = [row for row in billed_rows if _is_storage_spend_row(row)]
     dates = _date_range(view_range.start_date, view_range.end_date)
     projection_dates = _date_range(
@@ -405,6 +412,10 @@ def _build_dashboard_view_for_ranges(
         currency=currency,
         day_count=len(dates),
     )
+    capacity_balance = _build_capacity_balance(
+        rows=capacity_balance_rows,
+        currency=currency,
+    )
 
     return DashboardViewResponse(
         run=run,
@@ -412,6 +423,7 @@ def _build_dashboard_view_for_ranges(
         projection_range=projection_range,
         header=header,
         unsupported=None,
+        capacity_balance=capacity_balance,
         total_spend=total_spend,
         compute_spend=compute_spend,
         storage_spend=storage_spend,
@@ -590,6 +602,7 @@ def _empty_dashboard_view(
         projection_range=projection_range,
         header=header,
         unsupported=unsupported,
+        capacity_balance=_empty_capacity_balance(currency),
         total_spend=_empty_total_spend(currency),
         compute_spend=_empty_compute_spend(),
         storage_spend=_empty_storage_spend(),
@@ -615,6 +628,16 @@ def _empty_total_spend(currency: str) -> TotalSpendViewModel:
         projection_basis_label="0 days",
         daily_series=[],
         top_driver=None,
+        is_empty=True,
+    )
+
+
+def _empty_capacity_balance(currency: str) -> CapacityBalanceViewModel:
+    return CapacityBalanceViewModel(
+        current_balance=0,
+        current_balance_label=_format_currency(0, currency),
+        current_balance_date=None,
+        daily_series=[],
         is_empty=True,
     )
 
@@ -820,6 +843,42 @@ def _build_total_spend(
         daily_series=daily_series,
         top_driver=ranked_services[0] if ranked_services else None,
         is_empty=all(row.spend == 0 for row in daily_series),
+    )
+
+
+def _build_capacity_balance(
+    *,
+    rows: list[DatasetRow],
+    currency: str,
+) -> CapacityBalanceViewModel:
+    balance_by_date: dict[date, float] = {}
+    for row in rows:
+        if _optional_string(row.get("currency")) != currency:
+            continue
+        usage_date = _as_date(row["usage_date"])
+        balance_by_date[usage_date] = balance_by_date.get(
+            usage_date, 0.0
+        ) + _required_float_field(row, "capacity_balance_daily", "balance")
+
+    if not balance_by_date:
+        return _empty_capacity_balance(currency)
+
+    daily_series = [
+        BalancePoint(
+            date=usage_date.isoformat(),
+            balance=balance_by_date[usage_date],
+            balance_label=_format_currency(balance_by_date[usage_date], currency),
+        )
+        for usage_date in sorted(balance_by_date)
+    ]
+    current_point = daily_series[-1]
+
+    return CapacityBalanceViewModel(
+        current_balance=current_point.balance,
+        current_balance_label=current_point.balance_label,
+        current_balance_date=current_point.date,
+        daily_series=daily_series,
+        is_empty=False,
     )
 
 

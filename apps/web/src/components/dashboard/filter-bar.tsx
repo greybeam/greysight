@@ -40,7 +40,7 @@ export default function FilterBar({
       <div className="flex flex-wrap items-end gap-4">
         <div
           aria-label="Spend window"
-          className="inline-flex h-8 rounded-md border border-slate-200 bg-white p-0.5"
+          className="inline-flex h-8 rounded-md border border-hairline bg-surface p-0.5"
           role="group"
         >
           {WINDOW_DAYS.map((option) => {
@@ -53,8 +53,8 @@ export default function FilterBar({
                 aria-pressed={isActive}
                 className={
                   isActive
-                    ? "h-full rounded bg-slate-950 px-4 text-xs font-semibold text-white"
-                    : "h-full rounded px-4 text-xs font-medium text-slate-600 hover:bg-slate-100"
+                    ? "h-full rounded bg-chart-purple px-4 text-xs font-semibold text-white"
+                    : "h-full rounded px-4 text-xs font-medium text-slate-400 hover:bg-white/5"
                 }
                 type="button"
                 onClick={() => onWindowChange(option)}
@@ -65,26 +65,26 @@ export default function FilterBar({
           })}
         </div>
         <div className="flex flex-wrap items-end gap-2">
-          <label className="grid gap-1 text-xs font-medium text-slate-600">
+          <label className="grid gap-1 text-xs font-medium text-slate-400">
             Start date
             <input
-              className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
+              className="h-8 rounded-md border border-hairline bg-surface px-2 text-xs text-slate-100"
               type="date"
               value={startDate}
               onChange={(event) => onStartDateChange(event.target.value)}
             />
           </label>
-          <label className="grid gap-1 text-xs font-medium text-slate-600">
+          <label className="grid gap-1 text-xs font-medium text-slate-400">
             End date
             <input
-              className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
+              className="h-8 rounded-md border border-hairline bg-surface px-2 text-xs text-slate-100"
               type="date"
               value={endDate}
               onChange={(event) => onEndDateChange(event.target.value)}
             />
           </label>
           <button
-            className="h-8 rounded-md border border-slate-300 bg-white px-4 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+            className="h-8 rounded-md border border-hairline bg-surface px-4 text-xs font-semibold text-slate-200 hover:bg-white/5 disabled:cursor-not-allowed disabled:bg-surface disabled:text-slate-500"
             disabled={applyDisabled}
             type="button"
             onClick={onApplyDateRange}
@@ -93,7 +93,7 @@ export default function FilterBar({
           </button>
         </div>
       </div>
-      <span className="text-xs font-medium text-slate-500">{currency}</span>
+      <span className="text-xs font-medium text-slate-400">{currency}</span>
     </div>
   );
 }

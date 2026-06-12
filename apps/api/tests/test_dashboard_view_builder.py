@@ -248,6 +248,57 @@ def test_builds_demo_view_with_billed_like_totals_and_labels() -> None:
     assert view.unsupported is None
 
 
+def test_builds_capacity_balance_from_latest_filtered_date() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    datasets["capacity_balance_daily"] = [
+        {
+            "usage_date": "2026-06-06",
+            "currency": "USD",
+            "balance": 12_250.0,
+        },
+        {
+            "usage_date": "2026-06-07",
+            "currency": "USD",
+            "balance": 12_125.0,
+        },
+        {
+            "usage_date": "2026-06-08",
+            "currency": "USD",
+            "balance": 11_875.25,
+        },
+        {
+            "usage_date": "2026-06-09",
+            "currency": "USD",
+            "balance": 11_650.0,
+        },
+    ]
+
+    view = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=_demo_metadata(),
+        source_start_date=source_start,
+        source_end_date=source_end,
+        start_date=date(2026, 6, 6),
+        end_date=date(2026, 6, 8),
+    )
+
+    assert view.capacity_balance.current_balance == pytest.approx(11_875.25, abs=0.01)
+    assert view.capacity_balance.current_balance_label == "$11,875.25"
+    assert view.capacity_balance.current_balance_date == "2026-06-08"
+    assert [point.date for point in view.capacity_balance.daily_series] == [
+        "2026-06-06",
+        "2026-06-07",
+        "2026-06-08",
+    ]
+    assert [point.balance for point in view.capacity_balance.daily_series] == [
+        12_250.0,
+        12_125.0,
+        11_875.25,
+    ]
+
+
 def test_builds_billed_view_with_negative_adjustments_included() -> None:
     datasets = _demo_datasets()
     source_start, source_end = _source_bounds(datasets)

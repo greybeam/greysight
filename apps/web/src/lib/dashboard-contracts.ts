@@ -78,6 +78,12 @@ export type RateSheetDaily = {
   effective_rate: number;
 };
 
+export type CapacityBalanceDaily = {
+  usage_date: string;
+  currency: string;
+  balance: number;
+};
+
 export type CurrentAccount = {
   account_locator: string;
 };
@@ -113,6 +119,7 @@ export type DashboardDatasets = {
   top_warehouses_table: TopWarehouse[];
   org_spend_daily: OrgSpendDaily[];
   rate_sheet_daily: RateSheetDaily[];
+  capacity_balance_daily: CapacityBalanceDaily[];
   current_account: CurrentAccount[];
 };
 
@@ -142,6 +149,12 @@ export type DollarPoint = {
   date: string;
   spend: number;
   spendLabel: string;
+};
+
+export type BalancePoint = {
+  date: string;
+  balance: number;
+  balanceLabel: string;
 };
 
 export type ServicePoint = {
@@ -182,6 +195,14 @@ export type TotalSpendViewModel = {
   projectionBasisLabel: string;
   dailySeries: DollarPoint[];
   topDriver: RankedSpendRow | null;
+  isEmpty: boolean;
+};
+
+export type CapacityBalanceViewModel = {
+  currentBalance: number;
+  currentBalanceLabel: string;
+  currentBalanceDate: string | null;
+  dailySeries: BalancePoint[];
   isEmpty: boolean;
 };
 
@@ -248,6 +269,7 @@ export type DashboardView = {
   projectionRange: DashboardProjectionRange;
   header: HeaderViewModel;
   unsupported: UnsupportedViewModel | null;
+  capacityBalance: CapacityBalanceViewModel;
   totalSpend: TotalSpendViewModel;
   computeSpend: ComputeSpendViewModel;
   storageSpend: StorageSpendViewModel;
@@ -264,6 +286,7 @@ const REQUIRED_DATASET_KEYS = [
   "top_warehouses_table",
   "org_spend_daily",
   "rate_sheet_daily",
+  "capacity_balance_daily",
   "current_account",
 ] as const satisfies readonly (keyof DashboardDatasets)[];
 
@@ -370,6 +393,7 @@ export default function parseDashboardDatasets(payload: unknown): DashboardData 
       top_warehouses_table: payload.datasets.top_warehouses_table,
       org_spend_daily: payload.datasets.org_spend_daily,
       rate_sheet_daily: payload.datasets.rate_sheet_daily,
+      capacity_balance_daily: payload.datasets.capacity_balance_daily,
       current_account: payload.datasets.current_account,
     } as DashboardDatasets,
   };
@@ -380,6 +404,8 @@ export function parseDashboardView(payload: unknown): DashboardView {
     throwInvalidDashboardView();
   }
 
+  const header = parseHeaderViewModel(readViewRecord(payload, "header"));
+
   return {
     schema_version: 1,
     run: parseDashboardViewRun(readViewRecord(payload, "run")),
@@ -387,8 +413,13 @@ export function parseDashboardView(payload: unknown): DashboardView {
     projectionRange: parseDashboardProjectionRange(
       readViewRecord(payload, "projection_range", "projectionRange"),
     ),
-    header: parseHeaderViewModel(readViewRecord(payload, "header")),
+    header,
     unsupported: parseUnsupportedViewModel(readViewValue(payload, "unsupported")),
+    capacityBalance: hasViewValue(payload, "capacity_balance", "capacityBalance")
+      ? parseCapacityBalanceViewModel(
+          readViewRecord(payload, "capacity_balance", "capacityBalance"),
+        )
+      : emptyCapacityBalanceViewModel(),
     totalSpend: parseTotalSpendViewModel(
       readViewRecord(payload, "total_spend", "totalSpend"),
     ),
@@ -556,6 +587,42 @@ function parseTotalSpendViewModel(
   };
 }
 
+function parseCapacityBalanceViewModel(
+  payload: Record<string, unknown>,
+): CapacityBalanceViewModel {
+  return {
+    currentBalance: readViewNumber(
+      payload,
+      "current_balance",
+      "currentBalance",
+    ),
+    currentBalanceLabel: readViewString(
+      payload,
+      "current_balance_label",
+      "currentBalanceLabel",
+    ),
+    currentBalanceDate: readViewNullableString(
+      payload,
+      "current_balance_date",
+      "currentBalanceDate",
+    ),
+    dailySeries: readViewArray(payload, "daily_series", "dailySeries").map(
+      parseBalancePoint,
+    ),
+    isEmpty: readViewBoolean(payload, "is_empty", "isEmpty"),
+  };
+}
+
+function emptyCapacityBalanceViewModel(): CapacityBalanceViewModel {
+  return {
+    currentBalance: 0,
+    currentBalanceLabel: "",
+    currentBalanceDate: null,
+    dailySeries: [],
+    isEmpty: true,
+  };
+}
+
 function parseComputeSpendViewModel(
   payload: Record<string, unknown>,
 ): ComputeSpendViewModel {
@@ -649,6 +716,15 @@ function parseDollarPoint(payload: unknown): DollarPoint {
     date: readViewString(record, "date"),
     spend: readViewNumber(record, "spend"),
     spendLabel: readViewString(record, "spend_label", "spendLabel"),
+  };
+}
+
+function parseBalancePoint(payload: unknown): BalancePoint {
+  const record = asViewRecord(payload);
+  return {
+    date: readViewString(record, "date"),
+    balance: readViewNumber(record, "balance"),
+    balanceLabel: readViewString(record, "balance_label", "balanceLabel"),
   };
 }
 
@@ -866,6 +942,17 @@ function readViewValue(
     return payload[camelKey];
   }
   throwInvalidDashboardView();
+}
+
+function hasViewValue(
+  payload: Record<string, unknown>,
+  snakeKey: string,
+  camelKey = snakeKey,
+): boolean {
+  return (
+    Object.hasOwn(payload, snakeKey) ||
+    (camelKey !== snakeKey && Object.hasOwn(payload, camelKey))
+  );
 }
 
 function readViewRecord(

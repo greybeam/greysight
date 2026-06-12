@@ -27,9 +27,9 @@ function DetailTable({ title, headers, rows }: DetailTableProps) {
       <div className="mt-2 max-h-72 overflow-y-auto">
         <table
           aria-label={title}
-          className="w-full text-left text-xs text-slate-700"
+          className="w-full text-left text-xs text-slate-300"
         >
-          <thead className="text-slate-900">
+          <thead className="text-slate-100">
             <tr>
               {headers.map((header) => (
                 <th key={header} className="whitespace-nowrap px-4 py-3.5 font-semibold">
@@ -38,7 +38,7 @@ function DetailTable({ title, headers, rows }: DetailTableProps) {
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-200 align-top">
+          <tbody className="divide-y divide-hairline align-top">
             {rows.map((row) => (
               <tr key={row.key}>
                 {row.cells.map((cell) => (

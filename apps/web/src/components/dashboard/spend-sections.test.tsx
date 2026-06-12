@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import demoDashboardView from "../../lib/demo-dashboard-view";
 import {
   ComputeSpendSection,
+  OverviewSection,
   ServiceSpendSection,
   StorageSpendSection,
   TotalSpendSection,
@@ -13,6 +14,48 @@ import {
 describe("spend sections", () => {
   afterEach(() => {
     cleanup();
+  });
+
+  it("renders capacity balance left of total spend in the overview", () => {
+    render(
+      <OverviewSection
+        currency={demoDashboardView.header.currency}
+        capacityBalance={demoDashboardView.capacityBalance}
+        totalSpend={demoDashboardView.totalSpend}
+      />,
+    );
+
+    const grid = screen.getByTestId("dashboard-grid-overview");
+    const capacityCard = screen.getByTestId("capacity-balance-card");
+    const totalCard = screen.getByTestId("total-spend-card");
+
+    expect(screen.getByText("Overview")).toBeInTheDocument();
+    expect(within(capacityCard).getByText("Current Balance")).toBeInTheDocument();
+    expect(
+      within(capacityCard).getByText(
+        demoDashboardView.capacityBalance.currentBalanceLabel,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(capacityCard).getByTestId("capacity-balance-tremor-line-chart"),
+    ).toHaveAttribute("data-chart-library", "tremor");
+    expect(within(totalCard).getByText("Total Spend in Period")).toBeInTheDocument();
+    expect(Array.from(grid.children)).toEqual([
+      capacityCard.closest("section"),
+      totalCard.closest("section"),
+    ]);
+  });
+
+  it("renders an empty capacity card for older views without capacity balance", () => {
+    render(
+      <OverviewSection
+        currency={demoDashboardView.header.currency}
+        totalSpend={demoDashboardView.totalSpend}
+      />,
+    );
+
+    expect(screen.getByText("No capacity balance data")).toBeInTheDocument();
+    expect(screen.getByText("Total Spend in Period")).toBeInTheDocument();
   });
 
   it("renders total spend dollars as the only first-section KPI", () => {

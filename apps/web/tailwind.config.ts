@@ -45,7 +45,9 @@ const config: Config = {
   content: [
     "./src/**/*.{js,ts,jsx,tsx,mdx}",
     "./node_modules/@tremor/**/*.{js,ts,jsx,tsx}",
+    "../../node_modules/@tremor/**/*.{js,ts,jsx,tsx}",
   ],
+  darkMode: "class",
   safelist: tremorChartColorSafelist,
   theme: {
     extend: {
@@ -55,7 +57,83 @@ const config: Config = {
           500: "#1477b8",
           700: "#0c4c7c",
         },
+        canvas: "#161616",
         ...CHART_COLORS,
+        surface: "#1C1C1C",
+        hairline: "#2A2A2A",
+        tremor: {
+          brand: {
+            faint: "#eff6ff",
+            muted: "#bfdbfe",
+            subtle: "#60a5fa",
+            DEFAULT: "#3b82f6",
+            emphasis: "#1d4ed8",
+            inverted: "#ffffff",
+          },
+          background: {
+            muted: "#f9fafb",
+            subtle: "#f3f4f6",
+            DEFAULT: "#ffffff",
+            emphasis: "#374151",
+          },
+          border: { DEFAULT: "#e5e7eb" },
+          ring: { DEFAULT: "#e5e7eb" },
+          content: {
+            subtle: "#9ca3af",
+            DEFAULT: "#6b7280",
+            emphasis: "#374151",
+            strong: "#111827",
+            inverted: "#ffffff",
+          },
+        },
+        "dark-tremor": {
+          brand: {
+            faint: "#1a1430",
+            muted: "#3b2d63",
+            subtle: "#7a44c0",
+            DEFAULT: "#9F57E7",
+            emphasis: "#b985ee",
+            inverted: "#161616",
+          },
+          background: {
+            muted: "#161616",
+            subtle: "#232323",
+            DEFAULT: "#1C1C1C",
+            emphasis: "#e5e7eb",
+          },
+          border: { DEFAULT: "#2A2A2A" },
+          ring: { DEFAULT: "#2A2A2A" },
+          content: {
+            subtle: "#6b7280",
+            DEFAULT: "#9ca3af",
+            emphasis: "#e5e7eb",
+            strong: "#f9fafb",
+            inverted: "#000000",
+          },
+        },
+      },
+      boxShadow: {
+        "tremor-input": "0 1px 2px 0 rgb(0 0 0 / 0.05)",
+        "tremor-card":
+          "0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1)",
+        "tremor-dropdown":
+          "0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)",
+        "dark-tremor-input": "0 1px 2px 0 rgb(0 0 0 / 0.05)",
+        "dark-tremor-card":
+          "0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1)",
+        "dark-tremor-dropdown":
+          "0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)",
+      },
+      borderRadius: {
+        "tremor-small": "0.375rem",
+        "tremor-default": "0.5rem",
+        "tremor-full": "9999px",
+      },
+      fontSize: {
+        "tremor-label": ["0.75rem", { lineHeight: "1rem" }],
+        "tremor-default": ["0.875rem", { lineHeight: "1.25rem" }],
+        "tremor-title": ["1.125rem", { lineHeight: "1.75rem" }],
+        "tremor-metric": ["1.875rem", { lineHeight: "2.25rem" }],
       },
     },
   },

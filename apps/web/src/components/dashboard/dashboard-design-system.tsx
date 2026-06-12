@@ -5,7 +5,11 @@ import type { ReactNode } from "react";
 import { BarChart, Card, LineChart, Text } from "@tremor/react";
 import type { CustomTooltipProps, IntervalType } from "@tremor/react";
 
-import type { DollarPoint, RankedBarRow } from "../../lib/dashboard-contracts";
+import type {
+  BalancePoint,
+  DollarPoint,
+  RankedBarRow,
+} from "../../lib/dashboard-contracts";
 import {
   getSeriesColors,
   PRIMARY_CHART_COLOR,
@@ -39,7 +43,7 @@ export function DashboardSection({
       className="grid gap-4"
       data-testid={testId}
     >
-      <h2 className="text-xl font-semibold tracking-tight text-slate-900">
+      <h2 className="text-xl font-semibold tracking-tight text-slate-100">
         {title}
       </h2>
       {children}
@@ -99,7 +103,7 @@ export function RankedSpendBars({ rows }: { rows: RankedBarRow[] }) {
   const visibleRows = rows.filter((row) => Math.round(row.spend * 100) !== 0);
 
   if (visibleRows.length === 0) {
-    return <p className="mt-4 text-xs text-slate-500">No ranked spend data</p>;
+    return <p className="mt-4 text-xs text-slate-400">No ranked spend data</p>;
   }
 
   return (
@@ -109,14 +113,14 @@ export function RankedSpendBars({ rows }: { rows: RankedBarRow[] }) {
           className="grid grid-cols-[minmax(8rem,10rem)_minmax(6rem,1fr)_auto] items-center gap-4"
           key={row.name}
         >
-          <span className="truncate text-xs text-slate-600">{row.name}</span>
-          <span className="h-2 rounded bg-slate-200">
+          <span className="truncate text-xs text-slate-400">{row.name}</span>
+          <span className="h-2 rounded bg-hairline">
             <span
               className="block h-2 rounded bg-chart-purple"
               style={{ width: `${row.barWidthPercent}%` }}
             />
           </span>
-          <span className="text-xs font-semibold tabular-nums text-slate-900">
+          <span className="text-xs font-semibold tabular-nums text-slate-200">
             {row.spendLabel}
           </span>
         </li>
@@ -146,10 +150,47 @@ export function TotalSpendCard({
     <section aria-label={ariaLabel} data-dashboard-panel="true">
       <Card className="p-6" data-testid={testId}>
         <Text>{label}</Text>
-        <p className="mt-2 text-4xl font-semibold tracking-normal text-slate-950">
+        <p className="mt-2 text-4xl font-semibold tracking-normal text-slate-50">
           {value}
         </p>
         <SpendLineChart
+          currency={currency}
+          data={data}
+          heightClass="h-80"
+          testId={chartTestId}
+        />
+      </Card>
+    </section>
+  );
+}
+
+export function CapacityBalanceCard({
+  ariaLabel,
+  currency,
+  label,
+  value,
+  data,
+  testId,
+  chartTestId,
+}: {
+  ariaLabel: string;
+  currency: string;
+  label: string;
+  value: string;
+  data: BalancePoint[];
+  testId?: string;
+  chartTestId: string;
+}) {
+  return (
+    <section aria-label={ariaLabel} data-dashboard-panel="true">
+      <Card className="p-6" data-testid={testId}>
+        <Text>{label}</Text>
+        <p className="mt-2 text-4xl font-semibold tracking-normal text-slate-50">
+          {value}
+        </p>
+        <CurrencyLineChart
+          autoMinValue
+          categories={["balance"]}
           currency={currency}
           data={data}
           heightClass="h-80"
@@ -187,6 +228,39 @@ export function SpendLineChart({
   heightClass?: string;
   testId: string;
 }) {
+  return (
+    <CurrencyLineChart
+      autoMinValue={false}
+      categories={["spend"]}
+      colors={[color]}
+      currency={currency}
+      data={data}
+      heightClass={heightClass}
+      minValue={0}
+      testId={testId}
+    />
+  );
+}
+
+export function CurrencyLineChart({
+  autoMinValue = false,
+  categories,
+  colors,
+  currency,
+  data,
+  heightClass = "h-64",
+  minValue,
+  testId,
+}: {
+  autoMinValue?: boolean;
+  categories: string[];
+  colors?: string[];
+  currency: string;
+  data: ChartPoint[];
+  heightClass?: string;
+  minValue?: number;
+  testId: string;
+}) {
   const valueFormatter = createCurrencyTickFormatter(currency);
   const chartData = data.map((point) => ({
     ...point,
@@ -195,17 +269,17 @@ export function SpendLineChart({
 
   return (
     <LineChart
-      autoMinValue={false}
-      categories={["spend"]}
+      autoMinValue={autoMinValue}
+      categories={categories}
       className={cx("mt-4 w-full", heightClass)}
-      colors={[color]}
+      colors={colors ?? getSeriesColors(categories)}
       customTooltip={createChartTooltip(valueFormatter)}
       data={chartData}
       data-chart-library="tremor"
       data-testid={testId}
       index="date"
       intervalType={resolveTickInterval(chartData.length)}
-      minValue={0}
+      minValue={minValue}
       showLegend={false}
       showTooltip
       tickGap={32}
@@ -268,8 +342,8 @@ export function createChartTooltip(
     }
 
     return (
-      <div className="rounded-md border border-slate-200 bg-white px-3 py-2 shadow-lg">
-        <p className="text-xs font-medium text-slate-900">{label}</p>
+      <div className="rounded-md border border-hairline bg-surface px-3 py-2 shadow-lg">
+        <p className="text-xs font-medium text-slate-100">{label}</p>
         <div className="mt-1 grid gap-1">
           {payload.map((entry, index) => {
             const name = entry.dataKey ?? entry.name;
@@ -277,7 +351,7 @@ export function createChartTooltip(
 
             return (
               <div
-                className="flex items-center justify-between gap-3 text-xs text-slate-600"
+                className="flex items-center justify-between gap-3 text-xs text-slate-400"
                 key={key}
               >
                 <span className="flex items-center gap-1.5">
@@ -287,7 +361,7 @@ export function createChartTooltip(
                   />
                   {String(name ?? "")}
                 </span>
-                <span className="tabular-nums text-slate-900">
+                <span className="tabular-nums text-slate-200">
                   {valueFormatter(Number(entry.value))}
                 </span>
               </div>

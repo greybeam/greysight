@@ -6,6 +6,7 @@ const ACCOUNT_USAGE_THROUGH = BILLING_THROUGH;
 const ACCOUNT_LOCATOR = "DEMO123";
 const CREDIT_RATE_USD = 2.25;
 const STORAGE_RATE_USD = 25;
+const CAPACITY_START_USD = 75_000;
 
 const SERVICES: Array<[serviceType: string, ratingType: string, credits: number]> =
   [
@@ -120,6 +121,20 @@ const rateSheetDaily = usageDates.flatMap((usage_date) =>
   })),
 );
 
+let remainingCapacityBalance = CAPACITY_START_USD;
+const capacityBalanceDaily = usageDates.map((usage_date) => {
+  const dailySpend = orgSpendDaily
+    .filter((row) => row.usage_date === usage_date)
+    .reduce((total, row) => total + row.spend, 0);
+  remainingCapacityBalance = round(remainingCapacityBalance - dailySpend, 2);
+
+  return {
+    usage_date,
+    currency: "USD",
+    balance: remainingCapacityBalance,
+  };
+});
+
 const accountSpendDaily = usageDates.map((usage_date) => ({
   usage_date,
   credits_used: round(
@@ -199,6 +214,7 @@ const demoDashboardData: DashboardData = {
     top_warehouses_table: topWarehousesTable,
     org_spend_daily: orgSpendDaily,
     rate_sheet_daily: rateSheetDaily,
+    capacity_balance_daily: capacityBalanceDaily,
     current_account: [{ account_locator: ACCOUNT_LOCATOR }],
   },
 };
