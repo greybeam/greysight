@@ -56,8 +56,8 @@ export function flattenServiceDailySeries(
   dailySeries: ServicePoint[],
 ): ServiceChartPoint[] {
   return dailySeries.map((point) => ({
-    date: point.date,
     ...point.values,
+    date: point.date,
   }));
 }
 

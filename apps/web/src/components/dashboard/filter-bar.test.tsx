@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
-import FilterBar from "./filter-bar";
+import FilterBar, { canApplyDateRange } from "./filter-bar";
 
 const relativeRange = {
   mode: "relative" as const,
@@ -144,5 +144,11 @@ describe("FilterBar", () => {
     expect(
       screen.getByRole("button", { name: "Apply date range" }),
     ).toBeDisabled();
+  });
+
+  it("exports the date range predicate used by apply guards", () => {
+    expect(canApplyDateRange("2026-06-01", "2026-06-08")).toBe(true);
+    expect(canApplyDateRange("", "2026-06-08")).toBe(false);
+    expect(canApplyDateRange("2026-06-09", "2026-06-08")).toBe(false);
   });
 });

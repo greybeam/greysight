@@ -16,7 +16,10 @@ type FilterBarProps = {
   onApplyDateRange: () => void;
 };
 
-function canApplyDateRange(startDate: string, endDate: string): boolean {
+export function canApplyDateRange(
+  startDate: string,
+  endDate: string,
+): boolean {
   return startDate.length > 0 && endDate.length > 0 && startDate <= endDate;
 }
 

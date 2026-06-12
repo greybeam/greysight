@@ -30,6 +30,12 @@ from app.services.dashboard_view_models import DashboardViewResponse
 from app.services.demo_data import build_demo_dashboard_dataset
 
 router = APIRouter(prefix="/api/dashboard-runs", tags=["dashboard-runs"])
+ACCOUNT_USAGE_DATASET_KEYS = (
+    "warehouse_spend_daily",
+    "service_spend_daily",
+    "query_compute_by_user_daily",
+    "database_storage_daily",
+)
 
 
 class StoredDashboardDataset(BaseModel):
@@ -174,29 +180,7 @@ class InMemoryDashboardRunRepository:
         run_id: UUID,
         datasets: dict[str, list[dict[str, Any]]],
     ) -> None:
-        usage_dates: list[date] = []
-        for rows in datasets.values():
-            for row in rows:
-                value = row.get("usage_date")
-                if value is None:
-                    continue
-                parsed = (
-                    value if isinstance(value, date) else date.fromisoformat(str(value))
-                )
-                usage_dates.append(parsed)
-
-        if not usage_dates:
-            now = datetime.now(timezone.utc).date()
-            self._source_bounds[run_id] = StoredSourceBounds(
-                source_start_date=now,
-                source_end_date=now,
-            )
-            return
-
-        self._source_bounds[run_id] = StoredSourceBounds(
-            source_start_date=min(usage_dates),
-            source_end_date=max(usage_dates),
-        )
+        self._source_bounds[run_id] = _source_bounds_for_dataset_rows(datasets)
 
     def get_dataset_response(self, run_id: UUID) -> DashboardDatasetResponse | None:
         with self._lock:
@@ -294,7 +278,7 @@ def read_demo_dashboard_datasets() -> dict[str, Any]:
     return payload.model_dump(mode="json")
 
 
-@router.get("/demo/view")
+@router.get("/demo/view", response_model=DashboardViewResponse)
 def read_demo_dashboard_view(
     window_days: int | None = None,
     start_date: date | None = None,
@@ -342,7 +326,7 @@ def read_dashboard_run(
     return run
 
 
-@router.get("/{run_id}/view")
+@router.get("/{run_id}/view", response_model=DashboardViewResponse)
 def read_dashboard_run_view(
     run_id: UUID,
     window_days: int | None = None,
@@ -464,14 +448,7 @@ def _dataset_keys_for_run(run_id: str) -> list[str]:
 def _source_bounds_for_dataset_rows(
     datasets: dict[str, list[dict[str, Any]]],
 ) -> StoredSourceBounds:
-    usage_dates = [
-        row["usage_date"]
-        if isinstance(row["usage_date"], date)
-        else date.fromisoformat(str(row["usage_date"]))
-        for rows in datasets.values()
-        for row in rows
-        if row.get("usage_date") is not None
-    ]
+    usage_dates = _usage_dates_for_dataset_rows(datasets)
     if not usage_dates:
         now = datetime.now(timezone.utc).date()
         return StoredSourceBounds(source_start_date=now, source_end_date=now)
@@ -481,35 +458,81 @@ def _source_bounds_for_dataset_rows(
     )
 
 
+def _usage_dates_for_dataset_rows(
+    datasets: dict[str, list[dict[str, Any]]],
+) -> list[date]:
+    return [
+        _as_usage_date(row["usage_date"])
+        for rows in datasets.values()
+        for row in rows
+        if row.get("usage_date") is not None
+    ]
+
+
+def _as_usage_date(value: object) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError:
+        return datetime.fromisoformat(str(value)).date()
+
+
 def _metadata_for_dataset_rows(
     datasets: dict[str, list[dict[str, Any]]],
 ) -> DashboardDatasetMetadata:
-    bounds = _source_bounds_for_dataset_rows(datasets)
-    currencies = {
-        str(row["currency"])
-        for dataset_key in ("org_spend_daily", "rate_sheet_daily")
+    settings = Settings()
+    org_spend_rows = datasets.get("org_spend_daily", [])
+    account_usage_rows = [
+        row
+        for dataset_key in ACCOUNT_USAGE_DATASET_KEYS
         for row in datasets.get(dataset_key, [])
+    ]
+    org_currencies = {
+        str(row["currency"])
+        for row in org_spend_rows
         if row.get("currency") is not None
     }
-    currency = next(iter(currencies)) if len(currencies) == 1 else None
+    unsupported_reason = "mixed_currency" if len(org_currencies) > 1 else None
+    data_mode = "billed" if org_spend_rows else "estimated"
+    currency = (
+        None
+        if unsupported_reason
+        else _currency_for_reconstructed_metadata(data_mode, org_currencies)
+    )
     return DashboardDatasetMetadata(
-        data_mode="billed" if datasets.get("org_spend_daily") else "estimated",
+        data_mode=data_mode,
         account_locator=_account_locator_for_dataset_rows(datasets),
         currency=currency,
-        billing_through_date=bounds.source_end_date
-        if datasets.get("org_spend_daily")
+        billing_through_date=_max_usage_date(org_spend_rows)
+        if org_spend_rows
         else None,
-        account_usage_through_date=bounds.source_end_date,
-        estimated_credit_price_usd=_estimated_credit_price_for_dataset_rows(datasets),
-        storage_price_usd_per_tb_month=25.0,
-        unsupported_reason="mixed_currency" if len(currencies) > 1 else None,
-        organization_usage=SourceAvailability(
-            available=bool(datasets.get("org_spend_daily"))
-        ),
-        account_usage=SourceAvailability(
-            available=bool(datasets.get("service_spend_daily"))
-        ),
+        account_usage_through_date=_max_usage_date(account_usage_rows)
+        if account_usage_rows
+        else None,
+        estimated_credit_price_usd=settings.estimated_credit_price_usd,
+        storage_price_usd_per_tb_month=settings.storage_price_usd_per_tb_month,
+        unsupported_reason=unsupported_reason,
+        organization_usage=SourceAvailability(available=bool(org_spend_rows)),
+        account_usage=SourceAvailability(available=bool(account_usage_rows)),
     )
+
+
+def _currency_for_reconstructed_metadata(
+    data_mode: str, org_currencies: set[str]
+) -> str:
+    if data_mode == "billed" and len(org_currencies) == 1:
+        return next(iter(org_currencies))
+    return "USD"
+
+
+def _max_usage_date(rows: list[dict[str, Any]]) -> date | None:
+    usage_dates = [
+        _as_usage_date(row["usage_date"]) for row in rows if row.get("usage_date")
+    ]
+    return max(usage_dates) if usage_dates else None
 
 
 def _account_locator_for_dataset_rows(
@@ -520,16 +543,6 @@ def _account_locator_for_dataset_rows(
         if account_locator is not None:
             return str(account_locator)
     return None
-
-
-def _estimated_credit_price_for_dataset_rows(
-    datasets: dict[str, list[dict[str, Any]]],
-) -> float:
-    for row in datasets.get("rate_sheet_daily", []):
-        effective_rate = row.get("effective_rate")
-        if effective_rate is not None:
-            return float(effective_rate)
-    return 3.0
 
 
 def _prepared_view_or_http_error(

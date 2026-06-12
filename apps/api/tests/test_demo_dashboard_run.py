@@ -1,5 +1,5 @@
 from copy import deepcopy
-from datetime import date
+from datetime import date, datetime
 from uuid import UUID
 
 from fastapi.testclient import TestClient
@@ -21,6 +21,49 @@ def _complete_create_payload() -> dict[str, object]:
         "window_days": 30,
         "summary": demo_payload.summary.model_dump(mode="json"),
         "datasets": deepcopy(demo_payload.datasets),
+    }
+
+
+def _minimal_estimated_datasets(
+    usage_date: object = "2026-06-08",
+) -> dict[str, list[dict[str, object]]]:
+    return {
+        "account_spend_daily": [],
+        "warehouse_spend_daily": [
+            {
+                "usage_date": usage_date,
+                "warehouse_name": "LOAD_WH",
+                "credits_used": 2.0,
+                "credits_used_compute": 1.5,
+            }
+        ],
+        "service_spend_daily": [
+            {
+                "usage_date": usage_date,
+                "service_type": "WAREHOUSE_METERING",
+                "credits_used": 2.0,
+            }
+        ],
+        "query_compute_by_user_daily": [
+            {
+                "usage_date": usage_date,
+                "user_name": "ANALYST",
+                "warehouse_name": "LOAD_WH",
+                "credits_attributed_compute": 1.0,
+            }
+        ],
+        "database_storage_daily": [
+            {
+                "usage_date": usage_date,
+                "database_name": "RAW",
+                "average_database_bytes": 1_000_000_000_000,
+                "average_failsafe_bytes": 0,
+            }
+        ],
+        "top_warehouses_table": [],
+        "org_spend_daily": [],
+        "rate_sheet_daily": [],
+        "current_account": [{"account_locator": "TU24199"}],
     }
 
 
@@ -67,6 +110,21 @@ def test_demo_view_route_returns_default_prepared_view() -> None:
     assert body["header"]["data_mode_label"] == "Demo"
     assert body["header"]["freshness_label"] == "Demo data through Jun 8, 2026"
     assert body["total_spend"]["projection_basis_label"] == "latest 30 days"
+
+
+def test_view_routes_declare_dashboard_view_response_model() -> None:
+    app.openapi_schema = None
+
+    schema = app.openapi()
+
+    demo_view_schema = schema["paths"]["/api/dashboard-runs/demo/view"]["get"][
+        "responses"
+    ]["200"]["content"]["application/json"]["schema"]
+    run_view_schema = schema["paths"]["/api/dashboard-runs/{run_id}/view"]["get"][
+        "responses"
+    ]["200"]["content"]["application/json"]["schema"]
+    assert demo_view_schema == {"$ref": "#/components/schemas/DashboardViewResponse"}
+    assert run_view_schema == {"$ref": "#/components/schemas/DashboardViewResponse"}
 
 
 def test_demo_view_clamps_custom_end_date_to_through_date() -> None:
@@ -268,6 +326,142 @@ def test_view_route_does_not_expose_corrupted_source_bounds_as_range_errors() ->
     assert response.status_code == 500
     assert "invalid_range" not in response.text
     assert "source bounds start_date" not in response.text
+
+
+def test_reconstructed_metadata_uses_settings_price_overrides_for_view(
+    monkeypatch,
+) -> None:
+    dashboard_run_repository.clear()
+    monkeypatch.setenv("ESTIMATED_CREDIT_PRICE_USD", "7.5")
+    monkeypatch.setenv("STORAGE_PRICE_USD_PER_TB_MONTH", "41.25")
+    run = dashboard_run_repository.create_completed_snapshot(
+        organization_id=UUID(ORG_ONE),
+        source="snowflake",
+        window_days=30,
+        summary={},
+        datasets=_minimal_estimated_datasets(),
+        metadata=None,
+        retention_days=7,
+    )
+
+    response = TestClient(app).get(
+        f"/api/dashboard-runs/{run.id}/view",
+        params={"start_date": "2026-06-08", "end_date": "2026-06-08"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["header"]["estimated_credit_price_label"] == "$7.50"
+    assert body["header"]["storage_price_label"] == "$41.25"
+    assert body["total_spend"]["total_label"] == "$15.00"
+
+
+def test_reconstructed_metadata_scopes_currency_and_through_dates_to_source_groups() -> (
+    None
+):
+    dashboard_run_repository.clear()
+    datasets = _minimal_estimated_datasets(usage_date="2026-06-05")
+    datasets["org_spend_daily"] = [
+        {
+            "usage_date": "2026-06-10",
+            "service_type": "WAREHOUSE_METERING",
+            "rating_type": "COMPUTE",
+            "billing_type": "CONSUMPTION",
+            "is_adjustment": False,
+            "currency": "USD",
+            "spend": 24.0,
+        }
+    ]
+    datasets["rate_sheet_daily"] = [
+        {
+            "usage_date": "2026-06-11",
+            "service_type": "WAREHOUSE_METERING",
+            "rating_type": "COMPUTE",
+            "currency": "EUR",
+            "effective_rate": 9.0,
+        }
+    ]
+    run = dashboard_run_repository.create_completed_snapshot(
+        organization_id=UUID(ORG_ONE),
+        source="snowflake",
+        window_days=30,
+        summary={},
+        datasets=datasets,
+        metadata=None,
+        retention_days=7,
+    )
+
+    view_inputs = dashboard_run_repository.get_view_inputs(UUID(run.id))
+
+    assert view_inputs is not None
+    metadata = view_inputs[2]
+    assert metadata.data_mode == "billed"
+    assert metadata.currency == "USD"
+    assert metadata.unsupported_reason is None
+    assert metadata.billing_through_date == date(2026, 6, 10)
+    assert metadata.account_usage_through_date == date(2026, 6, 5)
+
+
+def test_reconstructed_estimated_metadata_uses_usd_currency_with_rate_sheet_rows() -> (
+    None
+):
+    dashboard_run_repository.clear()
+    datasets = _minimal_estimated_datasets(usage_date="2026-06-05")
+    datasets["rate_sheet_daily"] = [
+        {
+            "usage_date": "2026-06-06",
+            "service_type": "WAREHOUSE_METERING",
+            "rating_type": "COMPUTE",
+            "currency": "EUR",
+            "effective_rate": 9.0,
+        }
+    ]
+    run = dashboard_run_repository.create_completed_snapshot(
+        organization_id=UUID(ORG_ONE),
+        source="snowflake",
+        window_days=30,
+        summary={},
+        datasets=datasets,
+        metadata=None,
+        retention_days=7,
+    )
+
+    view_inputs = dashboard_run_repository.get_view_inputs(UUID(run.id))
+
+    assert view_inputs is not None
+    metadata = view_inputs[2]
+    assert metadata.data_mode == "estimated"
+    assert metadata.currency == "USD"
+    assert metadata.unsupported_reason is None
+
+
+def test_completed_run_normalizes_datetime_usage_dates_for_source_bounds() -> None:
+    dashboard_run_repository.clear()
+    datasets = _minimal_estimated_datasets(usage_date=date(2026, 6, 7))
+    datasets["service_spend_daily"].append(
+        {
+            "usage_date": datetime(2026, 6, 8, 14, 30),
+            "service_type": "CLOUD_SERVICES",
+            "credits_used": 1.0,
+        }
+    )
+    run = dashboard_run_repository.create_completed_snapshot(
+        organization_id=UUID(ORG_ONE),
+        source="snowflake",
+        window_days=30,
+        summary={},
+        datasets=datasets,
+        metadata=None,
+        retention_days=7,
+    )
+
+    bounds = dashboard_run_repository.get_source_bounds(UUID(run.id))
+
+    assert bounds is not None
+    assert type(bounds.source_start_date) is date
+    assert type(bounds.source_end_date) is date
+    assert bounds.source_start_date == date(2026, 6, 7)
+    assert bounds.source_end_date == date(2026, 6, 8)
 
 
 def test_deleted_run_keeps_readable_tombstone_without_datasets() -> None:

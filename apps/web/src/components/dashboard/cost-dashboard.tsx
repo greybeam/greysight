@@ -19,7 +19,11 @@ import DashboardHeader, {
   type DashboardModeLabel,
 } from "./dashboard-header";
 import DetailTables from "./detail-tables";
-import FilterBar, { WINDOW_DAYS, type WindowDays } from "./filter-bar";
+import FilterBar, {
+  WINDOW_DAYS,
+  canApplyDateRange,
+  type WindowDays,
+} from "./filter-bar";
 import RunStatus from "./run-status";
 import SectionEmptyState from "./section-empty-state";
 import {
@@ -54,13 +58,16 @@ type ViewFetcher = (
   range: DashboardViewRangeRequest,
 ) => Promise<DashboardView>;
 
-const DEFAULT_VIEW_RANGE: DashboardViewRangeRequest = { windowDays: 30 };
+const DEFAULT_VIEW_RANGE = {
+  windowDays: 30,
+} as const satisfies DashboardViewRangeRequest;
+const DEFAULT_WINDOW_DAYS = DEFAULT_VIEW_RANGE.windowDays;
 
 function rangeKey(runId: string, range: DashboardViewRangeRequest): string {
   if (isCustomRangeRequest(range)) {
     return `${runId}:custom:${range.startDate}:${range.endDate}`;
   }
-  return `${runId}:relative:${range.windowDays ?? 30}`;
+  return `${runId}:relative:${range.windowDays ?? DEFAULT_WINDOW_DAYS}`;
 }
 
 function isCustomRangeRequest(
@@ -75,7 +82,7 @@ function requestFromViewRange(
   if (range.mode === "custom") {
     return { startDate: range.startDate, endDate: range.endDate };
   }
-  return { windowDays: range.windowDays ?? 30 };
+  return { windowDays: range.windowDays ?? DEFAULT_WINDOW_DAYS };
 }
 
 export default function CostDashboard({
@@ -101,10 +108,6 @@ export default function CostDashboard({
   );
 }
 
-function isValidDateRange(startDate: string, endDate: string): boolean {
-  return startDate.length > 0 && endDate.length > 0 && startDate <= endDate;
-}
-
 function CostDashboardContent({
   data,
   modeLabel,
@@ -124,6 +127,7 @@ function CostDashboardContent({
   const [startDate, setStartDate] = useState(data?.range.startDate ?? "");
   const [endDate, setEndDate] = useState(data?.range.endDate ?? "");
   const [runInFlight, setRunInFlight] = useState(false);
+  const [rangeFetchesInFlight, setRangeFetchesInFlight] = useState(0);
   const [loadState, setLoadState] = useState<LoadState>({
     status: data?.run.status ?? (shouldUseDemo ? "loading" : "queued"),
     view: data,
@@ -331,6 +335,7 @@ function CostDashboardContent({
         return;
       }
 
+      setRangeFetchesInFlight((count) => count + 1);
       setLoadState((current) => ({
         ...current,
         status: "loading",
@@ -361,6 +366,8 @@ function CostDashboardContent({
             message: "Could not load selected date range.",
           }));
         }
+      } finally {
+        setRangeFetchesInFlight((count) => Math.max(0, count - 1));
       }
     },
     [
@@ -380,7 +387,7 @@ function CostDashboardContent({
   );
 
   const handleCustomRangeApply = useCallback(() => {
-    if (!isValidDateRange(startDate, endDate)) {
+    if (!canApplyDateRange(startDate, endDate)) {
       return;
     }
     void loadRange({ startDate, endDate });
@@ -389,6 +396,7 @@ function CostDashboardContent({
   const viewModel = loadState.view ?? data ?? null;
   const runDisabled =
     runInFlight ||
+    rangeFetchesInFlight > 0 ||
     (!viewModel && loadState.status === "loading") ||
     loadState.status === "running" ||
     (!shouldUseDemo && !runtime);

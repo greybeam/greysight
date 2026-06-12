@@ -96,6 +96,7 @@ describe("spend sections", () => {
           date: "2026-06-01",
           values: {
             Compute: 12,
+            date: 99,
             Storage: 3,
           },
         },

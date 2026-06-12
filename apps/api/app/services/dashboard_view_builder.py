@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import math
 from typing import Any, Callable
@@ -235,6 +235,35 @@ def build_dashboard_view(
             unsupported=unsupported,
         )
 
+    rates = _build_rate_index(_dataset_rows(datasets, "rate_sheet_daily"))
+    is_billed = metadata.data_mode in {"billed", "demo"}
+    unsupported = _estimated_conversion_unsupported_view_model(
+        metadata=metadata,
+        rates=rates,
+        is_billed=is_billed,
+    )
+    if unsupported is not None:
+        view_range = resolve_dashboard_view_range(
+            through_date=through_date,
+            source_start_date=date.min,
+            source_end_date=date.max,
+            window_days=window_days,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        projection_start, projection_end = projection_range_for(through_date)
+        return _empty_dashboard_view(
+            run=run,
+            view_range=view_range,
+            projection_range=DashboardProjectionRange(
+                start_date=projection_start,
+                end_date=projection_end,
+            ),
+            header=header,
+            currency=currency,
+            unsupported=unsupported,
+        )
+
     view_range = resolve_dashboard_view_range(
         through_date=through_date,
         source_start_date=source_start_date,
@@ -250,6 +279,8 @@ def build_dashboard_view(
         metadata=metadata,
         header=header,
         currency=currency,
+        rates=rates,
+        is_billed=is_billed,
         view_range=view_range,
         projection_range=DashboardProjectionRange(
             start_date=projection_start,
@@ -265,22 +296,11 @@ def _build_dashboard_view_for_ranges(
     metadata: DashboardDatasetMetadata,
     header: HeaderViewModel,
     currency: str,
+    rates: RateIndex,
+    is_billed: bool,
     view_range: DashboardViewRange,
     projection_range: DashboardProjectionRange,
 ) -> DashboardViewResponse:
-    unsupported = _unsupported_view_model(metadata)
-    if unsupported is not None:
-        return _empty_dashboard_view(
-            run=run,
-            view_range=view_range,
-            projection_range=projection_range,
-            header=header,
-            currency=currency,
-            unsupported=unsupported,
-        )
-
-    rates = _build_rate_index(_dataset_rows(datasets, "rate_sheet_daily"))
-    is_billed = metadata.data_mode in {"billed", "demo"}
     basis: SpendBasis = "billed" if is_billed else "estimated"
 
     consumption_rows = [
@@ -516,11 +536,42 @@ def _data_mode_label(metadata: DashboardDatasetMetadata) -> str:
 def _unsupported_view_model(
     metadata: DashboardDatasetMetadata,
 ) -> UnsupportedViewModel | None:
-    if metadata.unsupported_reason != "mixed_currency":
+    if metadata.unsupported_reason == "mixed_currency":
+        return UnsupportedViewModel(
+            title="Mixed currencies are not supported",
+            detail="Select an account with a single billing currency to view spend.",
+        )
+    if (
+        metadata.data_mode == "estimated"
+        and metadata.currency is not None
+        and not _is_usd_or_unspecified(metadata.currency)
+    ):
+        return _estimated_non_usd_unsupported_view_model()
+    return None
+
+
+def _estimated_conversion_unsupported_view_model(
+    *,
+    metadata: DashboardDatasetMetadata,
+    rates: RateIndex,
+    is_billed: bool,
+) -> UnsupportedViewModel | None:
+    if is_billed:
         return None
+    if _is_usd_or_unspecified(metadata.currency) and all(
+        _is_usd_or_unspecified(rate.currency) for rate in rates.values()
+    ):
+        return None
+    return _estimated_non_usd_unsupported_view_model()
+
+
+def _estimated_non_usd_unsupported_view_model() -> UnsupportedViewModel:
     return UnsupportedViewModel(
-        title="Mixed currencies are not supported",
-        detail="Select an account with a single billing currency to view spend.",
+        title="Estimated non-USD spend is not supported",
+        detail=(
+            "Estimated spend requires USD rate sheet data until currency conversion "
+            "is supported."
+        ),
     )
 
 
@@ -618,9 +669,14 @@ def _rows_in_window(
 
 
 def _as_date(value: object) -> date:
+    if isinstance(value, datetime):
+        return value.date()
     if isinstance(value, date):
         return value
-    return date.fromisoformat(str(value))
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError:
+        return datetime.fromisoformat(str(value)).date()
 
 
 def _dataset_rows(
@@ -1130,7 +1186,24 @@ def _is_storage_spend_row(row: DatasetRow) -> bool:
 def _storage_bytes(row: DatasetRow) -> float:
     return _required_float_field(
         row, "database_storage_daily", "average_database_bytes"
-    ) + _required_float_field(row, "database_storage_daily", "average_failsafe_bytes")
+    ) + _nullable_float_field(
+        row,
+        "database_storage_daily",
+        "average_failsafe_bytes",
+        default=0.0,
+    )
+
+
+def _nullable_float_field(
+    row: DatasetRow,
+    dataset_key: str,
+    field_name: str,
+    *,
+    default: float,
+) -> float:
+    if row.get(field_name) is None:
+        return default
+    return _required_float_field(row, dataset_key, field_name)
 
 
 def _required_float_field(row: DatasetRow, dataset_key: str, field_name: str) -> float:

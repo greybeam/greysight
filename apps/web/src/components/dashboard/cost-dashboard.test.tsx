@@ -150,6 +150,45 @@ describe("CostDashboard", () => {
     expect(fetchDemoDashboardView).toHaveBeenCalledTimes(4);
   });
 
+  it("keeps the run action disabled while an uncached custom range request is pending", async () => {
+    const pendingRange = createDeferred<ReturnType<typeof demoViewForRange>>();
+    vi.mocked(fetchDemoDashboardView).mockImplementation(async (range) => {
+      if (range?.startDate === "2026-06-01") {
+        return pendingRange.promise;
+      }
+      return demoViewForRange(range);
+    });
+
+    render(<CostDashboard demoMode data={demoDashboardView} />);
+
+    const runButton = screen.getByRole("button", { name: "Run analysis" });
+    expect(runButton).not.toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Start date"), {
+      target: { value: "2026-06-01" },
+    });
+    fireEvent.change(screen.getByLabelText("End date"), {
+      target: { value: "2026-06-08" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply date range" }));
+
+    await waitFor(() =>
+      expect(fetchDemoDashboardView).toHaveBeenCalledWith({
+        startDate: "2026-06-01",
+        endDate: "2026-06-08",
+      }),
+    );
+    expect(runButton).toBeDisabled();
+
+    await act(async () => {
+      pendingRange.resolve(
+        demoViewForRange({ startDate: "2026-06-01", endDate: "2026-06-08" }),
+      );
+    });
+
+    await waitFor(() => expect(runButton).not.toBeDisabled());
+  });
+
   it("resets stale prepared view state when the organization changes", async () => {
     const orgAView = {
       ...demoDashboardView,
@@ -257,7 +296,7 @@ describe("CostDashboard", () => {
     expect(screen.getByLabelText("End date")).toHaveValue("2026-06-09");
   });
 
-  it("does not let a stale range response replace a newer run", async () => {
+  it("allows a new run after a pending range response settles", async () => {
     const pendingRange = createDeferred<ReturnType<typeof demoViewForRange>>();
     let defaultLoadCount = 0;
     vi.mocked(fetchDemoDashboardView).mockImplementation(async (range) => {
@@ -298,28 +337,32 @@ describe("CostDashboard", () => {
       }),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
-    expect(await screen.findByText("NEW_RUN")).toBeInTheDocument();
+    const runButton = screen.getByRole("button", { name: "Run analysis" });
+    expect(runButton).toBeDisabled();
 
     await act(async () => {
       pendingRange.resolve({
         ...demoViewForRange({ startDate: "2026-06-01", endDate: "2026-06-08" }),
         run: {
           ...demoDashboardView.run,
-          id: "stale-range-run",
+          id: "custom-range-run",
         },
         header: {
           ...demoDashboardView.header,
-          accountLocator: "STALE_RANGE",
+          accountLocator: "CUSTOM_RANGE",
         },
       });
     });
 
+    expect(await screen.findByText("CUSTOM_RANGE")).toBeInTheDocument();
+    await waitFor(() => expect(runButton).not.toBeDisabled());
+
+    fireEvent.click(runButton);
+    expect(await screen.findByText("NEW_RUN")).toBeInTheDocument();
     expect(screen.getByText("NEW_RUN")).toBeInTheDocument();
-    expect(screen.queryByText("STALE_RANGE")).not.toBeInTheDocument();
   });
 
-  it("does not let a stale range rejection mark a newer run failed", async () => {
+  it("allows a new run after a pending range rejection settles", async () => {
     const pendingRange = createDeferred<ReturnType<typeof demoViewForRange>>();
     let defaultLoadCount = 0;
     vi.mocked(fetchDemoDashboardView).mockImplementation(async (range) => {
@@ -360,13 +403,20 @@ describe("CostDashboard", () => {
       }),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
-    expect(await screen.findByText("NEW_RUN")).toBeInTheDocument();
+    const runButton = screen.getByRole("button", { name: "Run analysis" });
+    expect(runButton).toBeDisabled();
 
     await act(async () => {
-      pendingRange.reject(new Error("stale range failure"));
+      pendingRange.reject(new Error("range failure"));
     });
 
+    expect(
+      await screen.findByText("Could not load selected date range."),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(runButton).not.toBeDisabled());
+
+    fireEvent.click(runButton);
+    expect(await screen.findByText("NEW_RUN")).toBeInTheDocument();
     expect(screen.getByText("NEW_RUN")).toBeInTheDocument();
     expect(
       screen.queryByText("Could not load selected date range."),

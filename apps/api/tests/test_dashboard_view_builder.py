@@ -1,5 +1,5 @@
 from copy import deepcopy
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
@@ -482,6 +482,52 @@ def test_estimated_mode_uses_account_usage_through_date_and_estimated_basis() ->
     assert view.compute_spend.ranked_warehouses
 
 
+def test_estimated_non_usd_rate_returns_prepared_unsupported_view() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    metadata = _demo_metadata().model_copy(
+        update={
+            "data_mode": "estimated",
+            "billing_through_date": None,
+            "currency": "USD",
+            "organization_usage": SourceAvailability(
+                available=False, detail="org unavailable"
+            ),
+        }
+    )
+    datasets["org_spend_daily"] = []
+    datasets["service_spend_daily"] = [
+        {
+            "usage_date": "2026-06-08",
+            "service_type": "WAREHOUSE_METERING",
+            "credits_used": 10.0,
+        }
+    ]
+    datasets["rate_sheet_daily"] = [
+        {
+            "usage_date": "2026-06-08",
+            "service_type": "WAREHOUSE_METERING",
+            "rating_type": "COMPUTE",
+            "currency": "EUR",
+            "effective_rate": 2.5,
+        }
+    ]
+
+    view = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=metadata,
+        source_start_date=source_start,
+        source_end_date=source_end,
+        window_days=7,
+    )
+
+    assert view.unsupported is not None
+    assert view.unsupported.title == "Estimated non-USD spend is not supported"
+    assert view.total_spend.total == 0
+    assert view.total_spend.is_empty is True
+
+
 def test_no_through_date_returns_empty_view_before_range_validation() -> None:
     datasets = _demo_datasets()
     source_start, source_end = _source_bounds(datasets)
@@ -505,6 +551,49 @@ def test_no_through_date_returns_empty_view_before_range_validation() -> None:
     assert view.total_spend.is_empty is True
     assert view.range.start_date == source_end
     assert view.range.end_date == source_end
+
+
+def test_build_dashboard_view_normalizes_datetime_usage_dates() -> None:
+    datasets = _demo_datasets()
+    metadata = _demo_metadata().model_copy(
+        update={"billing_through_date": date(2026, 6, 8)}
+    )
+    datasets["org_spend_daily"] = [
+        {
+            "usage_date": date(2026, 6, 7),
+            "service_type": "CLOUD_SERVICES",
+            "rating_type": "COMPUTE",
+            "billing_type": "CONSUMPTION",
+            "is_adjustment": False,
+            "currency": "USD",
+            "spend": 10.0,
+        },
+        {
+            "usage_date": datetime(2026, 6, 8, 14, 30),
+            "service_type": "WAREHOUSE_METERING",
+            "rating_type": "COMPUTE",
+            "billing_type": "CONSUMPTION",
+            "is_adjustment": False,
+            "currency": "USD",
+            "spend": 20.0,
+        },
+    ]
+
+    view = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=metadata,
+        source_start_date=date(2026, 6, 7),
+        source_end_date=date(2026, 6, 8),
+        start_date=date(2026, 6, 7),
+        end_date=date(2026, 6, 8),
+    )
+
+    assert view.total_spend.total == pytest.approx(30.0, abs=0.01)
+    assert [point.date for point in view.total_spend.daily_series] == [
+        "2026-06-07",
+        "2026-06-08",
+    ]
 
 
 def test_mixed_currency_returns_prepared_unsupported_view() -> None:
@@ -547,6 +636,78 @@ def test_mixed_currency_out_of_bounds_custom_range_returns_unsupported() -> None
 
     assert view.unsupported is not None
     assert view.unsupported.title == "Mixed currencies are not supported"
+    assert view.total_spend.is_empty is True
+
+
+def test_estimated_non_usd_out_of_bounds_custom_range_returns_unsupported() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    metadata = _demo_metadata().model_copy(
+        update={
+            "data_mode": "estimated",
+            "billing_through_date": None,
+            "currency": "EUR",
+            "organization_usage": SourceAvailability(
+                available=False, detail="org unavailable"
+            ),
+        }
+    )
+    datasets["org_spend_daily"] = []
+    datasets["rate_sheet_daily"] = []
+
+    view = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=metadata,
+        source_start_date=source_start,
+        source_end_date=source_end,
+        start_date=date(2026, 2, 1),
+        end_date=date(2026, 2, 2),
+    )
+
+    assert view.unsupported is not None
+    assert view.unsupported.title == "Estimated non-USD spend is not supported"
+    assert view.total_spend.is_empty is True
+
+
+def test_estimated_non_usd_rate_out_of_bounds_custom_range_returns_unsupported() -> (
+    None
+):
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    metadata = _demo_metadata().model_copy(
+        update={
+            "data_mode": "estimated",
+            "billing_through_date": None,
+            "currency": "USD",
+            "organization_usage": SourceAvailability(
+                available=False, detail="org unavailable"
+            ),
+        }
+    )
+    datasets["org_spend_daily"] = []
+    datasets["rate_sheet_daily"] = [
+        {
+            "usage_date": "2026-06-08",
+            "service_type": "WAREHOUSE_METERING",
+            "rating_type": "COMPUTE",
+            "currency": "EUR",
+            "effective_rate": 2.5,
+        }
+    ]
+
+    view = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=metadata,
+        source_start_date=source_start,
+        source_end_date=source_end,
+        start_date=date(2026, 2, 1),
+        end_date=date(2026, 2, 2),
+    )
+
+    assert view.unsupported is not None
+    assert view.unsupported.title == "Estimated non-USD spend is not supported"
     assert view.total_spend.is_empty is True
 
 
@@ -630,6 +791,91 @@ def test_missing_required_rate_sheet_effective_rate_fails_loudly() -> None:
             source_start_date=source_start,
             source_end_date=source_end,
             window_days=7,
+        )
+
+
+@pytest.mark.parametrize(
+    "storage_row",
+    [
+        {
+            "usage_date": "2026-06-08",
+            "database_name": "RAW",
+            "average_database_bytes": 1_000_000_000_000,
+            "average_failsafe_bytes": None,
+        },
+        {
+            "usage_date": "2026-06-08",
+            "database_name": "RAW",
+            "average_database_bytes": 1_000_000_000_000,
+        },
+    ],
+)
+def test_nullable_or_absent_failsafe_bytes_counts_as_zero(
+    storage_row: dict[str, object],
+) -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    datasets["org_spend_daily"] = []
+    datasets["rate_sheet_daily"] = []
+    datasets["database_storage_daily"] = [storage_row]
+    metadata = _demo_metadata().model_copy(
+        update={
+            "data_mode": "estimated",
+            "billing_through_date": None,
+            "storage_price_usd_per_tb_month": 30.0,
+            "organization_usage": SourceAvailability(
+                available=False, detail="org unavailable"
+            ),
+        }
+    )
+
+    view = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=metadata,
+        source_start_date=source_start,
+        source_end_date=source_end,
+        start_date=date(2026, 6, 8),
+        end_date=date(2026, 6, 8),
+    )
+
+    assert view.storage_spend.daily_series[0].spend == pytest.approx(1.0, abs=0.01)
+    assert view.storage_spend.databases[0].bytes == 1_000_000_000_000
+
+
+def test_missing_required_database_storage_bytes_fails_loudly() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    datasets["org_spend_daily"] = []
+    datasets["rate_sheet_daily"] = []
+    datasets["database_storage_daily"] = [
+        {
+            "usage_date": "2026-06-08",
+            "database_name": "RAW",
+            "average_failsafe_bytes": 0,
+        }
+    ]
+    metadata = _demo_metadata().model_copy(
+        update={
+            "data_mode": "estimated",
+            "billing_through_date": None,
+            "organization_usage": SourceAvailability(
+                available=False, detail="org unavailable"
+            ),
+        }
+    )
+
+    with pytest.raises(
+        ValueError, match="database_storage_daily.average_database_bytes"
+    ):
+        build_dashboard_view(
+            run=_demo_run(),
+            datasets=datasets,
+            metadata=metadata,
+            source_start_date=source_start,
+            source_end_date=source_end,
+            start_date=date(2026, 6, 8),
+            end_date=date(2026, 6, 8),
         )
 
 
