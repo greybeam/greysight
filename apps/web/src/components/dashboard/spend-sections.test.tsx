@@ -30,7 +30,7 @@ describe("spend sections", () => {
     const totalCard = screen.getByTestId("total-spend-card");
 
     expect(screen.getByText("Overview")).toBeInTheDocument();
-    expect(within(capacityCard).getByText("Current Balance")).toBeInTheDocument();
+    expect(within(capacityCard).getByText("Ending Balance")).toBeInTheDocument();
     expect(
       within(capacityCard).getByText(
         demoDashboardView.capacityBalance.currentBalanceLabel,

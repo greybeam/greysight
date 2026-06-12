@@ -52,7 +52,7 @@ export function OverviewSection({
         {!capacityBalance || capacityBalance.isEmpty ? (
           <DashboardPanel
             ariaLabel="Capacity balance summary"
-            title="Current Balance"
+            title="Ending Balance"
           >
             <SectionEmptyState message="No capacity balance data" />
           </DashboardPanel>
@@ -60,7 +60,7 @@ export function OverviewSection({
           <CapacityBalanceCard
             ariaLabel="Capacity balance summary"
             currency={currency}
-            label="Current Balance"
+            label="Ending Balance"
             value={capacityBalance.currentBalanceLabel}
             data={capacityBalance.dailySeries}
             testId="capacity-balance-card"

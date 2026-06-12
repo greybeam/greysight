@@ -351,7 +351,7 @@ describe("parseDashboardView", () => {
 
     expect(parsed.capacityBalance).toEqual({
       currentBalance: 0,
-      currentBalanceLabel: "",
+      currentBalanceLabel: "$0.00",
       currentBalanceDate: null,
       dailySeries: [],
       isEmpty: true,

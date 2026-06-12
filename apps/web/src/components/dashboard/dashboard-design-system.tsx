@@ -348,9 +348,11 @@ export function createChartTooltip(
       return null;
     }
 
-    // Sort an immutable copy by value descending so the largest series is the
-    // top tooltip row, matching the stacked bar ordering. Single-series line
-    // charts are unaffected (a one-row sort is a no-op).
+    // Sort an immutable copy by this point's value, descending, so the largest
+    // value at the hovered point is the top row. This is the point's own value
+    // order and can differ from the stacked-bar order, which is fixed by each
+    // series' total across the whole range. Single-series line charts are
+    // unaffected (a one-row sort is a no-op).
     const rows = [...payload].sort(
       (a, b) => (Number(b.value) || 0) - (Number(a.value) || 0),
     );

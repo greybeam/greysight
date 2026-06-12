@@ -616,7 +616,7 @@ function parseCapacityBalanceViewModel(
 function emptyCapacityBalanceViewModel(): CapacityBalanceViewModel {
   return {
     currentBalance: 0,
-    currentBalanceLabel: "",
+    currentBalanceLabel: "$0.00",
     currentBalanceDate: null,
     dailySeries: [],
     isEmpty: true,

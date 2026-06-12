@@ -82,7 +82,7 @@ describe("CostDashboard", () => {
     render(<CostDashboard data={demoDashboardView} />);
 
     expect(screen.getByText("Overview")).toBeInTheDocument();
-    expect(screen.getByText("Current Balance")).toBeInTheDocument();
+    expect(screen.getByText("Ending Balance")).toBeInTheDocument();
     expect(screen.getByText("Total Spend in Period")).toBeInTheDocument();
     expect(screen.getByText("Compute spend")).toBeInTheDocument();
     expect(screen.getByText("Storage spend")).toBeInTheDocument();

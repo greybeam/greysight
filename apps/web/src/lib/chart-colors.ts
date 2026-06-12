@@ -36,16 +36,24 @@ export const ANOMALY_COLOR = "red";
  * Maps chart categories to stable Greybeam brand colors. One series resolves to
  * brand purple. Multiple series take pastels in a fixed, positional order; the
  * grouped "Other" bucket and any overflow beyond the 8 pastels fall back to slate.
+ * The "Other" bucket does not consume a pastel slot — real series keep getting
+ * consecutive pastels even when "Other" appears mid-list.
  */
 export function getSeriesColors(categories: readonly string[]): string[] {
   if (categories.length <= 1) {
     return categories.map(() => PRIMARY_CHART_COLOR);
   }
-  return categories.map((category, index) =>
-    category === OTHER_SERIES_LABEL
-      ? OTHER_SERIES_COLOR
-      : SERIES_PALETTE[index] ?? OTHER_SERIES_COLOR,
-  );
+  const colors: string[] = [];
+  let paletteIndex = 0;
+  for (const category of categories) {
+    if (category === OTHER_SERIES_LABEL) {
+      colors.push(OTHER_SERIES_COLOR);
+      continue;
+    }
+    colors.push(SERIES_PALETTE[paletteIndex] ?? OTHER_SERIES_COLOR);
+    paletteIndex += 1;
+  }
+  return colors;
 }
 
 /**
@@ -62,15 +70,18 @@ export function orderCategoriesByTotal(
     let sum = 0;
     for (const row of rows) {
       const value = row[category];
-      if (typeof value === "number") {
+      if (typeof value === "number" && Number.isFinite(value)) {
         sum += value;
       }
     }
     totals.set(category, sum);
   }
+  const indexByCategory = new Map(
+    categories.map((category, index) => [category, index] as const),
+  );
   return [...categories].sort((a, b) => {
     const diff = (totals.get(b) ?? 0) - (totals.get(a) ?? 0);
-    return diff !== 0 ? diff : categories.indexOf(a) - categories.indexOf(b);
+    return diff !== 0 ? diff : (indexByCategory.get(a) ?? 0) - (indexByCategory.get(b) ?? 0);
   });
 }
 

@@ -76,7 +76,7 @@ describe("CapacityBalanceCard", () => {
             balanceLabel: "$12,345.00",
           },
         ]}
-        label="Current Balance"
+        label="Ending Balance"
         value="$12,345.00"
         testId="capacity-balance-card"
       />,

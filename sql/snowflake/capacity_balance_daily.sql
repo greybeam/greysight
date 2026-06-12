@@ -1,7 +1,7 @@
 select
     date as usage_date,
     currency,
-    sum(capacity_balance) + sum(rollover_balance) as balance
+    coalesce(sum(capacity_balance), 0) + coalesce(sum(rollover_balance), 0) as balance
 from snowflake.organization_usage.remaining_balance_daily
 where date >= dateadd(
       day,
