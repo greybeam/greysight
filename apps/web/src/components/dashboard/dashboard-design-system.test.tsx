@@ -1,0 +1,97 @@
+import type { CustomTooltipProps } from "@tremor/react";
+import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
+
+import {
+  createChartTooltip,
+  createCurrencyTickFormatter,
+  formatChartDateLabel,
+} from "./dashboard-design-system";
+
+afterEach(() => {
+  cleanup();
+});
+
+describe("createCurrencyTickFormatter", () => {
+  it("formats USD across the adaptive fraction-digit ranges", () => {
+    const format = createCurrencyTickFormatter("USD");
+
+    expect(format(0)).toBe("$0");
+    expect(format(0.2)).toBe("$0.20");
+    expect(format(12)).toBe("$12");
+    expect(format(1200)).toBe("$1.2K");
+  });
+
+  it("uses the provided non-USD currency symbol", () => {
+    const format = createCurrencyTickFormatter("EUR");
+
+    expect(format(12)).toContain("€");
+  });
+
+  it("falls back to USD for a malformed currency code without throwing", () => {
+    // Intl.NumberFormat throws RangeError on structurally invalid codes
+    // (empty / wrong length / non-alphabetic). The formatter must fall back
+    // to USD rather than crash the chart.
+    const emptyFormat = createCurrencyTickFormatter("");
+    expect(emptyFormat(12)).toBe("$12");
+
+    const malformedFormat = createCurrencyTickFormatter("US");
+    expect(malformedFormat(12)).toBe("$12");
+  });
+});
+
+describe("formatChartDateLabel", () => {
+  it("formats a valid ISO date to MMM dd", () => {
+    expect(formatChartDateLabel("2026-06-09")).toBe("Jun 09");
+    expect(formatChartDateLabel("2026-01-01")).toBe("Jan 01");
+  });
+
+  it("does not drift across timezone boundaries", () => {
+    // UTC parsing must keep Jun 09 as Jun 09 regardless of the host timezone.
+    expect(formatChartDateLabel("2026-06-09")).toBe("Jun 09");
+  });
+
+  it("returns the original string for non-ISO input", () => {
+    expect(formatChartDateLabel("not-a-date")).toBe("not-a-date");
+  });
+
+  it("returns the original string for an out-of-range ISO-shaped value", () => {
+    expect(formatChartDateLabel("2026-13-40")).toBe("2026-13-40");
+  });
+});
+
+describe("createChartTooltip", () => {
+  const usdFormatter = createCurrencyTickFormatter("USD");
+  const sampleProps: CustomTooltipProps = {
+    active: true,
+    label: "Jun 09",
+    payload: [
+      {
+        color: "#3b82f6",
+        dataKey: "spend",
+        name: "spend",
+        value: 12.5,
+      },
+    ],
+  };
+
+  it("renders an opaque card with the label and formatted value", () => {
+    const Tooltip = createChartTooltip(usdFormatter);
+
+    render(<Tooltip {...sampleProps} />);
+
+    expect(screen.getByText("Jun 09")).toBeInTheDocument();
+    expect(screen.getByText(usdFormatter(12.5))).toBeInTheDocument();
+
+    const container = screen.getByText("Jun 09").parentElement;
+    expect(container).toHaveClass("bg-white");
+  });
+
+  it("renders nothing when inactive", () => {
+    const Tooltip = createChartTooltip(usdFormatter);
+
+    const { container } = render(<Tooltip {...sampleProps} active={false} />);
+
+    expect(container).toBeEmptyDOMElement();
+  });
+});

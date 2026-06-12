@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import demoDashboardView from "../../lib/demo-dashboard-view";
@@ -15,25 +15,86 @@ describe("spend sections", () => {
     cleanup();
   });
 
-  it("renders total spend dollars with projection basis", () => {
-    render(<TotalSpendSection viewModel={demoDashboardView.totalSpend} />);
+  it("renders total spend dollars as the only first-section KPI", () => {
+    render(
+      <TotalSpendSection
+        currency={demoDashboardView.header.currency}
+        viewModel={demoDashboardView.totalSpend}
+      />,
+    );
 
     expect(screen.getByText("Total spend")).toBeInTheDocument();
     expect(
       screen.getAllByText(demoDashboardView.totalSpend.totalLabel).length,
     ).toBeGreaterThan(0);
-    expect(
-      screen.getByText(
-        new RegExp(demoDashboardView.totalSpend.projectionBasisLabel),
-      ),
-    ).toBeInTheDocument();
+    expect(screen.queryByText("Average daily")).not.toBeInTheDocument();
+    expect(screen.queryByText("Projected monthly")).not.toBeInTheDocument();
+    expect(screen.queryByText("Basis")).not.toBeInTheDocument();
   });
 
-  it("labels estimated warehouse and user rankings", () => {
-    render(<ComputeSpendSection viewModel={demoDashboardView.computeSpend} />);
+  it("renders total spend value and Tremor chart within a single card", () => {
+    render(
+      <TotalSpendSection
+        currency={demoDashboardView.header.currency}
+        viewModel={demoDashboardView.totalSpend}
+      />,
+    );
+
+    const section = screen.getByTestId("dashboard-section-total-spend");
+    expect(section).toHaveClass("gap-4");
+
+    const cardRegion = screen.getByTestId("total-spend-card");
+
+    expect(within(cardRegion).getByText("Total Spend in Period")).toBeInTheDocument();
+    expect(
+      within(cardRegion).getByText(demoDashboardView.totalSpend.totalLabel),
+    ).toBeInTheDocument();
+    expect(
+      within(cardRegion).getByTestId("total-spend-tremor-line-chart"),
+    ).toHaveAttribute("data-chart-library", "tremor");
+
+    expect(
+      screen.queryByRole("region", { name: "Total spend KPI row" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("region", { name: "Daily total spend" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("total-spend-line")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("total-spend-point")).not.toBeInTheDocument();
+  });
+
+  it("renders compute spend on the shared card grid", () => {
+    render(
+      <ComputeSpendSection
+        currency={demoDashboardView.header.currency}
+        viewModel={demoDashboardView.computeSpend}
+      />,
+    );
+
+    const section = screen.getByTestId("dashboard-section-compute-spend");
+    const grid = screen.getByTestId("dashboard-grid-compute-spend");
+
+    expect(section).toHaveClass("gap-4");
+    expect(grid).toHaveClass("grid", "gap-4", "lg:grid-cols-3");
+    expect(screen.getByRole("region", { name: "Daily compute" })).toHaveAttribute(
+      "data-dashboard-panel",
+      "true",
+    );
+    expect(screen.getByTestId("compute-spend-tremor-line-chart")).toHaveAttribute(
+      "data-chart-library",
+      "tremor",
+    );
+  });
+
+  it("renders warehouse and user rankings", () => {
+    render(
+      <ComputeSpendSection
+        currency={demoDashboardView.header.currency}
+        viewModel={demoDashboardView.computeSpend}
+      />,
+    );
 
     expect(screen.getByText("Compute spend")).toBeInTheDocument();
-    expect(screen.getAllByText(/Estimated/).length).toBeGreaterThan(0);
     expect(
       screen.getByText(demoDashboardView.computeSpend.rankedWarehouses[0].name),
     ).toBeInTheDocument();
@@ -50,6 +111,7 @@ describe("spend sections", () => {
 
     render(
       <ComputeSpendSection
+        currency={demoDashboardView.header.currency}
         viewModel={{
           ...demoDashboardView.computeSpend,
           rankedWarehouses: [],
@@ -66,6 +128,7 @@ describe("spend sections", () => {
   it("renders a storage empty state when storage data is missing", () => {
     render(
       <StorageSpendSection
+        currency={demoDashboardView.header.currency}
         viewModel={{
           basis: "billed",
           databaseBasis: "estimated",
@@ -81,7 +144,12 @@ describe("spend sections", () => {
   });
 
   it("renders ranked services", () => {
-    render(<ServiceSpendSection viewModel={demoDashboardView.serviceSpend} />);
+    render(
+      <ServiceSpendSection
+        currency={demoDashboardView.header.currency}
+        viewModel={demoDashboardView.serviceSpend}
+      />,
+    );
 
     expect(screen.getByText("Service spend")).toBeInTheDocument();
     expect(

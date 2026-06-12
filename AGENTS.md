@@ -46,6 +46,21 @@ needed. Run shell commands through `rtk` when it is available.
   organization membership and RLS, and executes registry SQL against
   Snowflake. The demo bypass must never leak into authenticated code paths.
 
+## Dashboard Design System
+
+- Use Tremor chart assets and the shared dashboard primitives before adding
+  custom chart or card styling.
+- Extend components in `apps/web/src/components/dashboard/` when a reusable
+  pattern is missing; avoid one-off dashboard UI.
+- Keep spacing on the 4/8/16/24 scale for dashboard layout and controls.
+- Structure dashboard pages as header -> controls -> KPI row -> chart/card
+  sections.
+- Keep dashboard content in a centered container around `1200px` max width.
+- Do not add frontend-only analytics transforms; backend prepared views own
+  derived dashboard numbers.
+- Avoid custom one-off SVGs and chart styling unless a shared asset cannot
+  cover the required behavior.
+
 ## Project Structure
 
 - `apps/web/`: Next.js app, dashboard UI, auth/org shell, browser API clients, and Vitest tests.
