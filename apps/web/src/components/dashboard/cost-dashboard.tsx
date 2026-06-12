@@ -414,7 +414,10 @@ function CostDashboardContent({
         }}
       />
       <RunStatus status={loadState.status} message={loadState.message} />
-      <div className="mx-auto grid w-full max-w-7xl gap-5 px-4 py-4">
+      <div
+        aria-label="Dashboard content"
+        className="mx-auto grid w-full max-w-[1200px] gap-6 px-6 py-6"
+      >
         {viewModel ? (
           viewModel.unsupported ? (
             <SectionEmptyState
@@ -432,10 +435,22 @@ function CostDashboardContent({
                 onEndDateChange={setEndDate}
                 onApplyDateRange={handleCustomRangeApply}
               />
-              <TotalSpendSection viewModel={viewModel.totalSpend} />
-              <ComputeSpendSection viewModel={viewModel.computeSpend} />
-              <StorageSpendSection viewModel={viewModel.storageSpend} />
-              <ServiceSpendSection viewModel={viewModel.serviceSpend} />
+              <TotalSpendSection
+                currency={viewModel.header.currency}
+                viewModel={viewModel.totalSpend}
+              />
+              <ComputeSpendSection
+                currency={viewModel.header.currency}
+                viewModel={viewModel.computeSpend}
+              />
+              <StorageSpendSection
+                currency={viewModel.header.currency}
+                viewModel={viewModel.storageSpend}
+              />
+              <ServiceSpendSection
+                currency={viewModel.header.currency}
+                viewModel={viewModel.serviceSpend}
+              />
               <DetailTables viewModel={viewModel.detailTables} />
             </>
           )

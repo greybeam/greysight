@@ -58,6 +58,32 @@ describe("FilterBar", () => {
     );
   });
 
+  it("aligns the relative window control on the date input control plane", () => {
+    render(
+      <FilterBar
+        range={relativeRange}
+        currency="USD"
+        startDate={relativeRange.startDate}
+        endDate={relativeRange.endDate}
+        onWindowChange={vi.fn()}
+        onStartDateChange={vi.fn()}
+        onEndDateChange={vi.fn()}
+        onApplyDateRange={vi.fn()}
+      />,
+    );
+
+    const windowGroup = screen.getByRole("group", { name: "Spend window" });
+    const filterControls = windowGroup.parentElement;
+
+    expect(filterControls).toHaveClass("items-end");
+    expect(windowGroup).toHaveClass("h-8");
+    expect(screen.getByLabelText("Start date")).toHaveClass("h-8");
+    expect(screen.getByLabelText("End date")).toHaveClass("h-8");
+    expect(
+      screen.getByRole("button", { name: "Apply date range" }),
+    ).toHaveClass("h-8");
+  });
+
   it("renders controlled custom date inputs and reports input changes", () => {
     const onStartDateChange = vi.fn();
     const onEndDateChange = vi.fn();

@@ -91,6 +91,17 @@ describe("CostDashboard", () => {
     expect(screen.getAllByText("Analysis complete").length).toBeGreaterThan(0);
   });
 
+  it("uses the shared dashboard content container scale", () => {
+    render(<CostDashboard data={demoDashboardView} />);
+
+    expect(screen.getByLabelText("Dashboard content")).toHaveClass(
+      "max-w-[1200px]",
+      "gap-6",
+      "px-6",
+      "py-6",
+    );
+  });
+
   it("loads demo prepared view and prefetches relative windows", async () => {
     vi.mocked(fetchDemoDashboardView).mockResolvedValue(demoDashboardView);
 
