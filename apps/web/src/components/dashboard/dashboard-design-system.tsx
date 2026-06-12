@@ -12,6 +12,7 @@ import type {
 } from "../../lib/dashboard-contracts";
 import {
   getSeriesColors,
+  orderCategoriesByTotal,
   PRIMARY_CHART_COLOR,
   resolveChartColor,
 } from "../../lib/chart-colors";
@@ -311,12 +312,18 @@ export function SpendBarChart({
     ...point,
     date: formatChartDateLabel(String(point.date)),
   }));
+  // Stacked charts order series by descending total so the largest sits at the
+  // bottom of the stack and takes the first palette color. Tremor's BarChart
+  // emits categories[0] as the first (bottom/base) stacked Recharts <Bar>.
+  const orderedCategories = stack
+    ? orderCategoriesByTotal(categories, chartData)
+    : categories;
 
   return (
     <BarChart
-      categories={categories}
+      categories={orderedCategories}
       className={cx("mt-4 w-full", heightClass)}
-      colors={getSeriesColors(categories)}
+      colors={getSeriesColors(orderedCategories)}
       customTooltip={createChartTooltip(valueFormatter)}
       data={chartData}
       data-chart-library="tremor"
@@ -341,11 +348,18 @@ export function createChartTooltip(
       return null;
     }
 
+    // Sort an immutable copy by value descending so the largest series is the
+    // top tooltip row, matching the stacked bar ordering. Single-series line
+    // charts are unaffected (a one-row sort is a no-op).
+    const rows = [...payload].sort(
+      (a, b) => (Number(b.value) || 0) - (Number(a.value) || 0),
+    );
+
     return (
       <div className="rounded-md border border-hairline bg-surface px-3 py-2 shadow-lg">
         <p className="text-xs font-medium text-slate-100">{label}</p>
         <div className="mt-1 grid gap-1">
-          {payload.map((entry, index) => {
+          {rows.map((entry, index) => {
             const name = entry.dataKey ?? entry.name;
             const key = String(name ?? index);
 

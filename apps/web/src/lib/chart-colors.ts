@@ -49,6 +49,32 @@ export function getSeriesColors(categories: readonly string[]): string[] {
 }
 
 /**
+ * Orders chart series by their total value across all rows, descending. Ties
+ * preserve the original category order. Used to stack the largest series at the
+ * bottom and assign it the first palette color.
+ */
+export function orderCategoriesByTotal(
+  categories: readonly string[],
+  rows: ReadonlyArray<Record<string, unknown>>,
+): string[] {
+  const totals = new Map<string, number>();
+  for (const category of categories) {
+    let sum = 0;
+    for (const row of rows) {
+      const value = row[category];
+      if (typeof value === "number") {
+        sum += value;
+      }
+    }
+    totals.set(category, sum);
+  }
+  return [...categories].sort((a, b) => {
+    const diff = (totals.get(b) ?? 0) - (totals.get(a) ?? 0);
+    return diff !== 0 ? diff : categories.indexOf(a) - categories.indexOf(b);
+  });
+}
+
+/**
  * Resolves a Tremor color token (e.g. "chart-purple") to a concrete hex for
  * inline styles. Passes through any value that is already a CSS color (e.g. the
  * "gray" fallback Tremor uses for unknown categories).

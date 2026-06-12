@@ -8,6 +8,7 @@ import {
   createCurrencyTickFormatter,
   formatChartDateLabel,
 } from "./dashboard-design-system";
+import { getSeriesColors, orderCategoriesByTotal } from "../../lib/chart-colors";
 
 afterEach(() => {
   cleanup();
@@ -118,5 +119,55 @@ describe("createChartTooltip", () => {
     const { container } = render(<Tooltip {...sampleProps} active={false} />);
 
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("orders multi-series rows by value descending regardless of payload order", () => {
+    const Tooltip = createChartTooltip(usdFormatter);
+    const multiSeriesProps: CustomTooltipProps = {
+      active: true,
+      label: "Jun 09",
+      payload: [
+        { color: "chart-3", dataKey: "AUTO_CLUSTERING", name: "AUTO_CLUSTERING", value: 1 },
+        { color: "chart-2", dataKey: "CLOUD_SERVICES", name: "CLOUD_SERVICES", value: 5 },
+        { color: "chart-1", dataKey: "WAREHOUSE_METERING", name: "WAREHOUSE_METERING", value: 10 },
+      ],
+    };
+
+    render(<Tooltip {...multiSeriesProps} />);
+
+    const renderedNames = screen
+      .getAllByText(/AUTO_CLUSTERING|CLOUD_SERVICES|WAREHOUSE_METERING/)
+      .map((node) => node.textContent);
+
+    expect(renderedNames).toEqual([
+      "WAREHOUSE_METERING",
+      "CLOUD_SERVICES",
+      "AUTO_CLUSTERING",
+    ]);
+  });
+});
+
+describe("stacked service spend ordering", () => {
+  it("puts the largest-total series first (bottom of stack) with the first palette color", () => {
+    // Tremor's BarChart emits categories[0] as the first stacked Recharts <Bar>,
+    // which renders at the bottom/base of the stack. Ordering by descending total
+    // therefore places the largest series at the bottom and, via positional
+    // getSeriesColors, gives it chart-1.
+    const categories = ["AUTO_CLUSTERING", "CLOUD_SERVICES", "WAREHOUSE_METERING"];
+    const chartData = [
+      { date: "Jun 01", AUTO_CLUSTERING: 1, CLOUD_SERVICES: 5, WAREHOUSE_METERING: 10 },
+      { date: "Jun 02", AUTO_CLUSTERING: 2, CLOUD_SERVICES: 6, WAREHOUSE_METERING: 12 },
+    ];
+
+    const orderedCategories = orderCategoriesByTotal(categories, chartData);
+    const colors = getSeriesColors(orderedCategories);
+
+    expect(orderedCategories[0]).toBe("WAREHOUSE_METERING");
+    expect(colors[0]).toBe("chart-1");
+    expect(orderedCategories).toEqual([
+      "WAREHOUSE_METERING",
+      "CLOUD_SERVICES",
+      "AUTO_CLUSTERING",
+    ]);
   });
 });
