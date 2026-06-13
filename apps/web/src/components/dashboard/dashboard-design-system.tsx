@@ -131,6 +131,23 @@ export function DashboardPanel({
   );
 }
 
+// Drops the cents from a server-formatted currency label once the magnitude
+// reaches $10 so the ranked list reads compactly and the value column fits in
+// narrow cards; sub-$10 rows keep their decimals where the precision matters.
+// We round to whole units (not truncate) from the canonical numeric spend so a
+// $10.99 row reads as "$11" instead of understating it as "$10", then swap the
+// rounded, grouped integer back into the label's numeric run — preserving
+// whatever currency symbol/suffix the server attached. The server formats with
+// Python `,.2f` (comma groups, period decimal), so en-US grouping matches the
+// source and the first run of digits/commas/decimals is the amount to replace.
+function compactSpendLabel(row: RankedBarRow): string {
+  if (Math.abs(row.spend) < 10) {
+    return row.spendLabel;
+  }
+  const rounded = Math.round(Math.abs(row.spend)).toLocaleString("en-US");
+  return row.spendLabel.replace(/[\d,]+(?:\.\d+)?/, rounded);
+}
+
 export function RankedSpendBars({ rows }: { rows: RankedBarRow[] }) {
   const visibleRows = rows.filter((row) => Math.round(row.spend * 100) !== 0);
 
@@ -148,18 +165,26 @@ export function RankedSpendBars({ rows }: { rows: RankedBarRow[] }) {
   // has a chart neighbour to cap against.
   //
   // The grid owns the column tracks so name / bar / value line up across rows.
+  // The name and bar tracks have a 0 (name) / small (bar) minimum so they give
+  // up width on narrow cards instead of overflowing — the value track stays
+  // `auto` so the dollar amount is never the column that gets clipped. The name
+  // cell carries truncate/min-w-0 (it ellipsizes), with title= exposing the
+  // full name on hover for objects with long names.
   // role="list"/role="listitem" restore semantics that a `contents` li can drop
   // in some screen readers; the inner cell spans (not the `contents` li, which
   // cannot truncate) carry truncate/min-w-0.
   return (
     <div className="relative mt-4 min-h-[16rem] flex-1 lg:min-h-0">
       <ul
-        className="dashboard-scroll absolute inset-0 grid grid-cols-[minmax(8rem,10rem)_minmax(6rem,1fr)_auto] content-start items-center gap-x-4 gap-y-2 overflow-y-auto"
+        className="dashboard-scroll absolute inset-0 grid grid-cols-[minmax(0,9rem)_minmax(1.5rem,1fr)_auto] content-start items-center gap-x-3 gap-y-2 overflow-y-auto"
         role="list"
       >
         {visibleRows.map((row) => (
           <li className="contents" key={row.name} role="listitem">
-            <span className="min-w-0 truncate text-xs text-slate-400">
+            <span
+              className="min-w-0 truncate text-xs text-slate-400"
+              title={row.name}
+            >
               {row.name}
             </span>
             <span className="h-2 rounded bg-hairline">
@@ -169,7 +194,7 @@ export function RankedSpendBars({ rows }: { rows: RankedBarRow[] }) {
               />
             </span>
             <span className="text-xs font-semibold tabular-nums text-slate-200">
-              {row.spendLabel}
+              {compactSpendLabel(row)}
             </span>
           </li>
         ))}
