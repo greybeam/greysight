@@ -18,7 +18,6 @@ import {
 import DashboardHeader, {
   type DashboardModeLabel,
 } from "./dashboard-header";
-import DetailTables from "./detail-tables";
 import FilterBar, {
   WINDOW_DAYS,
   canApplyDateRange,
@@ -451,7 +450,6 @@ function CostDashboardContent({
                 range={activeRange ?? viewModel.range}
                 viewModel={viewModel.storageSpend}
               />
-              <DetailTables viewModel={viewModel.detailTables} />
             </>
           )
         ) : (

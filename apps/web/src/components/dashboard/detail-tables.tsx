@@ -5,8 +5,6 @@ import {
   Text,
 } from "@tremor/react";
 
-import type { DetailTablesViewModel } from "../../lib/dashboard-contracts";
-
 function formatNumber(value: number): string {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value);
 }
@@ -117,66 +115,5 @@ export function DetailTable({
         <div className="mt-2 max-h-72 overflow-y-auto">{table}</div>
       )}
     </Card>
-  );
-}
-
-export default function DetailTables({
-  viewModel,
-}: {
-  viewModel: DetailTablesViewModel;
-}) {
-  return (
-    <section aria-label="Detail tables" className="grid gap-3 lg:grid-cols-2">
-      <DetailTable
-        title="Service spend"
-        headers={["Service", "Spend", "Credits"]}
-        rows={viewModel.services.map((row) => ({
-          key: row.name,
-          cells: [
-            { key: "name", value: row.name },
-            { key: "spend", value: row.spendLabel },
-            { key: "credits", value: row.credits ?? 0 },
-          ],
-        }))}
-      />
-      <DetailTable
-        title="Warehouse spend"
-        headers={["Warehouse", "Est. spend", "Compute credits", "Total credits"]}
-        rows={viewModel.warehouses.map((row) => ({
-          key: row.name,
-          cells: [
-            { key: "name", value: row.name },
-            { key: "spend", value: row.spendLabel },
-            { key: "creditsCompute", value: row.creditsCompute },
-            { key: "creditsTotal", value: row.creditsTotal },
-          ],
-        }))}
-      />
-      <DetailTable
-        title="User compute spend"
-        headers={["User", "Warehouse", "Est. spend", "Credits"]}
-        rows={viewModel.users.map((row) => ({
-          key: `${row.name}-${row.warehouseName}`,
-          cells: [
-            { key: "name", value: row.name },
-            { key: "warehouseName", value: row.warehouseName },
-            { key: "spend", value: row.spendLabel },
-            { key: "credits", value: row.credits ?? 0 },
-          ],
-        }))}
-      />
-      <DetailTable
-        title="Storage by database"
-        headers={["Database", "Est. monthly spend", "Bytes"]}
-        rows={viewModel.storage.map((row) => ({
-          key: row.name,
-          cells: [
-            { key: "name", value: row.name },
-            { key: "monthlySpend", value: row.monthlySpendLabel },
-            { key: "bytes", value: row.bytes },
-          ],
-        }))}
-      />
-    </section>
   );
 }

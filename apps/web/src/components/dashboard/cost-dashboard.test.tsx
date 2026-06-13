@@ -92,16 +92,15 @@ describe("CostDashboard", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Storage spend")).toBeInTheDocument();
     expect(screen.queryByText("Total Spend in Period")).not.toBeInTheDocument();
-    // "Warehouse spend" appears twice: the section heading and the detail table.
+    // "Warehouse spend" now only appears as the section heading; the bottom 2x2
+    // detail tables were removed.
     expect(screen.getAllByText("Warehouse spend").length).toBeGreaterThan(0);
-    expect(screen.getByText("User compute spend")).toBeInTheDocument();
-    // After the rename, the storage section's right-side card is titled
-    // "Total spend by database" while the bottom 2x2 detail table still
-    // renders "Storage by database". Assert both are present.
-    expect(
-      screen.getByText("Total spend by database"),
-    ).toBeInTheDocument(); // storage section right card
-    expect(screen.getByText("Storage by database")).toBeInTheDocument(); // bottom 2x2 detail table
+    // The storage section's right-side card is titled "Total spend by database".
+    // The removed bottom 2x2 detail tables ("User compute spend",
+    // "Storage by database") should no longer render.
+    expect(screen.getByText("Total spend by database")).toBeInTheDocument();
+    expect(screen.queryByText("User compute spend")).not.toBeInTheDocument();
+    expect(screen.queryByText("Storage by database")).not.toBeInTheDocument();
     expect(screen.getAllByText("Analysis complete").length).toBeGreaterThan(0);
   });
 
