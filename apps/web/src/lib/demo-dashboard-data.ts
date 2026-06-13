@@ -6,6 +6,7 @@ const ACCOUNT_USAGE_THROUGH = BILLING_THROUGH;
 const ACCOUNT_LOCATOR = "DEMO123";
 const CREDIT_RATE_USD = 2.25;
 const STORAGE_RATE_USD = 25;
+const CAPACITY_START_USD = 75_000;
 
 const SERVICES: Array<[serviceType: string, ratingType: string, credits: number]> =
   [
@@ -93,6 +94,9 @@ const databaseStorageDaily = usageDates.flatMap((usage_date, index) =>
       average_failsafe_bytes: Math.round(
         baseTb * 0.08 * growthFactor * 1_000_000_000_000,
       ),
+      // Demo account has no hybrid (Unistore) tables, matching the common case
+      // where Snowflake reports this column as null.
+      average_hybrid_table_storage_bytes: null,
     };
   }),
 );
@@ -114,11 +118,28 @@ const rateSheetDaily = usageDates.flatMap((usage_date) =>
   SERVICES.map(([service_type, rating_type]) => ({
     usage_date,
     service_type,
+    // Snowflake's rate sheet keys each rate by a usage type; the demo's compute
+    // services all bill as credits.
+    usage_type: "credits",
     rating_type,
     currency: "USD",
     effective_rate: CREDIT_RATE_USD,
   })),
 );
+
+let remainingCapacityBalance = CAPACITY_START_USD;
+const capacityBalanceDaily = usageDates.map((usage_date) => {
+  const dailySpend = orgSpendDaily
+    .filter((row) => row.usage_date === usage_date)
+    .reduce((total, row) => total + row.spend, 0);
+  remainingCapacityBalance = round(remainingCapacityBalance - dailySpend, 2);
+
+  return {
+    usage_date,
+    currency: "USD",
+    balance: remainingCapacityBalance,
+  };
+});
 
 const accountSpendDaily = usageDates.map((usage_date) => ({
   usage_date,
@@ -199,6 +220,7 @@ const demoDashboardData: DashboardData = {
     top_warehouses_table: topWarehousesTable,
     org_spend_daily: orgSpendDaily,
     rate_sheet_daily: rateSheetDaily,
+    capacity_balance_daily: capacityBalanceDaily,
     current_account: [{ account_locator: ACCOUNT_LOCATOR }],
   },
 };

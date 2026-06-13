@@ -8,7 +8,8 @@ from typing import Any, Callable
 
 from app.models import DashboardDatasetMetadata, DashboardRun
 from app.services.dashboard_view_models import (
-    ComputeSpendViewModel,
+    BalancePoint,
+    CapacityBalanceViewModel,
     DashboardProjectionRange,
     DashboardViewRange,
     DashboardViewResponse,
@@ -20,18 +21,26 @@ from app.services.dashboard_view_models import (
     ServicePoint,
     ServiceSpendViewModel,
     SpendBasis,
+    StorageDatabasePoint,
     StorageDatabaseRow,
     StorageSpendViewModel,
     TotalSpendViewModel,
     UnsupportedViewModel,
     UserDetailRow,
     WarehouseDetailRow,
+    WarehousePoint,
+    WarehouseSpendViewModel,
 )
 
 DEFAULT_VIEW_WINDOW_DAYS = 30
 SUPPORTED_VIEW_WINDOW_DAYS = frozenset({7, 30, 90})
-DASHBOARD_RANKED_BAR_LIMIT = 8
 DASHBOARD_DETAIL_ROW_LIMIT = 50
+# Stacked chart series cap. Series beyond this count are bucketed into the top
+# (LIMIT - 1) categories by total spend plus an aggregated "Other" series. This
+# matches the frontend chart palette length in apps/web/src/lib/chart-colors.ts
+# (SERIES_PALETTE has 14 entries); keep the two in sync.
+DASHBOARD_STACKED_SERIES_LIMIT = 14
+OTHER_STACKED_SERIES_LABEL = "Other"
 CURRENCY_SYMBOL_PREFIXES = {
     "EUR": "€",
     "GBP": "£",
@@ -69,6 +78,9 @@ CURRENCY_CODE_PREFIXES = frozenset(
 CURRENCY_CODE_SEPARATOR = "\u00a0"
 CURRENCY_COMPACT_DECIMAL_CODES = frozenset({"HUF", "IDR", "JPY", "KRW"})
 CURRENCY_TWO_DECIMAL_QUANT = Decimal("0.01")
+# Tolerance for the cloud-services credits invariant so floating-point noise in
+# (credits_used - credits_used_compute) is not mistaken for an impossible state.
+_FLOAT_EPSILON = 1e-9
 
 DatasetRow = dict[str, Any]
 RateIndex = dict[str, "RateIndexEntry"]
@@ -339,6 +351,11 @@ def _build_dashboard_view_for_ranges(
         view_range.start_date,
         view_range.end_date,
     )
+    capacity_balance_rows = _rows_in_window(
+        _dataset_rows(datasets, "capacity_balance_daily"),
+        view_range.start_date,
+        view_range.end_date,
+    )
     billed_storage_rows = [row for row in billed_rows if _is_storage_spend_row(row)]
     dates = _date_range(view_range.start_date, view_range.end_date)
     projection_dates = _date_range(
@@ -382,19 +399,23 @@ def _build_dashboard_view_for_ranges(
         currency=currency,
         convert=convert,
     )
-    compute_spend = _build_compute_spend(
+    warehouse_spend = _build_warehouse_spend(
         dates=dates,
         warehouse_rows=warehouse_rows,
         user_rows=user_rows,
         currency=currency,
         convert=convert,
     )
+    storage_rates = _build_storage_rate_index(
+        _dataset_rows(datasets, "rate_sheet_daily")
+    )
     storage_spend = _build_storage_spend(
         dates=dates,
         rows=storage_rows,
         billed_rows=billed_storage_rows,
         basis=basis,
-        price_per_tb_month=metadata.storage_price_usd_per_tb_month,
+        storage_rates=storage_rates,
+        metadata=metadata,
         currency=currency,
     )
     total_spend = _build_total_spend(
@@ -405,6 +426,10 @@ def _build_dashboard_view_for_ranges(
         currency=currency,
         day_count=len(dates),
     )
+    capacity_balance = _build_capacity_balance(
+        rows=capacity_balance_rows,
+        currency=currency,
+    )
 
     return DashboardViewResponse(
         run=run,
@@ -412,8 +437,9 @@ def _build_dashboard_view_for_ranges(
         projection_range=projection_range,
         header=header,
         unsupported=None,
+        capacity_balance=capacity_balance,
         total_spend=total_spend,
-        compute_spend=compute_spend,
+        warehouse_spend=warehouse_spend,
         storage_spend=storage_spend,
         service_spend=service_spend,
         detail_tables=DetailTablesViewModel(
@@ -427,7 +453,7 @@ def _build_dashboard_view_for_ranges(
                         **row.model_dump(),
                         warehouse_name=_user_warehouse_label(user_rows, row.name),
                     )
-                    for row in compute_spend.ranked_users
+                    for row in warehouse_spend.ranked_users
                 ]
             ),
             storage=_cap_detail_rows(storage_spend.databases),
@@ -488,6 +514,27 @@ def _format_currency_amount(value: Decimal, currency: str) -> str:
 
 def _format_usage_date(value: date) -> str:
     return f"{value:%b} {value.day}, {value.year}"
+
+
+_BYTE_UNITS = ("B", "KB", "MB", "GB", "TB", "PB")
+_BYTE_UNIT_STEP = 1000.0
+
+
+def _format_bytes(bytes_value: float) -> str:
+    """Humanize a byte count with 1000-base decimal units and one decimal place.
+
+    Uses decimal (1000-base) units — B, KB, MB, GB, TB, PB — so the displayed
+    size visually agrees with the TB-based cost math (bytes / 1e12). Values at or
+    above 1 PB stay in PB rather than overflowing the unit table.
+    """
+    magnitude = abs(bytes_value)
+    unit_index = 0
+    scaled = magnitude
+    while scaled >= _BYTE_UNIT_STEP and unit_index < len(_BYTE_UNITS) - 1:
+        scaled /= _BYTE_UNIT_STEP
+        unit_index += 1
+    sign = "-" if bytes_value < 0 else ""
+    return f"{sign}{scaled:.1f} {_BYTE_UNITS[unit_index]}"
 
 
 def _build_header_view_model(
@@ -590,9 +637,10 @@ def _empty_dashboard_view(
         projection_range=projection_range,
         header=header,
         unsupported=unsupported,
+        capacity_balance=_empty_capacity_balance(currency),
         total_spend=_empty_total_spend(currency),
-        compute_spend=_empty_compute_spend(),
-        storage_spend=_empty_storage_spend(),
+        warehouse_spend=_empty_warehouse_spend(currency),
+        storage_spend=_empty_storage_spend(currency),
         service_spend=_empty_service_spend(),
         detail_tables=DetailTablesViewModel(
             services=[],
@@ -619,10 +667,23 @@ def _empty_total_spend(currency: str) -> TotalSpendViewModel:
     )
 
 
-def _empty_compute_spend() -> ComputeSpendViewModel:
-    return ComputeSpendViewModel(
-        compute_basis="estimated",
+def _empty_capacity_balance(currency: str) -> CapacityBalanceViewModel:
+    return CapacityBalanceViewModel(
+        current_balance=0,
+        current_balance_label=_format_currency(0, currency),
+        current_balance_date=None,
         daily_series=[],
+        is_empty=True,
+    )
+
+
+def _empty_warehouse_spend(currency: str) -> WarehouseSpendViewModel:
+    return WarehouseSpendViewModel(
+        basis="estimated",
+        total=0,
+        total_label=_format_currency(0, currency),
+        daily_series=[],
+        warehouse_names=[],
         ranked_warehouses=[],
         ranked_users=[],
         warehouse_bars=[],
@@ -631,11 +692,15 @@ def _empty_compute_spend() -> ComputeSpendViewModel:
     )
 
 
-def _empty_storage_spend() -> StorageSpendViewModel:
+def _empty_storage_spend(currency: str) -> StorageSpendViewModel:
     return StorageSpendViewModel(
         basis="estimated",
         database_basis="estimated",
+        total=0,
+        total_label=_format_currency(0, currency),
         daily_series=[],
+        database_names=[],
+        database_daily_series=[],
         databases=[],
         database_bars=[],
         is_empty=True,
@@ -687,10 +752,19 @@ def _dataset_rows(
 
 def _build_rate_index(rows: list[DatasetRow]) -> RateIndex:
     rates: RateIndex = {}
+    # Tracks whether the value currently stored under each service-only key came
+    # from a COMPUTE row. COMPUTE is the preferred fallback rate, so a COMPUTE row
+    # always supersedes a non-COMPUTE one; among rows of the same preference we
+    # keep the max effective_rate.
+    service_only_is_compute: dict[str, bool] = {}
     for row in rows:
         usage_date = _as_date(row["usage_date"])
         service_type = _string_field(row, "service_type", "Unknown service")
         rating_type = _optional_string(row.get("rating_type"))
+        # rate_sheet_daily now carries usage_type in its grain, so multiple rows
+        # can share (date, service_type, rating_type) and differ only by
+        # usage_type. The SQL previously collapsed these with max(effective_rate);
+        # replicate that here so the priced rate is stable regardless of grain.
         entry = RateIndexEntry(
             currency=_optional_string(row.get("currency")),
             effective_rate=_required_float_field(
@@ -699,12 +773,34 @@ def _build_rate_index(rows: list[DatasetRow]) -> RateIndex:
         )
 
         if rating_type is not None:
-            rates[_rate_key(usage_date, service_type, rating_type)] = entry
+            rating_key = _rate_key(usage_date, service_type, rating_type)
+            rates[rating_key] = _max_rate_entry(rates.get(rating_key), entry)
 
         service_only_key = _rate_key(usage_date, service_type)
-        if service_only_key not in rates or rating_type == "COMPUTE":
+        is_compute = rating_type == "COMPUTE"
+        stored_is_compute = service_only_is_compute.get(service_only_key)
+        if service_only_key not in rates:
             rates[service_only_key] = entry
+            service_only_is_compute[service_only_key] = is_compute
+        elif is_compute and not stored_is_compute:
+            # COMPUTE supersedes a non-COMPUTE fallback regardless of rate.
+            rates[service_only_key] = entry
+            service_only_is_compute[service_only_key] = True
+        elif is_compute == bool(stored_is_compute):
+            # Same preference tier: keep the larger effective_rate, mirroring the
+            # old SQL max() aggregation across usage_type rows.
+            rates[service_only_key] = _max_rate_entry(rates[service_only_key], entry)
     return rates
+
+
+def _max_rate_entry(
+    existing: RateIndexEntry | None, candidate: RateIndexEntry
+) -> RateIndexEntry:
+    if existing is None:
+        return candidate
+    if candidate.effective_rate > existing.effective_rate:
+        return candidate
+    return existing
 
 
 def _rate_key(
@@ -740,6 +836,58 @@ def _credits_to_dollars(
 
     if _is_usd_or_unspecified(metadata.currency):
         return credits * metadata.estimated_credit_price_usd
+    return None
+
+
+STORAGE_USAGE_TYPE = "storage"
+
+
+def _build_storage_rate_index(rows: list[DatasetRow]) -> dict[date, RateIndexEntry]:
+    """Per-date storage rate (currency-per-TB-month) from rate_sheet_daily.
+
+    Only rows whose usage_type matches Snowflake's lowercase "storage" value
+    (compared case-insensitively) are considered. When several storage rows share
+    a usage_date (e.g. different service_type), the max effective_rate is kept,
+    mirroring the old SQL max() aggregation and the credit-rate index.
+    """
+    storage_rates: dict[date, RateIndexEntry] = {}
+    for row in rows:
+        usage_type = _optional_string(row.get("usage_type"))
+        if usage_type is None or usage_type.casefold() != STORAGE_USAGE_TYPE:
+            continue
+        usage_date = _as_date(row["usage_date"])
+        entry = RateIndexEntry(
+            currency=_optional_string(row.get("currency")),
+            effective_rate=_required_float_field(
+                row, "rate_sheet_daily", "effective_rate"
+            ),
+        )
+        storage_rates[usage_date] = _max_rate_entry(
+            storage_rates.get(usage_date), entry
+        )
+    return storage_rates
+
+
+def _storage_price_for(
+    usage_date: date,
+    storage_rates: dict[date, RateIndexEntry],
+    metadata: DashboardDatasetMetadata,
+) -> float | None:
+    """Resolve the storage rate (currency-per-TB-month) for a date.
+
+    Prefers the rate-sheet rate; falls back to the configured
+    storage_price_usd_per_tb_month when absent, mirroring the credit-price
+    fallback in ``_credits_to_dollars``. Non-USD rate-sheet/dashboard currencies
+    are unconvertible and yield ``None`` (the estimated view is already gated to
+    USD upstream, but the check is mirrored here for safety).
+    """
+    entry = storage_rates.get(usage_date)
+    if entry is not None:
+        if not _is_usd_or_unspecified(entry.currency):
+            return None
+        return entry.effective_rate
+    if _is_usd_or_unspecified(metadata.currency):
+        return metadata.storage_price_usd_per_tb_month
     return None
 
 
@@ -823,29 +971,148 @@ def _build_total_spend(
     )
 
 
-def _build_compute_spend(
+def _build_capacity_balance(
+    *,
+    rows: list[DatasetRow],
+    currency: str,
+) -> CapacityBalanceViewModel:
+    balance_by_date: dict[date, float] = {}
+    for row in rows:
+        if _optional_string(row.get("currency")) != currency:
+            continue
+        usage_date = _as_date(row["usage_date"])
+        balance_by_date[usage_date] = balance_by_date.get(
+            usage_date, 0.0
+        ) + _required_float_field(row, "capacity_balance_daily", "balance")
+
+    if not balance_by_date:
+        return _empty_capacity_balance(currency)
+
+    daily_series = [
+        BalancePoint(
+            date=usage_date.isoformat(),
+            balance=balance_by_date[usage_date],
+            balance_label=_format_currency(balance_by_date[usage_date], currency),
+        )
+        for usage_date in sorted(balance_by_date)
+    ]
+    current_point = daily_series[-1]
+
+    return CapacityBalanceViewModel(
+        current_balance=current_point.balance,
+        current_balance_label=current_point.balance_label,
+        current_balance_date=current_point.date,
+        daily_series=daily_series,
+        is_empty=False,
+    )
+
+
+def _bucket_stacked_series(
+    names: list[str],
+    values_by_date: list[dict[str, float]],
+) -> tuple[list[str], list[dict[str, float]]]:
+    """Cap a stacked daily series at DASHBOARD_STACKED_SERIES_LIMIT categories.
+
+    When the number of categories exceeds the limit, the top (LIMIT - 1)
+    categories by total spend across the whole window are kept and every other
+    category is aggregated, per date, into a single "Other" series appended last.
+    A real category named OTHER_STACKED_SERIES_LABEL is never eligible for the
+    kept top set when bucketing engages; its per-date values are folded into the
+    synthetic bucket so the output never carries the reserved name twice.
+    Categories at or under the limit are returned unchanged (a real "Other" stays
+    a normal category). Both the names list and each date's values dict are
+    returned as new objects (immutable inputs).
+
+    ``values_by_date`` is a list of per-date {category: dollars} mappings, one
+    entry per date, aligned positionally with the caller's date list.
+    """
+    if len(names) <= DASHBOARD_STACKED_SERIES_LIMIT:
+        return list(names), [dict(values) for values in values_by_date]
+
+    totals: dict[str, float] = {name: 0.0 for name in names}
+    for values in values_by_date:
+        for name, amount in values.items():
+            totals[name] += amount
+
+    kept_count = DASHBOARD_STACKED_SERIES_LIMIT - 1
+    # A real category equal to the reserved label is excluded from the kept set
+    # so the synthetic bucket name never collides with (or overwrites) it; its
+    # values fold into the bucket below alongside the ranked-out remainder.
+    # Sort by descending total; ties fall back to the incoming (sorted) order so
+    # the selection is deterministic. Precompute the incoming index once so key
+    # construction stays O(n) rather than rescanning names per comparison.
+    order = {name: index for index, name in enumerate(names)}
+    ranked_names = sorted(
+        (name for name in names if name != OTHER_STACKED_SERIES_LABEL),
+        key=lambda name: (-totals[name], order[name]),
+    )
+    kept_names = ranked_names[:kept_count]
+    kept_set = frozenset(kept_names)
+    bucketed_names = kept_names + [OTHER_STACKED_SERIES_LABEL]
+
+    bucketed_values: list[dict[str, float]] = []
+    for values in values_by_date:
+        point: dict[str, float] = {name: values[name] for name in kept_names}
+        point[OTHER_STACKED_SERIES_LABEL] = sum(
+            amount for name, amount in values.items() if name not in kept_set
+        )
+        bucketed_values.append(point)
+
+    return bucketed_names, bucketed_values
+
+
+def _warehouse_row_dollars(
+    row: DatasetRow,
+    convert: ConvertCredits,
+) -> float:
+    """Total estimated dollars for one warehouse_spend_daily row.
+
+    Combines compute credits priced at WAREHOUSE_METERING/COMPUTE with the
+    cloud-services credits (credits_used - credits_used_compute) priced at
+    CLOUD_SERVICES. Cloud-services credits are an invariant non-negative
+    quantity; we raise here rather than silently absorbing impossible negatives,
+    matching the codebase's fail-loud stance on bad states. ``assert`` is avoided
+    so ``python -O`` cannot strip the guard and clamp real negatives.
+    """
+    usage_date = _as_date(row["usage_date"])
+    compute_credits = _required_float_field(
+        row, "warehouse_spend_daily", "credits_used_compute"
+    )
+    cloud_services_credits = (
+        _required_float_field(row, "warehouse_spend_daily", "credits_used")
+        - compute_credits
+    )
+    if cloud_services_credits < -_FLOAT_EPSILON:
+        raise ValueError(
+            "warehouse_spend_daily credits_used must be >= credits_used_compute"
+        )
+    # Clamp the epsilon band (tiny negative float noise) to zero.
+    cloud_services_credits = max(cloud_services_credits, 0.0)
+
+    return convert(
+        compute_credits, usage_date, "WAREHOUSE_METERING", "COMPUTE"
+    ) + convert(cloud_services_credits, usage_date, "CLOUD_SERVICES", None)
+
+
+def _build_warehouse_spend(
     *,
     dates: list[date],
     warehouse_rows: list[DatasetRow],
     user_rows: list[DatasetRow],
     currency: str,
     convert: ConvertCredits,
-) -> ComputeSpendViewModel:
+) -> WarehouseSpendViewModel:
+    # Ranked warehouses and the stacked daily series both derive from the same
+    # per-warehouse dollar total (compute + cloud services) so the two views can
+    # never disagree.
     ranked_warehouses = _rank_named_amounts(
         [
             NamedAmount(
                 name=_string_field(row, "warehouse_name", "Unknown warehouse"),
                 credits=_required_float_field(
-                    row, "warehouse_spend_daily", "credits_used_compute"
+                    row, "warehouse_spend_daily", "credits_used"
                 ),
-                spend=convert(
-                    _required_float_field(
-                        row, "warehouse_spend_daily", "credits_used_compute"
-                    ),
-                    _as_date(row["usage_date"]),
-                    "WAREHOUSE_METERING",
-                    "COMPUTE",
-                ),
+                spend=_warehouse_row_dollars(row, convert),
             )
             for row in warehouse_rows
         ],
@@ -873,32 +1140,57 @@ def _build_compute_spend(
         ],
         currency,
     )
-    spend_by_date = {usage_date: 0.0 for usage_date in dates}
+
+    warehouse_names = sorted(
+        {
+            _string_field(row, "warehouse_name", "Unknown warehouse")
+            for row in warehouse_rows
+        }
+    )
+    spend_by_date_and_warehouse = {
+        (usage_date, warehouse_name): 0.0
+        for usage_date in dates
+        for warehouse_name in warehouse_names
+    }
     for row in warehouse_rows:
         usage_date = _as_date(row["usage_date"])
-        spend_by_date[usage_date] = spend_by_date.get(usage_date, 0.0) + convert(
-            _required_float_field(row, "warehouse_spend_daily", "credits_used_compute"),
-            usage_date,
-            "WAREHOUSE_METERING",
-            "COMPUTE",
-        )
-    daily_series = [
-        DollarPoint(
-            date=usage_date.isoformat(),
-            spend=spend_by_date[usage_date],
-            spend_label=_format_currency(spend_by_date[usage_date], currency),
-        )
+        warehouse_name = _string_field(row, "warehouse_name", "Unknown warehouse")
+        key = (usage_date, warehouse_name)
+        spend_by_date_and_warehouse[key] = spend_by_date_and_warehouse.get(
+            key, 0.0
+        ) + _warehouse_row_dollars(row, convert)
+
+    # Total across the window of the per-warehouse daily dollars — the same
+    # derived data the stacked chart renders, so the KPI and chart can never
+    # disagree. Bucketing reshapes only the stacked series, not this total.
+    total = sum(spend_by_date_and_warehouse.values())
+
+    values_by_date = [
+        {
+            warehouse_name: spend_by_date_and_warehouse[(usage_date, warehouse_name)]
+            for warehouse_name in warehouse_names
+        }
         for usage_date in dates
     ]
+    bucketed_names, bucketed_values = _bucket_stacked_series(
+        warehouse_names, values_by_date
+    )
+    daily_series = [
+        WarehousePoint(date=usage_date.isoformat(), values=values)
+        for usage_date, values in zip(dates, bucketed_values, strict=True)
+    ]
 
-    return ComputeSpendViewModel(
-        compute_basis="estimated",
+    return WarehouseSpendViewModel(
+        basis="estimated",
+        total=total,
+        total_label=_format_currency(total, currency),
         daily_series=daily_series,
+        warehouse_names=bucketed_names,
         ranked_warehouses=ranked_warehouses,
         ranked_users=ranked_users,
         warehouse_bars=_build_ranked_bar_rows(ranked_warehouses),
         user_bars=_build_ranked_bar_rows(ranked_users),
-        is_empty=all(row.spend == 0 for row in daily_series),
+        is_empty=len(ranked_warehouses) == 0,
     )
 
 
@@ -908,23 +1200,87 @@ def _build_storage_spend(
     rows: list[DatasetRow],
     billed_rows: list[DatasetRow],
     basis: SpendBasis,
-    price_per_tb_month: float,
+    storage_rates: dict[date, RateIndexEntry],
+    metadata: DashboardDatasetMetadata,
     currency: str,
 ) -> StorageSpendViewModel:
-    daily_series = (
-        _daily_billed_totals(dates, billed_rows, currency)
-        if basis == "billed"
-        else _daily_storage_estimates(dates, rows, price_per_tb_month, currency)
+    # Per-date, per-database daily dollars. This grid drives BOTH the overall
+    # estimated daily_series and the bucketed stacked series, so the KPI total,
+    # the overall line, and the stacked chart can never disagree.
+    database_names = sorted(
+        {_string_field(row, "database_name", "Unknown database") for row in rows}
     )
+    spend_by_date_and_db = {
+        (usage_date, database_name): 0.0
+        for usage_date in dates
+        for database_name in database_names
+    }
+    for row in rows:
+        usage_date = _as_date(row["usage_date"])
+        database_name = _string_field(row, "database_name", "Unknown database")
+        price = _storage_price_for(usage_date, storage_rates, metadata) or 0.0
+        key = (usage_date, database_name)
+        spend_by_date_and_db[key] = spend_by_date_and_db.get(
+            key, 0.0
+        ) + _storage_bytes_to_daily_dollars(_storage_bytes(row), price)
+
+    total = sum(spend_by_date_and_db.values())
+
+    # Per-database spend OVER THE SELECTED WINDOW. Summed from the same grid that
+    # feeds the stacked series and the KPI total, so these values sum to `total`.
+    period_spend_by_db: dict[str, float] = {}
+    for (_usage_date, database_name), spend in spend_by_date_and_db.items():
+        period_spend_by_db[database_name] = (
+            period_spend_by_db.get(database_name, 0.0) + spend
+        )
+
+    values_by_date = [
+        {
+            database_name: spend_by_date_and_db[(usage_date, database_name)]
+            for database_name in database_names
+        }
+        for usage_date in dates
+    ]
+    bucketed_names, bucketed_values = _bucket_stacked_series(
+        database_names, values_by_date
+    )
+    database_daily_series = [
+        StorageDatabasePoint(date=usage_date.isoformat(), values=values)
+        for usage_date, values in zip(dates, bucketed_values, strict=True)
+    ]
+
+    # The overall daily_series keeps its billed-vs-estimated semantics, but the
+    # estimated path now reuses the same per-date grid so its numbers agree with
+    # the stacked series (rate-sheet rate + hybrid bytes).
+    if basis == "billed":
+        daily_series = _daily_billed_totals(dates, billed_rows, currency)
+    else:
+        daily_series = [
+            DollarPoint(
+                date=usage_date.isoformat(),
+                spend=spend,
+                spend_label=_format_currency(spend, currency),
+            )
+            for usage_date, spend in zip(
+                dates,
+                (sum(values.values()) for values in values_by_date),
+                strict=True,
+            )
+        ]
+
     latest_date = max((_as_date(row["usage_date"]) for row in rows), default=None)
+    latest_price = (
+        _storage_price_for(latest_date, storage_rates, metadata)
+        if latest_date is not None
+        else None
+    ) or 0.0
     databases = _rank_storage_rows(
-        [
-            row
-            for row in rows
-            if latest_date and _as_date(row["usage_date"]) == latest_date
-        ],
-        price_per_tb_month,
-        currency,
+        rows,
+        fallback_price_per_tb_month=latest_price,
+        currency=currency,
+        period_spend_by_db=period_spend_by_db,
+        storage_rates=storage_rates,
+        metadata=metadata,
     )
     database_bars = _build_ranked_bar_rows(
         [
@@ -941,35 +1297,15 @@ def _build_storage_spend(
     return StorageSpendViewModel(
         basis=basis,
         database_basis="estimated",
+        total=total,
+        total_label=_format_currency(total, currency),
         daily_series=daily_series,
+        database_names=bucketed_names,
+        database_daily_series=database_daily_series,
         databases=databases,
         database_bars=database_bars,
-        is_empty=all(row.spend == 0 for row in daily_series),
+        is_empty=total == 0,
     )
-
-
-def _daily_storage_estimates(
-    dates: list[date],
-    rows: list[DatasetRow],
-    price_per_tb_month: float,
-    currency: str,
-) -> list[DollarPoint]:
-    spend_by_date = {usage_date: 0.0 for usage_date in dates}
-    for row in rows:
-        usage_date = _as_date(row["usage_date"])
-        bytes_value = _storage_bytes(row)
-        spend_by_date[usage_date] = spend_by_date.get(
-            usage_date, 0.0
-        ) + _storage_bytes_to_daily_dollars(bytes_value, price_per_tb_month)
-
-    return [
-        DollarPoint(
-            date=usage_date.isoformat(),
-            spend=spend_by_date[usage_date],
-            spend_label=_format_currency(spend_by_date[usage_date], currency),
-        )
-        for usage_date in dates
-    ]
 
 
 def _build_service_spend(
@@ -996,15 +1332,19 @@ def _build_service_spend(
             key, 0.0
         ) + _service_spend(row, basis, convert)
 
-    daily_series = [
-        ServicePoint(
-            date=usage_date.isoformat(),
-            values={
-                service_name: spend_by_date_and_service[(usage_date, service_name)]
-                for service_name in service_names
-            },
-        )
+    values_by_date = [
+        {
+            service_name: spend_by_date_and_service[(usage_date, service_name)]
+            for service_name in service_names
+        }
         for usage_date in dates
+    ]
+    bucketed_names, bucketed_values = _bucket_stacked_series(
+        service_names, values_by_date
+    )
+    daily_series = [
+        ServicePoint(date=usage_date.isoformat(), values=values)
+        for usage_date, values in zip(dates, bucketed_values, strict=True)
     ]
     ranked_services = _rank_named_amounts(
         [
@@ -1025,7 +1365,7 @@ def _build_service_spend(
     return ServiceSpendViewModel(
         basis=basis,
         daily_series=daily_series,
-        service_names=service_names,
+        service_names=bucketed_names,
         ranked_services=ranked_services,
         service_bars=_build_ranked_bar_rows(ranked_services),
         is_empty=len(ranked_services) == 0,
@@ -1075,8 +1415,10 @@ def _rank_named_amounts(
 
 
 def _build_ranked_bar_rows(rows: list[RankedSpendRow]) -> list[RankedBarRow]:
-    shown = rows[:DASHBOARD_RANKED_BAR_LIMIT]
-    top_spend = shown[0].spend if shown else 0
+    # Ranked bars are uncapped: every entry is rendered inside a scrollable
+    # panel on the frontend, so we no longer slice the list. The frontend still
+    # filters sub-cent rows from the display.
+    top_spend = rows[0].spend if rows else 0
 
     return [
         RankedBarRow(
@@ -1085,7 +1427,7 @@ def _build_ranked_bar_rows(rows: list[RankedSpendRow]) -> list[RankedBarRow]:
             if top_spend > 0
             else 0,
         )
-        for row in shown
+        for row in rows
     ]
 
 
@@ -1095,29 +1437,82 @@ def _cap_detail_rows[T](rows: list[T]) -> list[T]:
 
 def _rank_storage_rows(
     rows: list[DatasetRow],
-    price_per_tb_month: float,
+    *,
+    fallback_price_per_tb_month: float,
     currency: str,
+    period_spend_by_db: dict[str, float],
+    storage_rates: dict[date, RateIndexEntry],
+    metadata: DashboardDatasetMetadata,
 ) -> list[StorageDatabaseRow]:
-    by_database: dict[str, float] = {}
+    # For each database, take its OWN latest row in the window (max usage_date)
+    # and size it from that row's bytes. A database that has window spend but no
+    # storage row (only present in period_spend_by_db) gets bytes=0.0.
+    latest_bytes_by_database: dict[str, float] = {}
+    latest_date_by_database: dict[str, date] = {}
     for row in rows:
         database_name = _string_field(row, "database_name", "Unknown database")
-        by_database[database_name] = by_database.get(
-            database_name, 0.0
-        ) + _storage_bytes(row)
+        usage_date = _as_date(row["usage_date"])
+        current_latest = latest_date_by_database.get(database_name)
+        if current_latest is None or usage_date >= current_latest:
+            latest_date_by_database[database_name] = usage_date
+            latest_bytes_by_database[database_name] = _storage_bytes(row)
 
-    ranked_rows = []
-    for database_name, bytes_value in by_database.items():
-        monthly_spend = (bytes_value / 1_000_000_000_000) * price_per_tb_month
-        ranked_rows.append(
-            StorageDatabaseRow(
-                name=database_name,
-                bytes=bytes_value,
-                monthly_spend=monthly_spend,
-                monthly_spend_label=_format_currency(monthly_spend, currency),
-            )
+    database_names = sorted(set(latest_bytes_by_database) | set(period_spend_by_db))
+
+    ranked_rows = [
+        _build_storage_database_row(
+            database_name=database_name,
+            bytes_value=latest_bytes_by_database.get(database_name, 0.0),
+            # Price each database from the rate in effect on ITS OWN latest date,
+            # so a size snapshot is never paired with a price from a different
+            # date. Databases with no storage row fall back to the global price.
+            price_per_tb_month=_price_for_database_latest(
+                latest_date_by_database.get(database_name),
+                storage_rates,
+                metadata,
+                fallback_price_per_tb_month,
+            ),
+            period_spend=period_spend_by_db.get(database_name, 0.0),
+            currency=currency,
         )
+        for database_name in database_names
+    ]
 
-    return sorted(ranked_rows, key=lambda row: row.monthly_spend, reverse=True)
+    return sorted(ranked_rows, key=lambda row: row.period_spend, reverse=True)
+
+
+def _price_for_database_latest(
+    latest_date: date | None,
+    storage_rates: dict[date, RateIndexEntry],
+    metadata: DashboardDatasetMetadata,
+    fallback_price_per_tb_month: float,
+) -> float:
+    if latest_date is None:
+        return fallback_price_per_tb_month
+    return (
+        _storage_price_for(latest_date, storage_rates, metadata)
+        or fallback_price_per_tb_month
+    )
+
+
+def _build_storage_database_row(
+    *,
+    database_name: str,
+    bytes_value: float,
+    price_per_tb_month: float,
+    period_spend: float,
+    currency: str,
+) -> StorageDatabaseRow:
+    monthly_spend = (bytes_value / 1_000_000_000_000) * price_per_tb_month
+    return StorageDatabaseRow(
+        name=database_name,
+        bytes=bytes_value,
+        bytes_label=_format_bytes(bytes_value),
+        monthly_spend=monthly_spend,
+        monthly_spend_label=_format_currency(monthly_spend, currency),
+        period_spend=period_spend,
+        period_spend_label=_format_currency(period_spend, currency),
+    )
 
 
 def _build_warehouse_details(
@@ -1184,13 +1579,20 @@ def _is_storage_spend_row(row: DatasetRow) -> bool:
 
 
 def _storage_bytes(row: DatasetRow) -> float:
-    return _required_float_field(
-        row, "database_storage_daily", "average_database_bytes"
-    ) + _nullable_float_field(
-        row,
-        "database_storage_daily",
-        "average_failsafe_bytes",
-        default=0.0,
+    return (
+        _required_float_field(row, "database_storage_daily", "average_database_bytes")
+        + _nullable_float_field(
+            row,
+            "database_storage_daily",
+            "average_failsafe_bytes",
+            default=0.0,
+        )
+        + _nullable_float_field(
+            row,
+            "database_storage_daily",
+            "average_hybrid_table_storage_bytes",
+            default=0.0,
+        )
     )
 
 

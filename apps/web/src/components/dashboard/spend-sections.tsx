@@ -1,97 +1,209 @@
 "use client";
 
+import { Card, Text } from "@tremor/react";
+
 import type {
-  ComputeSpendViewModel,
-  ServicePoint,
+  CapacityBalanceViewModel,
+  DashboardViewRange,
   ServiceSpendViewModel,
   StorageSpendViewModel,
   TotalSpendViewModel,
+  WarehouseSpendViewModel,
 } from "../../lib/dashboard-contracts";
 import {
+  buildEndingBalanceLabel,
+  buildStorageSpendLabel,
+  buildTotalSpendLabel,
+  buildTotalWarehouseSpendLabel,
+  CapacityBalanceCard,
   DashboardGrid,
   DashboardPanel,
   DashboardSection,
   RankedSpendBars,
   SpendBarChart,
-  SpendLineChart,
-  TotalSpendCard,
+  TotalSpendBarCard,
 } from "./dashboard-design-system";
+import { DetailTable } from "./detail-tables";
 import SectionEmptyState from "./section-empty-state";
 
-type ServiceChartPoint = {
+type StackedChartPoint = {
   date: string;
 } & Record<string, string | number>;
 
+// Flattens any {date, values} stacked series (service- or warehouse-keyed) into
+// the flat {date, ...values} rows Tremor's stacked BarChart expects.
 export function flattenServiceDailySeries(
-  dailySeries: ServicePoint[],
-): ServiceChartPoint[] {
+  dailySeries: { date: string; values: Record<string, number> }[],
+): StackedChartPoint[] {
   return dailySeries.map((point) => ({
     ...point.values,
     date: point.date,
   }));
 }
 
-export function TotalSpendSection({
+export function OverviewSection({
+  capacityBalance,
   currency,
-  viewModel,
+  range,
+  serviceSpend,
+  totalSpend,
 }: {
+  capacityBalance?: CapacityBalanceViewModel | null;
   currency: string;
-  viewModel: TotalSpendViewModel;
+  range?: DashboardViewRange | null;
+  serviceSpend: ServiceSpendViewModel;
+  totalSpend: TotalSpendViewModel;
 }) {
+  const serviceChartData = flattenServiceDailySeries(serviceSpend.dailySeries);
+  const totalSpendLabel = buildTotalSpendLabel(range);
+
   return (
     <DashboardSection
-      ariaLabel="Total spend"
-      testId="dashboard-section-total-spend"
-      title="Total spend"
+      ariaLabel="Overview"
+      testId="dashboard-section-overview"
+      title="Overview"
     >
-      {viewModel.isEmpty ? (
-        <SectionEmptyState message="No total spend data" />
+      {!capacityBalance || capacityBalance.isEmpty ? (
+        <DashboardPanel
+          ariaLabel="Capacity balance summary"
+          title="Ending Balance"
+        >
+          <SectionEmptyState message="No capacity balance data" />
+        </DashboardPanel>
       ) : (
-        <TotalSpendCard
-          ariaLabel="Total spend summary"
+        <CapacityBalanceCard
+          ariaLabel="Capacity balance summary"
           currency={currency}
-          label="Total Spend in Period"
-          value={viewModel.totalLabel}
-          data={viewModel.dailySeries}
-          testId="total-spend-card"
-          chartTestId="total-spend-tremor-line-chart"
+          label={buildEndingBalanceLabel(capacityBalance.currentBalanceDate)}
+          value={capacityBalance.currentBalanceLabel}
+          data={capacityBalance.dailySeries}
+          testId="capacity-balance-card"
+          chartTestId="capacity-balance-tremor-line-chart"
         />
       )}
+      <DashboardGrid columns={3} testId="dashboard-grid-overview">
+        {totalSpend.isEmpty && serviceSpend.isEmpty ? (
+          <DashboardPanel
+            ariaLabel="Total spend summary"
+            span={2}
+            title={totalSpendLabel}
+          >
+            <SectionEmptyState message="No total spend data" />
+          </DashboardPanel>
+        ) : (
+          <TotalSpendBarCard
+            ariaLabel="Total spend summary"
+            categories={serviceSpend.serviceNames}
+            chart={
+              serviceSpend.isEmpty ? (
+                <SectionEmptyState message="No service spend data" />
+              ) : undefined
+            }
+            currency={currency}
+            emptyValueMessage="No total spend data"
+            label={totalSpendLabel}
+            value={totalSpend.isEmpty ? undefined : totalSpend.totalLabel}
+            data={serviceChartData}
+            span={2}
+            testId="total-spend-card"
+            chartTestId="service-spend-tremor-bar-chart"
+          />
+        )}
+        {serviceSpend.isEmpty ? (
+          <DashboardPanel
+            ariaLabel="Total spend by service"
+            fill
+            title="Total spend by service"
+          >
+            <SectionEmptyState message="No service spend data" />
+          </DashboardPanel>
+        ) : (
+          <DashboardPanel
+            ariaLabel="Total spend by service"
+            fill
+            title="Total spend by service"
+          >
+            <RankedSpendBars rows={serviceSpend.serviceBars} />
+          </DashboardPanel>
+        )}
+      </DashboardGrid>
     </DashboardSection>
   );
 }
 
-export function ComputeSpendSection({
+export function WarehouseSpendSection({
   currency,
+  range,
   viewModel,
 }: {
   currency: string;
-  viewModel: ComputeSpendViewModel;
+  range?: DashboardViewRange | null;
+  viewModel: WarehouseSpendViewModel;
 }) {
+  const chartData = flattenServiceDailySeries(viewModel.dailySeries);
+  const totalLabel = buildTotalWarehouseSpendLabel(range);
+
   return (
     <DashboardSection
-      ariaLabel="Compute spend"
-      testId="dashboard-section-compute-spend"
-      title="Compute spend"
+      ariaLabel="Warehouse spend"
+      testId="dashboard-section-warehouse-spend"
+      title="Warehouse spend"
     >
       {viewModel.isEmpty ? (
-        <SectionEmptyState message="No compute spend data" />
+        <SectionEmptyState message="No warehouse spend data" />
       ) : (
-        <DashboardGrid columns={3} testId="dashboard-grid-compute-spend">
-          <DashboardPanel ariaLabel="Daily compute" title="Daily compute">
-            <SpendLineChart
-              currency={currency}
-              data={viewModel.dailySeries}
-              heightClass="h-64"
-              testId="compute-spend-tremor-line-chart"
-            />
-          </DashboardPanel>
-          <DashboardPanel ariaLabel="Warehouse compute spend" title="Warehouses">
-            <RankedSpendBars rows={viewModel.warehouseBars} />
-          </DashboardPanel>
-          <DashboardPanel ariaLabel="User compute spend" title="Users">
-            <RankedSpendBars rows={viewModel.userBars} />
-          </DashboardPanel>
+        <DashboardGrid columns={3} testId="dashboard-grid-warehouse-spend">
+          <TotalSpendBarCard
+            ariaLabel="Total warehouse spend"
+            categories={viewModel.warehouseNames}
+            chart={
+              <SpendBarChart
+                categories={viewModel.warehouseNames}
+                currency={currency}
+                data={chartData}
+                heightClass="h-96"
+                segmentGap
+                showLegend={false}
+                stack
+                testId="warehouse-spend-tremor-bar-chart"
+              />
+            }
+            currency={currency}
+            label={totalLabel}
+            value={viewModel.totalLabel}
+            data={chartData}
+            span={2}
+            testId="total-warehouse-spend-card"
+            chartTestId="warehouse-spend-tremor-bar-chart"
+          />
+          {/* Third column splits into two half-height panels that each scroll
+              their ranked list internally instead of growing the row. */}
+          <div className="flex h-full min-h-0 flex-col gap-4">
+            <section
+              aria-label="Warehouse ranking"
+              className="flex min-h-0 flex-1 flex-col"
+              data-dashboard-panel="true"
+            >
+              <Card className="flex h-full flex-col p-6">
+                <Text>Total spend by warehouse</Text>
+                <div className="flex min-h-0 flex-1 flex-col">
+                  <RankedSpendBars rows={viewModel.warehouseBars} />
+                </div>
+              </Card>
+            </section>
+            <section
+              aria-label="User ranking"
+              className="flex min-h-0 flex-1 flex-col"
+              data-dashboard-panel="true"
+            >
+              <Card className="flex h-full flex-col p-6">
+                <Text>Total spend by user</Text>
+                <div className="flex min-h-0 flex-1 flex-col">
+                  <RankedSpendBars rows={viewModel.userBars} />
+                </div>
+              </Card>
+            </section>
+          </div>
         </DashboardGrid>
       )}
     </DashboardSection>
@@ -100,11 +212,15 @@ export function ComputeSpendSection({
 
 export function StorageSpendSection({
   currency,
+  range,
   viewModel,
 }: {
   currency: string;
+  range?: DashboardViewRange | null;
   viewModel: StorageSpendViewModel;
 }) {
+  const totalLabel = buildStorageSpendLabel(range);
+
   return (
     <DashboardSection
       ariaLabel="Storage spend"
@@ -114,65 +230,75 @@ export function StorageSpendSection({
       {viewModel.isEmpty ? (
         <SectionEmptyState message="No storage spend data" />
       ) : (
-        <DashboardGrid columns={2} testId="dashboard-grid-storage-spend">
-          <DashboardPanel ariaLabel="Daily storage" title="Daily storage">
-            <SpendLineChart
-              currency={currency}
-              data={viewModel.dailySeries}
-              heightClass="h-64"
-              testId="storage-spend-tremor-line-chart"
-            />
-          </DashboardPanel>
-          <DashboardPanel
-            ariaLabel="Latest storage by database"
-            title="Latest storage by database"
-          >
-            <RankedSpendBars rows={viewModel.databaseBars} />
-          </DashboardPanel>
-        </DashboardGrid>
+        <StorageSpendBody
+          currency={currency}
+          totalLabel={totalLabel}
+          viewModel={viewModel}
+        />
       )}
     </DashboardSection>
   );
 }
 
-export function ServiceSpendSection({
+function StorageSpendBody({
   currency,
+  totalLabel,
   viewModel,
 }: {
   currency: string;
-  viewModel: ServiceSpendViewModel;
+  totalLabel: string;
+  viewModel: StorageSpendViewModel;
 }) {
-  const chartData = flattenServiceDailySeries(viewModel.dailySeries);
+  const chartData = flattenServiceDailySeries(viewModel.databaseDailySeries);
 
   return (
-    <DashboardSection
-      ariaLabel="Service spend"
-      testId="dashboard-section-service-spend"
-      title="Service spend"
-    >
-      {viewModel.isEmpty ? (
-        <SectionEmptyState message="No service spend data" />
-      ) : (
-        <DashboardGrid columns={2} testId="dashboard-grid-service-spend">
-          <DashboardPanel
-            ariaLabel="Daily service spend"
-            title="Daily by service"
-          >
-            <SpendBarChart
-              categories={viewModel.serviceNames}
-              currency={currency}
-              data={chartData}
-              heightClass="h-64"
-              showLegend={false}
-              stack
-              testId="service-spend-tremor-bar-chart"
-            />
-          </DashboardPanel>
-          <DashboardPanel ariaLabel="Ranked services" title="Ranked services">
-            <RankedSpendBars rows={viewModel.serviceBars} />
-          </DashboardPanel>
-        </DashboardGrid>
-      )}
-    </DashboardSection>
+    <DashboardGrid columns={3} testId="dashboard-grid-storage-spend">
+      <TotalSpendBarCard
+        ariaLabel="Storage spend"
+        categories={viewModel.databaseNames}
+        chart={
+          <SpendBarChart
+            categories={viewModel.databaseNames}
+            currency={currency}
+            data={chartData}
+            heightClass="h-80"
+            segmentGap
+            showLegend={false}
+            stack
+            testId="storage-spend-tremor-bar-chart"
+          />
+        }
+        currency={currency}
+        label={totalLabel}
+        value={viewModel.totalLabel}
+        data={chartData}
+        span={2}
+        testId="storage-spend-card"
+        chartTestId="storage-spend-tremor-bar-chart"
+      />
+      {/* Right column mirrors the warehouse section's third column: a single
+          card that scrolls its own list (here a compact table) internally
+          instead of growing the row. */}
+      <section
+        aria-label="Total spend by database"
+        className="flex h-full min-h-0 flex-col"
+        data-dashboard-panel="true"
+      >
+        <DetailTable
+          title="Total spend by database"
+          headers={["Database", "Spend", "Size"]}
+          fillHeight
+          truncateFirstColumn
+          rows={viewModel.databases.map((row) => ({
+            key: row.name,
+            cells: [
+              { key: "name", value: row.name },
+              { key: "periodSpend", value: row.periodSpendLabel },
+              { key: "bytes", value: row.bytesLabel },
+            ],
+          }))}
+        />
+      </section>
+    </DashboardGrid>
   );
 }

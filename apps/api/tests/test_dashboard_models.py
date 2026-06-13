@@ -39,7 +39,26 @@ def test_dashboard_dataset_contract_has_schema_version_and_new_safe_fields() -> 
         }
     )
     assert SAFE_DATASET_ROW_FIELDS["rate_sheet_daily"] == frozenset(
-        {"usage_date", "service_type", "rating_type", "currency", "effective_rate"}
+        {
+            "usage_date",
+            "service_type",
+            "usage_type",
+            "rating_type",
+            "currency",
+            "effective_rate",
+        }
+    )
+    assert SAFE_DATASET_ROW_FIELDS["database_storage_daily"] == frozenset(
+        {
+            "usage_date",
+            "database_name",
+            "average_database_bytes",
+            "average_failsafe_bytes",
+            "average_hybrid_table_storage_bytes",
+        }
+    )
+    assert SAFE_DATASET_ROW_FIELDS["capacity_balance_daily"] == frozenset(
+        {"usage_date", "currency", "balance"}
     )
     assert SAFE_DATASET_ROW_FIELDS["current_account"] == frozenset({"account_locator"})
     assert REQUIRED_DATASET_KEYS == frozenset(SAFE_DATASET_ROW_FIELDS)

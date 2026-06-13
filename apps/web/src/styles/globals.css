@@ -18,3 +18,48 @@ body {
 * {
   box-sizing: border-box;
 }
+
+/*
+ * Slim, always-visible translucent scrollbar for the dashboard's internally
+ * scrolling ranked panels. Keeps the dark-theme look (transparent track,
+ * faint white thumb) and stays visible whenever content overflows rather than
+ * only while actively scrolling.
+ */
+.dashboard-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(255 255 255 / 0.25) transparent;
+}
+
+.dashboard-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.dashboard-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.dashboard-scroll::-webkit-scrollbar-thumb {
+  background-color: rgb(255 255 255 / 0.25);
+  border-radius: 9999px;
+}
+
+.dashboard-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(255 255 255 / 0.35);
+}
+
+/*
+ * 1px dark gap between stacked bar segments. Tremor's BarChart doesn't expose a
+ * per-bar stroke; it renders each segment via a custom Recharts `shape` that
+ * emits a bare <rect> (no `recharts-rectangle` path), so we stroke that rect
+ * with the card surface color (#1C1C1C). The stroke is centered on the edge, so
+ * a shared boundary between two stacked segments reads as a ~1px dark gap, while
+ * the outermost stack/side edges blend into the matching card background and
+ * stay invisible. crispEdges keeps the 1px line sharp instead of anti-aliasing
+ * it into a soft smudge. Scoped to charts that opt in via `.bar-segment-gap`.
+ */
+.bar-segment-gap .recharts-bar-rectangle rect {
+  stroke: #1c1c1c;
+  stroke-width: 1px;
+  shape-rendering: crispEdges;
+}

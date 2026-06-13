@@ -30,6 +30,12 @@ class DollarPoint(BaseModel):
     spend_label: str
 
 
+class BalancePoint(BaseModel):
+    date: str
+    balance: float
+    balance_label: str
+
+
 class ServicePoint(BaseModel):
     date: str
     values: dict[str, float]
@@ -71,9 +77,25 @@ class TotalSpendViewModel(BaseModel):
     is_empty: bool
 
 
-class ComputeSpendViewModel(BaseModel):
-    compute_basis: SpendBasis
-    daily_series: list[DollarPoint]
+class CapacityBalanceViewModel(BaseModel):
+    current_balance: float
+    current_balance_label: str
+    current_balance_date: str | None
+    daily_series: list[BalancePoint]
+    is_empty: bool
+
+
+class WarehousePoint(BaseModel):
+    date: str
+    values: dict[str, float]
+
+
+class WarehouseSpendViewModel(BaseModel):
+    basis: SpendBasis
+    total: float
+    total_label: str
+    daily_series: list[WarehousePoint]
+    warehouse_names: list[str]
     ranked_warehouses: list[RankedSpendRow]
     ranked_users: list[RankedSpendRow]
     warehouse_bars: list[RankedBarRow]
@@ -84,14 +106,26 @@ class ComputeSpendViewModel(BaseModel):
 class StorageDatabaseRow(BaseModel):
     name: str
     bytes: float
+    bytes_label: str
     monthly_spend: float
     monthly_spend_label: str
+    period_spend: float
+    period_spend_label: str
+
+
+class StorageDatabasePoint(BaseModel):
+    date: str
+    values: dict[str, float]
 
 
 class StorageSpendViewModel(BaseModel):
     basis: SpendBasis
     database_basis: SpendBasis
+    total: float
+    total_label: str
     daily_series: list[DollarPoint]
+    database_names: list[str]
+    database_daily_series: list[StorageDatabasePoint]
     databases: list[StorageDatabaseRow]
     database_bars: list[RankedBarRow]
     is_empty: bool
@@ -134,8 +168,9 @@ class DashboardViewResponse(BaseModel):
     projection_range: DashboardProjectionRange
     header: HeaderViewModel
     unsupported: UnsupportedViewModel | None
+    capacity_balance: CapacityBalanceViewModel
     total_spend: TotalSpendViewModel
-    compute_spend: ComputeSpendViewModel
+    warehouse_spend: WarehouseSpendViewModel
     storage_spend: StorageSpendViewModel
     service_spend: ServiceSpendViewModel
     detail_tables: DetailTablesViewModel

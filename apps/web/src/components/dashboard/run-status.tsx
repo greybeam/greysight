@@ -34,11 +34,11 @@ const STATUS_COLOR: Record<
 
 export function RunStatus({ status, message }: RunStatusProps) {
   return (
-    <div className="flex min-h-16 flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-6 py-4">
+    <div className="flex min-h-16 flex-wrap items-center justify-between gap-3 border-b border-hairline bg-surface px-6 py-4">
       <div className="flex items-center gap-3">
         <Badge color={STATUS_COLOR[status]}>{STATUS_COPY[status]}</Badge>
         {message ? (
-          <p className="text-sm font-medium text-slate-700">{message}</p>
+          <p className="text-sm font-medium text-slate-300">{message}</p>
         ) : null}
       </div>
     </div>

@@ -39,6 +39,7 @@ describe("parseDashboardDatasets", () => {
     expect(parsed.datasets.service_spend_daily.length).toBeGreaterThan(0);
     expect(parsed.datasets.org_spend_daily.length).toBeGreaterThan(0);
     expect(parsed.datasets.rate_sheet_daily.length).toBeGreaterThan(0);
+    expect(parsed.datasets.capacity_balance_daily).toHaveLength(100);
     expect(parsed.datasets.current_account).toEqual([
       { account_locator: "DEMO123" },
     ]);
@@ -55,6 +56,13 @@ describe("parseDashboardDatasets", () => {
         is_adjustment: false,
         rating_type: expect.any(String),
         spend: expect.any(Number),
+      }),
+    );
+    expect(parsed.datasets.capacity_balance_daily[0]).toEqual(
+      expect.objectContaining({
+        balance: expect.any(Number),
+        currency: "USD",
+        usage_date: expect.any(String),
       }),
     );
   });
@@ -221,6 +229,19 @@ describe("parseDashboardView", () => {
       storage_price_label: "$25.00 / TB-month",
     },
     unsupported: null,
+    capacity_balance: {
+      current_balance: 11875.25,
+      current_balance_label: "$11,875.25",
+      current_balance_date: "2026-06-08",
+      daily_series: [
+        {
+          date: "2026-06-08",
+          balance: 11875.25,
+          balance_label: "$11,875.25",
+        },
+      ],
+      is_empty: false,
+    },
     total_spend: {
       basis: "billed",
       total: 123.45,
@@ -239,14 +260,24 @@ describe("parseDashboardView", () => {
       },
       is_empty: false,
     },
-    compute_spend: {
-      compute_basis: "billed",
-      daily_series: [],
-      ranked_warehouses: [],
+    warehouse_spend: {
+      basis: "estimated",
+      total: 12,
+      total_label: "$12.00",
+      daily_series: [{ date: "2026-06-08", values: { COMPUTE_WH: 12 } }],
+      warehouse_names: ["COMPUTE_WH"],
+      ranked_warehouses: [
+        {
+          name: "COMPUTE_WH",
+          spend: 12,
+          spend_label: "$12.00",
+          credits: 4,
+        },
+      ],
       ranked_users: [],
       warehouse_bars: [],
       user_bars: [],
-      is_empty: true,
+      is_empty: false,
     },
     storage_spend: {
       basis: "estimated",
@@ -307,13 +338,184 @@ describe("parseDashboardView", () => {
       spend: 123.45,
       spendLabel: "$123.45",
     });
+    expect(parsed.capacityBalance.currentBalanceLabel).toBe("$11,875.25");
+    expect(parsed.capacityBalance.dailySeries[0]).toEqual({
+      date: "2026-06-08",
+      balance: 11875.25,
+      balanceLabel: "$11,875.25",
+    });
     expect(parsed.serviceSpend.dailySeries[0]).toEqual({
       date: "2026-06-08",
       values: { CLOUD_SERVICES: 123.45 },
     });
+    expect(parsed.warehouseSpend.basis).toBe("estimated");
+    expect(parsed.warehouseSpend.total).toBe(12);
+    expect(parsed.warehouseSpend.totalLabel).toBe("$12.00");
+    expect(parsed.warehouseSpend.warehouseNames).toEqual(["COMPUTE_WH"]);
+    expect(parsed.warehouseSpend.dailySeries[0]).toEqual({
+      date: "2026-06-08",
+      values: { COMPUTE_WH: 12 },
+    });
     expect(parsed.detailTables.warehouses[0]?.creditsCompute).toBe(3);
     expect(parsed.detailTables.users[0]?.warehouseName).toBe("COMPUTE_WH");
     expect(parsed.detailTables.storage[0]?.monthlySpendLabel).toBe("$0.01");
+  });
+
+  it("defaults missing capacity balance on older prepared dashboard views", () => {
+    const legacyPayload: Record<string, unknown> = { ...preparedViewPayload };
+    delete legacyPayload.capacity_balance;
+
+    const parsed = parseDashboardView(legacyPayload);
+
+    expect(parsed.capacityBalance).toEqual({
+      currentBalance: 0,
+      currentBalanceLabel: "$0.00",
+      currentBalanceDate: null,
+      dailySeries: [],
+      isEmpty: true,
+    });
+  });
+
+  it("formats the fallback capacity balance label from the header currency", () => {
+    const legacyPayload: Record<string, unknown> = {
+      ...preparedViewPayload,
+      header: {
+        ...(preparedViewPayload.header as Record<string, unknown>),
+        currency: "EUR",
+      },
+    };
+    delete legacyPayload.capacity_balance;
+
+    const parsed = parseDashboardView(legacyPayload);
+
+    expect(parsed.capacityBalance.currentBalanceLabel).toBe("€0.00");
+  });
+
+  it("falls back to a zeroed storage total and empty series for legacy views", () => {
+    // The shared preparedViewPayload's storage_spend predates the storage KPI
+    // and stacked-series fields, so it exercises the legacy fallback directly.
+    const parsed = parseDashboardView(preparedViewPayload);
+
+    expect(parsed.storageSpend.total).toBe(0);
+    expect(parsed.storageSpend.totalLabel).toBe("$0.00");
+    expect(parsed.storageSpend.databaseNames).toEqual([]);
+    expect(parsed.storageSpend.databaseDailySeries).toEqual([]);
+  });
+
+  it("formats the legacy storage fallback label from the header currency", () => {
+    const legacyPayload: Record<string, unknown> = {
+      ...preparedViewPayload,
+      header: {
+        ...(preparedViewPayload.header as Record<string, unknown>),
+        currency: "EUR",
+      },
+    };
+
+    const parsed = parseDashboardView(legacyPayload);
+
+    expect(parsed.storageSpend.totalLabel).toBe("€0.00");
+  });
+
+  it("parses storage KPI, stacked series, and bytes_label from snake_case", () => {
+    const parsed = parseDashboardView({
+      ...preparedViewPayload,
+      storage_spend: {
+        basis: "estimated",
+        database_basis: "estimated",
+        total: 226.42,
+        total_label: "$226.42",
+        daily_series: [],
+        database_names: ["RAW", "ANALYTICS", "APP"],
+        database_daily_series: [
+          {
+            date: "2026-06-08",
+            values: { RAW: 3.88, ANALYTICS: 2.48, APP: 1.19 },
+          },
+        ],
+        databases: [
+          {
+            name: "RAW",
+            bytes: 4657824000000,
+            bytes_label: "4.7 TB",
+            monthly_spend: 116.45,
+            monthly_spend_label: "$116.45",
+            period_spend: 116.44,
+            period_spend_label: "$116.44",
+          },
+        ],
+        database_bars: [],
+        is_empty: false,
+      },
+    });
+
+    expect(parsed.storageSpend.total).toBe(226.42);
+    expect(parsed.storageSpend.totalLabel).toBe("$226.42");
+    expect(parsed.storageSpend.databaseNames).toEqual([
+      "RAW",
+      "ANALYTICS",
+      "APP",
+    ]);
+    expect(parsed.storageSpend.databaseDailySeries[0]).toEqual({
+      date: "2026-06-08",
+      values: { RAW: 3.88, ANALYTICS: 2.48, APP: 1.19 },
+    });
+    expect(parsed.storageSpend.databases[0]?.bytesLabel).toBe("4.7 TB");
+    expect(parsed.storageSpend.databases[0]?.periodSpend).toBe(116.44);
+    expect(parsed.storageSpend.databases[0]?.periodSpendLabel).toBe("$116.44");
+  });
+
+  it("parses storage stacked series and bytes_label from camelCase", () => {
+    const parsed = parseDashboardView({
+      ...preparedViewPayload,
+      storage_spend: {
+        basis: "estimated",
+        databaseBasis: "estimated",
+        total: 100,
+        totalLabel: "$100.00",
+        dailySeries: [],
+        databaseNames: ["RAW"],
+        databaseDailySeries: [{ date: "2026-06-08", values: { RAW: 100 } }],
+        databases: [
+          {
+            name: "RAW",
+            bytes: 1000000000000,
+            bytesLabel: "1.0 TB",
+            monthlySpend: 100,
+            monthlySpendLabel: "$100.00",
+            periodSpend: 95,
+            periodSpendLabel: "$95.00",
+          },
+        ],
+        databaseBars: [],
+        isEmpty: false,
+      },
+    });
+
+    expect(parsed.storageSpend.databaseNames).toEqual(["RAW"]);
+    expect(parsed.storageSpend.databaseDailySeries[0]?.values).toEqual({
+      RAW: 100,
+    });
+    expect(parsed.storageSpend.databases[0]?.bytesLabel).toBe("1.0 TB");
+    expect(parsed.storageSpend.databases[0]?.periodSpend).toBe(95);
+    expect(parsed.storageSpend.databases[0]?.periodSpendLabel).toBe("$95.00");
+  });
+
+  it("falls back to zero period spend and the monthly label for legacy storage rows", () => {
+    // detail_tables.storage rows on the legacy payload omit the period fields;
+    // the parser zeros the numeric value and reuses the monthly label as text.
+    const parsed = parseDashboardView(preparedViewPayload);
+    const row = parsed.detailTables.storage[0];
+
+    expect(row?.periodSpend).toBe(0);
+    expect(row?.periodSpendLabel).toBe("$0.01");
+  });
+
+  it("derives a bytes_label fallback for legacy storage rows", () => {
+    // detail_tables.storage rows on the legacy payload omit bytes_label; the
+    // parser humanizes the raw byte count (1000-base, one decimal) instead.
+    const parsed = parseDashboardView(preparedViewPayload);
+
+    expect(parsed.detailTables.storage[0]?.bytesLabel).toBe("1.0 KB");
   });
 
   it("rejects malformed prepared dashboard view responses", () => {

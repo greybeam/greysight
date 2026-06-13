@@ -23,6 +23,19 @@ def test_snowflake_dashboard_run_uses_v0_builder_and_persists_metadata(
             assert bind_params == {}
             executed_groups.append("metadata")
             return [{"account_locator": "TU24199"}]
+        if "remaining_balance_daily" in lowered:
+            assert bind_params == {
+                "window_days": FETCH_WINDOW_DAYS,
+                "account_locator": "TU24199",
+            }
+            executed_groups.append("capacity")
+            return [
+                {
+                    "usage_date": date(2026, 6, 5),
+                    "currency": "USD",
+                    "balance": 15_000.0,
+                }
+            ]
         if "organization_usage" in lowered:
             assert bind_params == {
                 "window_days": FETCH_WINDOW_DAYS,
@@ -89,6 +102,7 @@ def test_snowflake_dashboard_run_uses_v0_builder_and_persists_metadata(
     ]
     assert executed_groups.count("metadata") == 1
     assert executed_groups.count("org") == 2
+    assert executed_groups.count("capacity") == 1
     assert executed_groups.count("account") == 4
 
 
@@ -133,6 +147,18 @@ def test_snowflake_dashboard_run_does_not_expose_unexpected_backend_detail(
         if "current_account()" in lowered:
             assert bind_params == {}
             return [{"account_locator": "TU24199"}]
+        if "remaining_balance_daily" in lowered:
+            assert bind_params == {
+                "window_days": FETCH_WINDOW_DAYS,
+                "account_locator": "TU24199",
+            }
+            return [
+                {
+                    "usage_date": date(2026, 6, 5),
+                    "currency": "USD",
+                    "balance": 15_000.0,
+                }
+            ]
         if "organization_usage" in lowered:
             assert bind_params == {
                 "window_days": FETCH_WINDOW_DAYS,
@@ -231,6 +257,14 @@ def test_snowflake_dashboard_run_view_route_returns_prepared_view(monkeypatch) -
         lowered = sql.lower()
         if "current_account()" in lowered:
             return [{"account_locator": "TU24199"}]
+        if "remaining_balance_daily" in lowered:
+            return [
+                {
+                    "usage_date": date(2026, 6, 5),
+                    "currency": "USD",
+                    "balance": 15_000.0,
+                }
+            ]
         if "organization_usage" in lowered:
             if "usage_in_currency_daily" in lowered:
                 return [

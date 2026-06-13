@@ -1,4 +1,4 @@
-review_agent = "claude-code"
+review_agent = "codex"
 review_guidelines = """
 In code review, keep in mind we always opt for DRY and simple code. If the lazy way is possible, that often tends to be the best way to do something.
 Code should be written for maintainability and ease of use for future agent and human engineers.

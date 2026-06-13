@@ -53,6 +53,7 @@ export type DatabaseStorageDaily = {
   database_name: string | null;
   average_database_bytes: number;
   average_failsafe_bytes: number;
+  average_hybrid_table_storage_bytes: number | null;
 };
 
 export type TopWarehouse = {
@@ -73,9 +74,16 @@ export type OrgSpendDaily = {
 export type RateSheetDaily = {
   usage_date: string;
   service_type: string;
+  usage_type: string;
   rating_type: string | null;
   currency: string | null;
   effective_rate: number;
+};
+
+export type CapacityBalanceDaily = {
+  usage_date: string;
+  currency: string;
+  balance: number;
 };
 
 export type CurrentAccount = {
@@ -113,6 +121,7 @@ export type DashboardDatasets = {
   top_warehouses_table: TopWarehouse[];
   org_spend_daily: OrgSpendDaily[];
   rate_sheet_daily: RateSheetDaily[];
+  capacity_balance_daily: CapacityBalanceDaily[];
   current_account: CurrentAccount[];
 };
 
@@ -142,6 +151,12 @@ export type DollarPoint = {
   date: string;
   spend: number;
   spendLabel: string;
+};
+
+export type BalancePoint = {
+  date: string;
+  balance: number;
+  balanceLabel: string;
 };
 
 export type ServicePoint = {
@@ -185,9 +200,25 @@ export type TotalSpendViewModel = {
   isEmpty: boolean;
 };
 
-export type ComputeSpendViewModel = {
-  computeBasis: SpendBasis;
-  dailySeries: DollarPoint[];
+export type CapacityBalanceViewModel = {
+  currentBalance: number;
+  currentBalanceLabel: string;
+  currentBalanceDate: string | null;
+  dailySeries: BalancePoint[];
+  isEmpty: boolean;
+};
+
+export type WarehousePoint = {
+  date: string;
+  values: Record<string, number>;
+};
+
+export type WarehouseSpendViewModel = {
+  basis: SpendBasis;
+  total: number;
+  totalLabel: string;
+  dailySeries: WarehousePoint[];
+  warehouseNames: string[];
   rankedWarehouses: RankedSpendRow[];
   rankedUsers: RankedSpendRow[];
   warehouseBars: RankedBarRow[];
@@ -198,16 +229,28 @@ export type ComputeSpendViewModel = {
 export type StorageDatabaseRow = {
   name: string;
   bytes: number;
+  bytesLabel: string;
   monthlySpend: number;
   monthlySpendLabel: string;
+  periodSpend: number;
+  periodSpendLabel: string;
+};
+
+export type StoragePoint = {
+  date: string;
+  values: Record<string, number>;
 };
 
 export type StorageSpendViewModel = {
   basis: SpendBasis;
   databaseBasis: SpendBasis;
+  total: number;
+  totalLabel: string;
   dailySeries: DollarPoint[];
   databases: StorageDatabaseRow[];
   databaseBars: RankedBarRow[];
+  databaseNames: string[];
+  databaseDailySeries: StoragePoint[];
   isEmpty: boolean;
 };
 
@@ -248,8 +291,9 @@ export type DashboardView = {
   projectionRange: DashboardProjectionRange;
   header: HeaderViewModel;
   unsupported: UnsupportedViewModel | null;
+  capacityBalance: CapacityBalanceViewModel;
   totalSpend: TotalSpendViewModel;
-  computeSpend: ComputeSpendViewModel;
+  warehouseSpend: WarehouseSpendViewModel;
   storageSpend: StorageSpendViewModel;
   serviceSpend: ServiceSpendViewModel;
   detailTables: DetailTablesViewModel;
@@ -264,6 +308,7 @@ const REQUIRED_DATASET_KEYS = [
   "top_warehouses_table",
   "org_spend_daily",
   "rate_sheet_daily",
+  "capacity_balance_daily",
   "current_account",
 ] as const satisfies readonly (keyof DashboardDatasets)[];
 
@@ -370,6 +415,7 @@ export default function parseDashboardDatasets(payload: unknown): DashboardData 
       top_warehouses_table: payload.datasets.top_warehouses_table,
       org_spend_daily: payload.datasets.org_spend_daily,
       rate_sheet_daily: payload.datasets.rate_sheet_daily,
+      capacity_balance_daily: payload.datasets.capacity_balance_daily,
       current_account: payload.datasets.current_account,
     } as DashboardDatasets,
   };
@@ -380,6 +426,8 @@ export function parseDashboardView(payload: unknown): DashboardView {
     throwInvalidDashboardView();
   }
 
+  const header = parseHeaderViewModel(readViewRecord(payload, "header"));
+
   return {
     schema_version: 1,
     run: parseDashboardViewRun(readViewRecord(payload, "run")),
@@ -387,16 +435,22 @@ export function parseDashboardView(payload: unknown): DashboardView {
     projectionRange: parseDashboardProjectionRange(
       readViewRecord(payload, "projection_range", "projectionRange"),
     ),
-    header: parseHeaderViewModel(readViewRecord(payload, "header")),
+    header,
     unsupported: parseUnsupportedViewModel(readViewValue(payload, "unsupported")),
+    capacityBalance: hasViewValue(payload, "capacity_balance", "capacityBalance")
+      ? parseCapacityBalanceViewModel(
+          readViewRecord(payload, "capacity_balance", "capacityBalance"),
+        )
+      : emptyCapacityBalanceViewModel(header.currency),
     totalSpend: parseTotalSpendViewModel(
       readViewRecord(payload, "total_spend", "totalSpend"),
     ),
-    computeSpend: parseComputeSpendViewModel(
-      readViewRecord(payload, "compute_spend", "computeSpend"),
+    warehouseSpend: parseWarehouseSpendViewModel(
+      readViewRecord(payload, "warehouse_spend", "warehouseSpend"),
     ),
     storageSpend: parseStorageSpendViewModel(
       readViewRecord(payload, "storage_spend", "storageSpend"),
+      header.currency,
     ),
     serviceSpend: parseServiceSpendViewModel(
       readViewRecord(payload, "service_spend", "serviceSpend"),
@@ -556,14 +610,116 @@ function parseTotalSpendViewModel(
   };
 }
 
-function parseComputeSpendViewModel(
+function parseCapacityBalanceViewModel(
   payload: Record<string, unknown>,
-): ComputeSpendViewModel {
+): CapacityBalanceViewModel {
   return {
-    computeBasis: readViewSpendBasis(payload, "compute_basis", "computeBasis"),
-    dailySeries: readViewArray(payload, "daily_series", "dailySeries").map(
-      parseDollarPoint,
+    currentBalance: readViewNumber(
+      payload,
+      "current_balance",
+      "currentBalance",
     ),
+    currentBalanceLabel: readViewString(
+      payload,
+      "current_balance_label",
+      "currentBalanceLabel",
+    ),
+    currentBalanceDate: readViewNullableString(
+      payload,
+      "current_balance_date",
+      "currentBalanceDate",
+    ),
+    dailySeries: readViewArray(payload, "daily_series", "dailySeries").map(
+      parseBalancePoint,
+    ),
+    isEmpty: readViewBoolean(payload, "is_empty", "isEmpty"),
+  };
+}
+
+// Mirrors the backend's `_format_currency` in dashboard_view_builder.py so the
+// fallback zero label matches the server's formatting for the dashboard's
+// currency (e.g. "$0.00" for USD, "€0.00" for EUR, "¥0" for JPY).
+const CURRENCY_SYMBOL_PREFIXES: Record<string, string> = {
+  EUR: "€",
+  GBP: "£",
+  JPY: "¥",
+  KRW: "₩",
+  CAD: "CA$",
+  AUD: "A$",
+  NZD: "NZ$",
+  MXN: "MX$",
+  INR: "₹",
+  CNY: "CN¥",
+  HKD: "HK$",
+  BRL: "R$",
+  ILS: "₪",
+  TWD: "NT$",
+  PHP: "₱",
+};
+const CURRENCY_CODE_PREFIXES = new Set([
+  "CHF",
+  "CZK",
+  "DKK",
+  "HUF",
+  "IDR",
+  "MYR",
+  "NOK",
+  "PLN",
+  "SEK",
+  "SGD",
+  "THB",
+  "TRY",
+  "ZAR",
+]);
+const CURRENCY_CODE_SEPARATOR = " ";
+const CURRENCY_COMPACT_DECIMAL_CODES = new Set(["HUF", "IDR", "JPY", "KRW"]);
+
+function formatZeroCurrencyLabel(currency: string): string {
+  const resolvedCurrency = currency || "USD";
+  const amount = CURRENCY_COMPACT_DECIMAL_CODES.has(resolvedCurrency)
+    ? "0"
+    : "0.00";
+
+  if (resolvedCurrency === "USD") {
+    return `$${amount}`;
+  }
+  const symbol = CURRENCY_SYMBOL_PREFIXES[resolvedCurrency];
+  if (symbol !== undefined) {
+    return `${symbol}${amount}`;
+  }
+  if (CURRENCY_CODE_PREFIXES.has(resolvedCurrency)) {
+    return `${resolvedCurrency}${CURRENCY_CODE_SEPARATOR}${amount}`;
+  }
+  return `${amount} ${resolvedCurrency}`;
+}
+
+function emptyCapacityBalanceViewModel(
+  currency: string,
+): CapacityBalanceViewModel {
+  return {
+    currentBalance: 0,
+    currentBalanceLabel: formatZeroCurrencyLabel(currency),
+    currentBalanceDate: null,
+    dailySeries: [],
+    isEmpty: true,
+  };
+}
+
+function parseWarehouseSpendViewModel(
+  payload: Record<string, unknown>,
+): WarehouseSpendViewModel {
+  return {
+    basis: readViewSpendBasis(payload, "basis"),
+    total: readViewNumber(payload, "total"),
+    totalLabel: readViewString(payload, "total_label", "totalLabel"),
+    dailySeries: readViewArray(payload, "daily_series", "dailySeries").map(
+      parseWarehousePoint,
+    ),
+    warehouseNames: readViewArray(
+      payload,
+      "warehouse_names",
+      "warehouseNames",
+    ).map(readViewArrayString),
     rankedWarehouses: readViewArray(
       payload,
       "ranked_warehouses",
@@ -586,6 +742,7 @@ function parseComputeSpendViewModel(
 
 function parseStorageSpendViewModel(
   payload: Record<string, unknown>,
+  currency: string,
 ): StorageSpendViewModel {
   return {
     basis: readViewSpendBasis(payload, "basis"),
@@ -594,6 +751,15 @@ function parseStorageSpendViewModel(
       "database_basis",
       "databaseBasis",
     ),
+    // Older stored views predate the storage KPI fields; fall back to a zeroed
+    // total with a currency-correct label and empty stacked-series arrays rather
+    // than throwing on their absence.
+    total: hasViewValue(payload, "total")
+      ? readViewNumber(payload, "total")
+      : 0,
+    totalLabel: hasViewValue(payload, "total_label", "totalLabel")
+      ? readViewString(payload, "total_label", "totalLabel")
+      : formatZeroCurrencyLabel(currency),
     dailySeries: readViewArray(payload, "daily_series", "dailySeries").map(
       parseDollarPoint,
     ),
@@ -603,6 +769,22 @@ function parseStorageSpendViewModel(
       "database_bars",
       "databaseBars",
     ).map(parseRankedBarRow),
+    databaseNames: hasViewValue(payload, "database_names", "databaseNames")
+      ? readViewArray(payload, "database_names", "databaseNames").map(
+          readViewArrayString,
+        )
+      : [],
+    databaseDailySeries: hasViewValue(
+      payload,
+      "database_daily_series",
+      "databaseDailySeries",
+    )
+      ? readViewArray(
+          payload,
+          "database_daily_series",
+          "databaseDailySeries",
+        ).map(parseStoragePoint)
+      : [],
     isEmpty: readViewBoolean(payload, "is_empty", "isEmpty"),
   };
 }
@@ -652,6 +834,15 @@ function parseDollarPoint(payload: unknown): DollarPoint {
   };
 }
 
+function parseBalancePoint(payload: unknown): BalancePoint {
+  const record = asViewRecord(payload);
+  return {
+    date: readViewString(record, "date"),
+    balance: readViewNumber(record, "balance"),
+    balanceLabel: readViewString(record, "balance_label", "balanceLabel"),
+  };
+}
+
 function parseServicePoint(payload: unknown): ServicePoint {
   const record = asViewRecord(payload);
   const values = readViewRecord(record, "values");
@@ -668,6 +859,18 @@ function parseServicePoint(payload: unknown): ServicePoint {
     date: readViewString(record, "date"),
     values: parsedValues,
   };
+}
+
+// WarehousePoint and ServicePoint share the same {date, values} shape, so the
+// stacked-by-warehouse series reuses the service-point parser.
+function parseWarehousePoint(payload: unknown): WarehousePoint {
+  return parseServicePoint(payload);
+}
+
+// StoragePoint mirrors the warehouse/service {date, values} stacked-series shape
+// (here keyed by database), so it reuses the same point parser.
+function parseStoragePoint(payload: unknown): StoragePoint {
+  return parseServicePoint(payload);
 }
 
 function parseRankedSpendRow(payload: unknown): RankedSpendRow {
@@ -701,16 +904,57 @@ function parseRankedBarRow(payload: unknown): RankedBarRow {
 
 function parseStorageDatabaseRow(payload: unknown): StorageDatabaseRow {
   const record = asViewRecord(payload);
+  const bytes = readViewNumber(record, "bytes");
+  const monthlySpendLabel = readViewString(
+    record,
+    "monthly_spend_label",
+    "monthlySpendLabel",
+  );
   return {
     name: readViewString(record, "name"),
-    bytes: readViewNumber(record, "bytes"),
+    bytes,
+    // Older stored views lack the pre-humanized size label; derive it
+    // client-side from the raw byte count so the table still renders a size.
+    bytesLabel: hasViewValue(record, "bytes_label", "bytesLabel")
+      ? readViewString(record, "bytes_label", "bytesLabel")
+      : humanizeBytes(bytes),
     monthlySpend: readViewNumber(record, "monthly_spend", "monthlySpend"),
-    monthlySpendLabel: readViewString(
+    monthlySpendLabel,
+    // Newer views carry per-database spend scoped to the active window. Legacy
+    // payloads predate it, so mirror the bytes_label fallback convention: zero
+    // the numeric value and reuse the monthly label as the displayable text.
+    periodSpend: hasViewValue(record, "period_spend", "periodSpend")
+      ? readViewNumber(record, "period_spend", "periodSpend")
+      : 0,
+    periodSpendLabel: hasViewValue(
       record,
-      "monthly_spend_label",
-      "monthlySpendLabel",
-    ),
+      "period_spend_label",
+      "periodSpendLabel",
+    )
+      ? readViewString(record, "period_spend_label", "periodSpendLabel")
+      : monthlySpendLabel,
   };
+}
+
+// 1000-base, one-decimal byte humanizer mirroring the backend's `bytes_label`
+// formatting (e.g. 10_500_000_000_000 → "10.5 TB"). Used only as a fallback for
+// legacy stored views that predate the server-side label.
+const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB", "PB", "EB"] as const;
+
+function humanizeBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1000 && unitIndex < BYTE_UNITS.length - 1) {
+    value /= 1000;
+    unitIndex += 1;
+  }
+  // Bytes render as whole numbers; larger units carry one decimal.
+  const formatted =
+    unitIndex === 0 ? String(Math.round(value)) : value.toFixed(1);
+  return `${formatted} ${BYTE_UNITS[unitIndex]}`;
 }
 
 function parseWarehouseDetailRow(payload: unknown): WarehouseDetailRow {
@@ -866,6 +1110,17 @@ function readViewValue(
     return payload[camelKey];
   }
   throwInvalidDashboardView();
+}
+
+function hasViewValue(
+  payload: Record<string, unknown>,
+  snakeKey: string,
+  camelKey = snakeKey,
+): boolean {
+  return (
+    Object.hasOwn(payload, snakeKey) ||
+    (camelKey !== snakeKey && Object.hasOwn(payload, camelKey))
+  );
 }
 
 function readViewRecord(

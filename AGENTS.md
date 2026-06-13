@@ -107,6 +107,32 @@ needed. Run shell commands through `rtk` when it is available.
 9. **Build for the next agent.** Prefer obvious names, flat structure, and
    standard patterns.
 
+## Manager → Subworker Delegation Workflow
+
+When the user asks for manager-mode delegation, the main session acts as an
+engineering manager and does not write implementation code itself.
+
+1. **Scout inline, then brief.** The manager reads just enough of the
+   codebase to write a precise, self-contained brief: context, exact files,
+   required changes, constraints (code style, tests, checks to run), and the
+   report format the subagent must return.
+2. **Delegate implementation to a different model.** Code-writing subagents
+   run **Opus 4.8** (`model: "opus"`) — never Fable 5. Subagents must not
+   commit; changes stay in the working tree for user review.
+3. **Cross-model review every round.** After each implementation pass, run an
+   adversarial review with the **Codex plugin** (a different model catches
+   issues a same-model reviewer misses). Triage findings and delegate real
+   fixes back to an Opus subagent with the findings quoted verbatim.
+4. **Verify independently.** The manager re-runs the full checks itself
+   (`npx vitest run`, `npx tsc --noEmit`, `npx eslint .`) rather than
+   trusting subagent reports.
+5. **User verifies visually.** For browser/visual confirmation (layout, CSS,
+   tooltips), ask the user to check in their running dev server instead of
+   driving it from the agent environment.
+6. **Report and wait.** Summarize what changed, review findings and how they
+   were resolved, and verification evidence. Commits happen only after user
+   approval.
+
 ## Docs
 
 - `docs/local-development.md` — full env setup (Supabase keys, env wiring); read when Quick Reference isn't enough.

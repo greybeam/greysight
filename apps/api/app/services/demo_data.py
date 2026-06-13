@@ -20,6 +20,7 @@ DEMO_ACCOUNT_USAGE_THROUGH = DEMO_BILLING_THROUGH
 DEMO_ACCOUNT_LOCATOR = "DEMO123"
 DEMO_CREDIT_RATE_USD = 2.25
 DEMO_STORAGE_RATE_USD = 25.0
+DEMO_CAPACITY_START_USD = 75_000.0
 
 _DEMO_SERVICES = (
     ("WAREHOUSE_METERING", "COMPUTE", 38.0),
@@ -72,6 +73,7 @@ def build_demo_dashboard_dataset() -> DashboardDatasetPayload:
     database_storage_daily = _build_database_storage_daily(usage_dates)
     org_spend_daily = _build_org_spend_daily(service_spend_daily)
     rate_sheet_daily = _build_rate_sheet_daily(usage_dates)
+    capacity_balance_daily = _build_capacity_balance_daily(usage_dates, org_spend_daily)
     account_spend_daily = derive_account_spend_daily(service_spend_daily)
     top_warehouses_table = build_top_warehouses_table(warehouse_spend_daily)
     datasets = {
@@ -83,6 +85,7 @@ def build_demo_dashboard_dataset() -> DashboardDatasetPayload:
         "top_warehouses_table": top_warehouses_table,
         "org_spend_daily": _json_ready_rows(org_spend_daily),
         "rate_sheet_daily": _json_ready_rows(rate_sheet_daily),
+        "capacity_balance_daily": _json_ready_rows(capacity_balance_daily),
         "current_account": [{"account_locator": DEMO_ACCOUNT_LOCATOR}],
     }
     summary = build_dashboard_summary(
@@ -188,6 +191,9 @@ def _build_database_storage_daily(usage_dates: list[date]) -> list[dict[str, Any
                     "average_failsafe_bytes": round(
                         base_tb * 0.08 * growth_factor * 1_000_000_000_000
                     ),
+                    "average_hybrid_table_storage_bytes": round(
+                        base_tb * 0.03 * growth_factor * 1_000_000_000_000
+                    ),
                 }
             )
     return rows
@@ -222,11 +228,46 @@ def _build_rate_sheet_daily(usage_dates: list[date]) -> list[dict[str, Any]]:
                 {
                     "usage_date": usage_date,
                     "service_type": service_type,
+                    "usage_type": "compute",
                     "rating_type": rating_type,
                     "currency": "USD",
                     "effective_rate": DEMO_CREDIT_RATE_USD,
                 }
             )
+        rows.append(
+            {
+                "usage_date": usage_date,
+                "service_type": "STORAGE",
+                "usage_type": "storage",
+                "rating_type": "STORAGE",
+                "currency": "USD",
+                "effective_rate": DEMO_STORAGE_RATE_USD,
+            }
+        )
+    return rows
+
+
+def _build_capacity_balance_daily(
+    usage_dates: list[date],
+    org_spend_daily: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    spend_by_date = {usage_date: 0.0 for usage_date in usage_dates}
+    for row in org_spend_daily:
+        usage_date = row["usage_date"]
+        assert isinstance(usage_date, date)
+        spend_by_date[usage_date] += float(row["spend"])
+
+    balance = DEMO_CAPACITY_START_USD
+    rows: list[dict[str, Any]] = []
+    for usage_date in usage_dates:
+        balance -= spend_by_date[usage_date]
+        rows.append(
+            {
+                "usage_date": usage_date,
+                "currency": "USD",
+                "balance": round(balance, 2),
+            }
+        )
     return rows
 
 

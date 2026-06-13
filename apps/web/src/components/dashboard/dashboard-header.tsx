@@ -23,9 +23,9 @@ export default function DashboardHeader({
   onRun,
 }: DashboardHeaderProps) {
   return (
-    <header className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3">
+    <header className="flex flex-wrap items-center justify-between gap-3 border-b border-hairline bg-surface px-4 py-3">
       <div className="flex flex-wrap items-center gap-3">
-        <h1 className="text-lg font-semibold text-slate-950">Greysight</h1>
+        <h1 className="text-lg font-semibold text-slate-50">Greysight</h1>
         <Badge color="slate">{modeLabel}</Badge>
         {header ? (
           <>
@@ -33,12 +33,12 @@ export default function DashboardHeader({
               {header.dataModeLabel}
             </Badge>
             {header.accountLocator ? (
-              <span className="font-mono text-xs text-slate-500">
+              <span className="font-mono text-xs text-slate-400">
                 {header.accountLocator}
               </span>
             ) : null}
             {header.freshnessLabel ? (
-              <span className="text-xs text-slate-500">
+              <span className="text-xs text-slate-400">
                 {header.freshnessLabel}
               </span>
             ) : null}
@@ -47,13 +47,13 @@ export default function DashboardHeader({
       </div>
       <div className="flex flex-wrap items-center justify-end gap-3">
         {header?.dataModeLabel === "Estimated" ? (
-          <span className="text-xs font-medium text-amber-700">
+          <span className="text-xs font-medium text-amber-400">
             Estimated spend at {header.estimatedCreditPriceLabel}/credit - billed data
             unavailable
           </span>
         ) : null}
         <button
-          className="h-9 rounded-md bg-slate-950 px-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+          className="h-9 rounded-md bg-chart-purple px-3 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:bg-surface disabled:text-slate-500 disabled:opacity-100"
           disabled={runDisabled}
           type="button"
           onClick={onRun}

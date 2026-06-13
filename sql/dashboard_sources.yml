@@ -40,7 +40,14 @@ sources:
     grain:
       - usage_date
       - service_type
+      - usage_type
       - rating_type
+      - currency
+  - id: capacity_balance_daily
+    kind: snowflake_organization_usage
+    sql_path: sql/snowflake/capacity_balance_daily.sql
+    grain:
+      - usage_date
       - currency
   - id: current_account
     kind: snowflake_metadata
