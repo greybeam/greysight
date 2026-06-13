@@ -82,12 +82,18 @@ describe("CostDashboard", () => {
     render(<CostDashboard data={demoDashboardView} />);
 
     expect(screen.getByText("Overview")).toBeInTheDocument();
-    expect(screen.getByText("Ending Balance")).toBeInTheDocument();
-    expect(screen.getByText("Total Spend in Period")).toBeInTheDocument();
-    expect(screen.getByText("Compute spend")).toBeInTheDocument();
+    // The demo view carries a current balance date, so the title is dated.
+    expect(screen.getByText("Ending Balance as of Jun 08")).toBeInTheDocument();
+    // The demo view uses a relative 30-day window, so the KPI label is scoped.
+    expect(screen.getByText("Total Spend in Last 30 Days")).toBeInTheDocument();
+    expect(screen.getByText("Ranked services")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("dashboard-section-warehouse-spend"),
+    ).toBeInTheDocument();
     expect(screen.getByText("Storage spend")).toBeInTheDocument();
-    expect(screen.getAllByText("Service spend").length).toBeGreaterThan(0);
-    expect(screen.getByText("Warehouse spend")).toBeInTheDocument();
+    expect(screen.queryByText("Total Spend in Period")).not.toBeInTheDocument();
+    // "Warehouse spend" appears twice: the section heading and the detail table.
+    expect(screen.getAllByText("Warehouse spend").length).toBeGreaterThan(0);
     expect(screen.getByText("User compute spend")).toBeInTheDocument();
     expect(screen.getByText("Storage by database")).toBeInTheDocument();
     expect(screen.getAllByText("Analysis complete").length).toBeGreaterThan(0);

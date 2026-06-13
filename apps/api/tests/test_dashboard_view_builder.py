@@ -6,9 +6,13 @@ import pytest
 from app.models import DashboardDatasetMetadata, DashboardRun, SourceAvailability
 from app.services.demo_data import build_demo_dashboard_dataset
 from app.services.dashboard_view_builder import (
+    DASHBOARD_STACKED_SERIES_LIMIT,
     DEFAULT_VIEW_WINDOW_DAYS,
+    OTHER_STACKED_SERIES_LABEL,
     DashboardInvalidRangeError,
     DashboardRangeOutOfBoundsError,
+    _bucket_stacked_series,
+    _warehouse_row_dollars,
     build_dashboard_view,
     resolve_dashboard_view_range,
 )
@@ -529,8 +533,70 @@ def test_estimated_mode_uses_account_usage_through_date_and_estimated_basis() ->
     assert view.header.data_mode_label == "Estimated"
     assert view.header.through_date == "2026-06-08"
     assert view.total_spend.basis == "estimated"
-    assert view.compute_spend.compute_basis == "estimated"
-    assert view.compute_spend.ranked_warehouses
+    assert view.warehouse_spend.basis == "estimated"
+    assert view.warehouse_spend.ranked_warehouses
+
+
+def test_warehouse_spend_prices_compute_and_cloud_services_credits() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    metadata = _demo_metadata().model_copy(
+        update={
+            "data_mode": "estimated",
+            "billing_through_date": None,
+            "organization_usage": SourceAvailability(
+                available=False, detail="org unavailable"
+            ),
+        }
+    )
+    datasets["org_spend_daily"] = []
+    # Single warehouse on a single day: 10 compute credits + 4 cloud-services
+    # credits (credits_used 14 - credits_used_compute 10).
+    datasets["warehouse_spend_daily"] = [
+        {
+            "usage_date": "2026-06-08",
+            "warehouse_name": "BI_WH",
+            "credits_used": 14.0,
+            "credits_used_compute": 10.0,
+        }
+    ]
+    datasets["query_compute_by_user_daily"] = []
+    # Distinct rates prove both service types are consulted: compute priced at
+    # 2.0/credit, cloud services at 0.5/credit.
+    datasets["rate_sheet_daily"] = [
+        {
+            "usage_date": "2026-06-08",
+            "service_type": "WAREHOUSE_METERING",
+            "rating_type": "COMPUTE",
+            "currency": "USD",
+            "effective_rate": 2.0,
+        },
+        {
+            "usage_date": "2026-06-08",
+            "service_type": "CLOUD_SERVICES",
+            "rating_type": "COMPUTE",
+            "currency": "USD",
+            "effective_rate": 0.5,
+        },
+    ]
+
+    view = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=metadata,
+        source_start_date=source_start,
+        source_end_date=source_end,
+        start_date=date(2026, 6, 8),
+        end_date=date(2026, 6, 8),
+    )
+
+    # 10 * 2.0 (compute) + 4 * 0.5 (cloud services) = 22.0. A regression that
+    # drops cloud-services credits would yield 20.0 and fail this assertion.
+    expected = 10.0 * 2.0 + 4.0 * 0.5
+    assert view.warehouse_spend.warehouse_names == ["BI_WH"]
+    assert view.warehouse_spend.ranked_warehouses[0].spend == pytest.approx(expected)
+    daily_point = view.warehouse_spend.daily_series[-1]
+    assert daily_point.values["BI_WH"] == pytest.approx(expected)
 
 
 def test_estimated_non_usd_rate_returns_prepared_unsupported_view() -> None:
@@ -762,7 +828,7 @@ def test_estimated_non_usd_rate_out_of_bounds_custom_range_returns_unsupported()
     assert view.total_spend.is_empty is True
 
 
-def test_capped_bars_and_detail_rows_match_dashboard_limits() -> None:
+def test_uncapped_ranked_bars_and_detail_rows_match_dashboard_limits() -> None:
     datasets = _demo_datasets()
     source_start, source_end = _source_bounds(datasets)
     service_rows = []
@@ -790,10 +856,15 @@ def test_capped_bars_and_detail_rows_match_dashboard_limits() -> None:
         window_days=7,
     )
 
+    # Ranked lists and bars are uncapped: every entry is present and rendered.
     assert len(view.service_spend.ranked_services) == 55
-    assert len(view.service_spend.service_bars) == 8
+    assert len(view.service_spend.service_bars) == 55
     assert view.service_spend.service_bars[0].name == "SERVICE_55"
     assert view.service_spend.service_bars[0].bar_width_percent == 100
+    # Only the stacked chart series is bucketed: top 13 + an "Other" bucket.
+    assert len(view.service_spend.service_names) == 14
+    assert view.service_spend.service_names[-1] == "Other"
+    # Detail tables keep their own independent cap.
     assert len(view.detail_tables.services) == 50
 
 
@@ -955,3 +1026,223 @@ def test_invalid_required_billed_spend_fails_loudly(invalid_spend: object) -> No
             source_end_date=source_end,
             window_days=7,
         )
+
+
+def test_bucket_stacked_series_keeps_series_at_or_under_limit_untouched() -> None:
+    names = [f"S{index}" for index in range(DASHBOARD_STACKED_SERIES_LIMIT)]
+    values_by_date = [{name: float(index) for index, name in enumerate(names)}]
+
+    bucketed_names, bucketed_values = _bucket_stacked_series(names, values_by_date)
+
+    assert bucketed_names == names
+    assert "Other" not in bucketed_names
+    assert bucketed_values == values_by_date
+    # Inputs are returned as new objects, not aliased.
+    assert bucketed_values is not values_by_date
+    assert bucketed_values[0] is not values_by_date[0]
+
+
+def test_bucket_stacked_series_buckets_overflow_into_top_thirteen_plus_other() -> None:
+    # 16 categories (> 14). Total spend ranks them by their trailing index, so
+    # the smallest three (S0, S1, S2) collapse into "Other".
+    names = [f"S{index}" for index in range(16)]
+    values_by_date = [
+        {name: float(index) for index, name in enumerate(names)},
+        {name: float(index) * 2 for index, name in enumerate(names)},
+    ]
+
+    bucketed_names, bucketed_values = _bucket_stacked_series(names, values_by_date)
+
+    # Top 13 by descending total, then "Other" pinned last.
+    assert bucketed_names == [
+        "S15",
+        "S14",
+        "S13",
+        "S12",
+        "S11",
+        "S10",
+        "S9",
+        "S8",
+        "S7",
+        "S6",
+        "S5",
+        "S4",
+        "S3",
+        "Other",
+    ]
+    assert len(bucketed_names) == DASHBOARD_STACKED_SERIES_LIMIT
+    # "Other" aggregates the dropped categories per date: S0 + S1 + S2.
+    assert bucketed_values[0]["Other"] == pytest.approx(0.0 + 1.0 + 2.0)
+    assert bucketed_values[1]["Other"] == pytest.approx(0.0 + 2.0 + 4.0)
+    # Kept categories preserve their original per-date values.
+    assert bucketed_values[0]["S15"] == pytest.approx(15.0)
+    assert bucketed_values[1]["S15"] == pytest.approx(30.0)
+
+
+def test_bucket_stacked_series_merges_real_other_into_synthetic_bucket() -> None:
+    # 16 categories (> 14) including a real "Other" that ranks high enough to
+    # otherwise land in the top 13. When bucketing engages it must never occupy
+    # a kept slot; its values fold into the synthetic bucket so the reserved name
+    # appears exactly once (last) with no overwrite or duplicate key.
+    names = [f"S{index}" for index in range(15)] + [OTHER_STACKED_SERIES_LABEL]
+    values_by_date = [
+        {f"S{index}": float(index) for index in range(15)}
+        | {OTHER_STACKED_SERIES_LABEL: 100.0},
+        {f"S{index}": float(index) * 2 for index in range(15)}
+        | {OTHER_STACKED_SERIES_LABEL: 200.0},
+    ]
+
+    bucketed_names, bucketed_values = _bucket_stacked_series(names, values_by_date)
+
+    # Reserved name appears exactly once, pinned last; no duplicate keys.
+    assert bucketed_names.count(OTHER_STACKED_SERIES_LABEL) == 1
+    assert bucketed_names[-1] == OTHER_STACKED_SERIES_LABEL
+    assert len(bucketed_names) == len(set(bucketed_names))
+    assert len(bucketed_names) == DASHBOARD_STACKED_SERIES_LIMIT
+    # Top 13 by descending total exclude the real "Other"; smallest S0, S1 drop.
+    assert bucketed_names == [
+        "S14",
+        "S13",
+        "S12",
+        "S11",
+        "S10",
+        "S9",
+        "S8",
+        "S7",
+        "S6",
+        "S5",
+        "S4",
+        "S3",
+        "S2",
+        OTHER_STACKED_SERIES_LABEL,
+    ]
+    # Synthetic bucket = real "Other" + ranked-out remainder (S0 + S1).
+    assert bucketed_values[0][OTHER_STACKED_SERIES_LABEL] == pytest.approx(
+        100.0 + 0.0 + 1.0
+    )
+    assert bucketed_values[1][OTHER_STACKED_SERIES_LABEL] == pytest.approx(
+        200.0 + 0.0 + 2.0
+    )
+    # Per-date sums are preserved across the rebucketing.
+    for original, bucketed in zip(values_by_date, bucketed_values, strict=True):
+        assert sum(bucketed.values()) == pytest.approx(sum(original.values()))
+
+
+def test_warehouse_row_dollars_raises_on_negative_cloud_credits() -> None:
+    # credits_used below credits_used_compute is an impossible negative cloud
+    # balance; the guard must fail loud (not a stripped assert).
+    row = {
+        "usage_date": "2026-06-08",
+        "warehouse_name": "BI_WH",
+        "credits_used": 8.0,
+        "credits_used_compute": 10.0,
+    }
+
+    def convert(
+        credits: float, usage_date: date, service_type: str, rating_type: str | None
+    ) -> float:
+        return credits
+
+    with pytest.raises(
+        ValueError,
+        match="warehouse_spend_daily credits_used must be >= credits_used_compute",
+    ):
+        _warehouse_row_dollars(row, convert)
+
+
+def test_stacked_service_series_buckets_but_ranked_lists_stay_full() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    service_rows = [
+        {
+            "usage_date": "2026-06-08",
+            "service_type": f"SERVICE_{index + 1:02}",
+            "rating_type": "COMPUTE",
+            "billing_type": "CONSUMPTION",
+            "is_adjustment": False,
+            "currency": "USD",
+            "spend": float(index + 1),
+        }
+        for index in range(20)
+    ]
+    datasets["org_spend_daily"] = service_rows
+
+    view = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=_demo_metadata(),
+        source_start_date=source_start,
+        source_end_date=source_end,
+        window_days=7,
+    )
+
+    # Stacked chart series is bucketed to 13 + Other.
+    assert len(view.service_spend.service_names) == DASHBOARD_STACKED_SERIES_LIMIT
+    assert view.service_spend.service_names[-1] == "Other"
+    for point in view.service_spend.daily_series:
+        assert set(point.values) == set(view.service_spend.service_names)
+    # Ranked lists stay unbucketed (full data, no synthetic "Other").
+    assert len(view.service_spend.ranked_services) == 20
+    assert all(row.name != "Other" for row in view.service_spend.ranked_services)
+
+
+def test_warehouse_total_sums_window_daily_dollars() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    metadata = _demo_metadata().model_copy(
+        update={
+            "data_mode": "estimated",
+            "billing_through_date": None,
+            "organization_usage": SourceAvailability(
+                available=False, detail="org unavailable"
+            ),
+        }
+    )
+    datasets["org_spend_daily"] = []
+    datasets["warehouse_spend_daily"] = [
+        {
+            "usage_date": "2026-06-07",
+            "warehouse_name": "BI_WH",
+            "credits_used": 10.0,
+            "credits_used_compute": 10.0,
+        },
+        {
+            "usage_date": "2026-06-08",
+            "warehouse_name": "ETL_WH",
+            "credits_used": 6.0,
+            "credits_used_compute": 6.0,
+        },
+    ]
+    datasets["query_compute_by_user_daily"] = []
+    datasets["rate_sheet_daily"] = [
+        {
+            "usage_date": usage_date,
+            "service_type": "WAREHOUSE_METERING",
+            "rating_type": "COMPUTE",
+            "currency": "USD",
+            "effective_rate": 2.0,
+        }
+        for usage_date in ("2026-06-07", "2026-06-08")
+    ]
+
+    view = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=metadata,
+        source_start_date=source_start,
+        source_end_date=source_end,
+        start_date=date(2026, 6, 7),
+        end_date=date(2026, 6, 8),
+    )
+
+    # 10 credits * 2.0 + 6 credits * 2.0 = 32.0 across the window, matching the
+    # sum of the stacked daily series.
+    expected = 10.0 * 2.0 + 6.0 * 2.0
+    chart_total = sum(
+        amount
+        for point in view.warehouse_spend.daily_series
+        for amount in point.values.values()
+    )
+    assert view.warehouse_spend.total == pytest.approx(expected)
+    assert view.warehouse_spend.total == pytest.approx(chart_total)
+    assert view.warehouse_spend.total_label == "$32.00"

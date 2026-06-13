@@ -20,7 +20,7 @@ describe("Tailwind config", () => {
     const safelistPatterns = tremorChartColorSafelist.map((entry) => entry.pattern);
 
     expect(safelistPatterns.some((pattern) => pattern.test("bg-chart-purple"))).toBe(true);
-    expect(safelistPatterns.some((pattern) => pattern.test("stroke-chart-other"))).toBe(true);
+    expect(safelistPatterns.some((pattern) => pattern.test("stroke-chart-14"))).toBe(true);
     expect(safelistPatterns.some((pattern) => pattern.test("fill-chart-1"))).toBe(true);
 
     // The Greybeam no-shade pattern must not match a "-500" shaded form.

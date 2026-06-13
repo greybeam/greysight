@@ -206,9 +206,17 @@ export type CapacityBalanceViewModel = {
   isEmpty: boolean;
 };
 
-export type ComputeSpendViewModel = {
-  computeBasis: SpendBasis;
-  dailySeries: DollarPoint[];
+export type WarehousePoint = {
+  date: string;
+  values: Record<string, number>;
+};
+
+export type WarehouseSpendViewModel = {
+  basis: SpendBasis;
+  total: number;
+  totalLabel: string;
+  dailySeries: WarehousePoint[];
+  warehouseNames: string[];
   rankedWarehouses: RankedSpendRow[];
   rankedUsers: RankedSpendRow[];
   warehouseBars: RankedBarRow[];
@@ -271,7 +279,7 @@ export type DashboardView = {
   unsupported: UnsupportedViewModel | null;
   capacityBalance: CapacityBalanceViewModel;
   totalSpend: TotalSpendViewModel;
-  computeSpend: ComputeSpendViewModel;
+  warehouseSpend: WarehouseSpendViewModel;
   storageSpend: StorageSpendViewModel;
   serviceSpend: ServiceSpendViewModel;
   detailTables: DetailTablesViewModel;
@@ -423,8 +431,8 @@ export function parseDashboardView(payload: unknown): DashboardView {
     totalSpend: parseTotalSpendViewModel(
       readViewRecord(payload, "total_spend", "totalSpend"),
     ),
-    computeSpend: parseComputeSpendViewModel(
-      readViewRecord(payload, "compute_spend", "computeSpend"),
+    warehouseSpend: parseWarehouseSpendViewModel(
+      readViewRecord(payload, "warehouse_spend", "warehouseSpend"),
     ),
     storageSpend: parseStorageSpendViewModel(
       readViewRecord(payload, "storage_spend", "storageSpend"),
@@ -623,14 +631,21 @@ function emptyCapacityBalanceViewModel(): CapacityBalanceViewModel {
   };
 }
 
-function parseComputeSpendViewModel(
+function parseWarehouseSpendViewModel(
   payload: Record<string, unknown>,
-): ComputeSpendViewModel {
+): WarehouseSpendViewModel {
   return {
-    computeBasis: readViewSpendBasis(payload, "compute_basis", "computeBasis"),
+    basis: readViewSpendBasis(payload, "basis"),
+    total: readViewNumber(payload, "total"),
+    totalLabel: readViewString(payload, "total_label", "totalLabel"),
     dailySeries: readViewArray(payload, "daily_series", "dailySeries").map(
-      parseDollarPoint,
+      parseWarehousePoint,
     ),
+    warehouseNames: readViewArray(
+      payload,
+      "warehouse_names",
+      "warehouseNames",
+    ).map(readViewArrayString),
     rankedWarehouses: readViewArray(
       payload,
       "ranked_warehouses",
@@ -744,6 +759,12 @@ function parseServicePoint(payload: unknown): ServicePoint {
     date: readViewString(record, "date"),
     values: parsedValues,
   };
+}
+
+// WarehousePoint and ServicePoint share the same {date, values} shape, so the
+// stacked-by-warehouse series reuses the service-point parser.
+function parseWarehousePoint(payload: unknown): WarehousePoint {
+  return parseServicePoint(payload);
 }
 
 function parseRankedSpendRow(payload: unknown): RankedSpendRow {

@@ -27,10 +27,9 @@ import FilterBar, {
 import RunStatus from "./run-status";
 import SectionEmptyState from "./section-empty-state";
 import {
-  ComputeSpendSection,
   OverviewSection,
-  ServiceSpendSection,
   StorageSpendSection,
+  WarehouseSpendSection,
 } from "./spend-sections";
 
 export type CostDashboardRuntime = {
@@ -438,19 +437,18 @@ function CostDashboardContent({
               <OverviewSection
                 capacityBalance={viewModel.capacityBalance}
                 currency={viewModel.header.currency}
+                range={activeRange ?? viewModel.range}
+                serviceSpend={viewModel.serviceSpend}
                 totalSpend={viewModel.totalSpend}
               />
-              <ComputeSpendSection
+              <WarehouseSpendSection
                 currency={viewModel.header.currency}
-                viewModel={viewModel.computeSpend}
+                range={activeRange ?? viewModel.range}
+                viewModel={viewModel.warehouseSpend}
               />
               <StorageSpendSection
                 currency={viewModel.header.currency}
                 viewModel={viewModel.storageSpend}
-              />
-              <ServiceSpendSection
-                currency={viewModel.header.currency}
-                viewModel={viewModel.serviceSpend}
               />
               <DetailTables viewModel={viewModel.detailTables} />
             </>

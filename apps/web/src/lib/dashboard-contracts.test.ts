@@ -260,14 +260,24 @@ describe("parseDashboardView", () => {
       },
       is_empty: false,
     },
-    compute_spend: {
-      compute_basis: "billed",
-      daily_series: [],
-      ranked_warehouses: [],
+    warehouse_spend: {
+      basis: "estimated",
+      total: 12,
+      total_label: "$12.00",
+      daily_series: [{ date: "2026-06-08", values: { COMPUTE_WH: 12 } }],
+      warehouse_names: ["COMPUTE_WH"],
+      ranked_warehouses: [
+        {
+          name: "COMPUTE_WH",
+          spend: 12,
+          spend_label: "$12.00",
+          credits: 4,
+        },
+      ],
       ranked_users: [],
       warehouse_bars: [],
       user_bars: [],
-      is_empty: true,
+      is_empty: false,
     },
     storage_spend: {
       basis: "estimated",
@@ -337,6 +347,14 @@ describe("parseDashboardView", () => {
     expect(parsed.serviceSpend.dailySeries[0]).toEqual({
       date: "2026-06-08",
       values: { CLOUD_SERVICES: 123.45 },
+    });
+    expect(parsed.warehouseSpend.basis).toBe("estimated");
+    expect(parsed.warehouseSpend.total).toBe(12);
+    expect(parsed.warehouseSpend.totalLabel).toBe("$12.00");
+    expect(parsed.warehouseSpend.warehouseNames).toEqual(["COMPUTE_WH"]);
+    expect(parsed.warehouseSpend.dailySeries[0]).toEqual({
+      date: "2026-06-08",
+      values: { COMPUTE_WH: 12 },
     });
     expect(parsed.detailTables.warehouses[0]?.creditsCompute).toBe(3);
     expect(parsed.detailTables.users[0]?.warehouseName).toBe("COMPUTE_WH");

@@ -1,30 +1,85 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CHART_COLORS,
   getSeriesColors,
+  OTHER_SERIES_COLOR,
+  OTHER_SERIES_LABEL,
   orderCategoriesByTotal,
+  PRIMARY_CHART_COLOR,
   resolveChartColor,
+  SERIES_PALETTE,
 } from "./chart-colors";
+
+describe("SERIES_PALETTE", () => {
+  it("is the 14 brand pastels in fixed order", () => {
+    expect(SERIES_PALETTE).toEqual([
+      "chart-1",
+      "chart-2",
+      "chart-3",
+      "chart-4",
+      "chart-5",
+      "chart-6",
+      "chart-7",
+      "chart-8",
+      "chart-9",
+      "chart-10",
+      "chart-11",
+      "chart-12",
+      "chart-13",
+      "chart-14",
+    ]);
+  });
+
+  it("resolves each palette slot to its exact brand hex", () => {
+    const hexes = SERIES_PALETTE.map((token) => CHART_COLORS[token]);
+
+    expect(hexes).toEqual([
+      "#D9BFF7",
+      "#A4DEF6",
+      "#E6F39B",
+      "#FFCBA6",
+      "#F9BDD6",
+      "#A8EBD6",
+      "#BFCBFF",
+      "#F7DE9E",
+      "#E59BE9",
+      "#B5ECA5",
+      "#FFA8A8",
+      "#8B9EF0",
+      "#E8C56B",
+      "#D6DBE4",
+    ]);
+  });
+
+  it("reserves the last palette color for the Other bucket", () => {
+    expect(CHART_COLORS["chart-14"]).toBe("#D6DBE4");
+  });
+});
 
 describe("getSeriesColors", () => {
   it("maps a single category to brand purple", () => {
-    expect(getSeriesColors(["Compute"])).toEqual(["chart-purple"]);
+    expect(getSeriesColors(["Compute"])).toEqual([PRIMARY_CHART_COLOR]);
+  });
+
+  it('pins a lone "Other" series to the neutral, not brand purple', () => {
+    expect(getSeriesColors([OTHER_SERIES_LABEL])).toEqual([OTHER_SERIES_COLOR]);
   });
 
   it("maps two categories to consecutive pastels", () => {
     expect(getSeriesColors(["Compute", "Storage"])).toEqual(["chart-1", "chart-2"]);
   });
 
-  it("does not let a mid-list \"Other\" consume a pastel slot", () => {
-    expect(getSeriesColors(["Compute", "Other", "Storage"])).toEqual([
+  it('gives the "Other" bucket the last palette color without consuming a pastel slot', () => {
+    expect(getSeriesColors(["Compute", OTHER_SERIES_LABEL, "Storage"])).toEqual([
       "chart-1",
-      "chart-other",
+      "chart-14",
       "chart-2",
     ]);
   });
 
-  it("falls back to slate once the pastels are exhausted", () => {
-    const categories = ["c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9", "c10"];
+  it("assigns all 14 pastels before falling back to the neutral", () => {
+    const categories = Array.from({ length: 16 }, (_, index) => `c${index + 1}`);
 
     expect(getSeriesColors(categories)).toEqual([
       "chart-1",
@@ -35,8 +90,14 @@ describe("getSeriesColors", () => {
       "chart-6",
       "chart-7",
       "chart-8",
-      "chart-other",
-      "chart-other",
+      "chart-9",
+      "chart-10",
+      "chart-11",
+      "chart-12",
+      "chart-13",
+      "chart-14",
+      "chart-14",
+      "chart-14",
     ]);
   });
 });
@@ -108,5 +169,20 @@ describe("orderCategoriesByTotal", () => {
 
   it("returns categories unchanged when there are no rows", () => {
     expect(orderCategoriesByTotal(["A", "B"], [])).toEqual(["A", "B"]);
+  });
+
+  it('pins "Other" last even when its total is the largest', () => {
+    const categories = ["Small", OTHER_SERIES_LABEL, "Big"];
+    const rows = [
+      { Small: 1, [OTHER_SERIES_LABEL]: 100, Big: 10 },
+      { Small: 1, [OTHER_SERIES_LABEL]: 100, Big: 10 },
+    ];
+
+    // Big and Small order by descending total; "Other" stays last regardless.
+    expect(orderCategoriesByTotal(categories, rows)).toEqual([
+      "Big",
+      "Small",
+      OTHER_SERIES_LABEL,
+    ]);
   });
 });

@@ -85,9 +85,17 @@ class CapacityBalanceViewModel(BaseModel):
     is_empty: bool
 
 
-class ComputeSpendViewModel(BaseModel):
-    compute_basis: SpendBasis
-    daily_series: list[DollarPoint]
+class WarehousePoint(BaseModel):
+    date: str
+    values: dict[str, float]
+
+
+class WarehouseSpendViewModel(BaseModel):
+    basis: SpendBasis
+    total: float
+    total_label: str
+    daily_series: list[WarehousePoint]
+    warehouse_names: list[str]
     ranked_warehouses: list[RankedSpendRow]
     ranked_users: list[RankedSpendRow]
     warehouse_bars: list[RankedBarRow]
@@ -150,7 +158,7 @@ class DashboardViewResponse(BaseModel):
     unsupported: UnsupportedViewModel | None
     capacity_balance: CapacityBalanceViewModel
     total_spend: TotalSpendViewModel
-    compute_spend: ComputeSpendViewModel
+    warehouse_spend: WarehouseSpendViewModel
     storage_spend: StorageSpendViewModel
     service_spend: ServiceSpendViewModel
     detail_tables: DetailTablesViewModel
