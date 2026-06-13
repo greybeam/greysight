@@ -134,13 +134,18 @@ export function DashboardPanel({
 // Drops the cents from a server-formatted currency label once the magnitude
 // reaches $10 so the ranked list reads compactly and the value column fits in
 // narrow cards; sub-$10 rows keep their decimals where the precision matters.
-// The decimal portion is always a literal "." + digits (Python `,.2f`), so we
-// strip it regardless of the currency symbol/suffix the label carries.
+// We round to whole units (not truncate) from the canonical numeric spend so a
+// $10.99 row reads as "$11" instead of understating it as "$10", then swap the
+// rounded, grouped integer back into the label's numeric run — preserving
+// whatever currency symbol/suffix the server attached. The server formats with
+// Python `,.2f` (comma groups, period decimal), so en-US grouping matches the
+// source and the first run of digits/commas/decimals is the amount to replace.
 function compactSpendLabel(row: RankedBarRow): string {
   if (Math.abs(row.spend) < 10) {
     return row.spendLabel;
   }
-  return row.spendLabel.replace(/\.\d+(\D*)$/, "$1");
+  const rounded = Math.round(Math.abs(row.spend)).toLocaleString("en-US");
+  return row.spendLabel.replace(/[\d,]+(?:\.\d+)?/, rounded);
 }
 
 export function RankedSpendBars({ rows }: { rows: RankedBarRow[] }) {

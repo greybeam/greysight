@@ -238,6 +238,43 @@ describe("RankedSpendBars", () => {
     expect(screen.getByText("$10")).toHaveClass("tabular-nums");
     expect(screen.getByText("$4.00")).toHaveClass("tabular-nums");
   });
+
+  it("rounds the compact label to whole units instead of truncating cents", () => {
+    render(
+      <RankedSpendBars
+        rows={[
+          {
+            name: "ROUND_UP",
+            spend: 10.99,
+            spendLabel: "$10.99",
+            credits: 11,
+            barWidthPercent: 100,
+          },
+          {
+            name: "ROUND_DOWN",
+            spend: 10.49,
+            spendLabel: "$10.49",
+            credits: 10,
+            barWidthPercent: 95,
+          },
+          {
+            name: "WITH_GROUPING",
+            spend: 1234.56,
+            spendLabel: "$1,234.56",
+            credits: 1235,
+            barWidthPercent: 90,
+          },
+        ]}
+      />,
+    );
+
+    // $10.99 must read as $11, not the understated $10 a plain cents-strip gives.
+    expect(screen.getByText("$11")).toBeInTheDocument();
+    expect(screen.getByText("$10")).toBeInTheDocument();
+    // Thousands grouping survives the round.
+    expect(screen.getByText("$1,235")).toBeInTheDocument();
+    expect(screen.queryByText("$1,234")).not.toBeInTheDocument();
+  });
 });
 
 describe("CapacityBalanceCard", () => {
