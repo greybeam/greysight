@@ -86,7 +86,7 @@ describe("CostDashboard", () => {
     expect(screen.getByText("Ending Balance as of Jun 08")).toBeInTheDocument();
     // The demo view uses a relative 30-day window, so the KPI label is scoped.
     expect(screen.getByText("Total Spend in Last 30 Days")).toBeInTheDocument();
-    expect(screen.getByText("Ranked services")).toBeInTheDocument();
+    expect(screen.getByText("Total spend by service")).toBeInTheDocument();
     expect(
       screen.getByTestId("dashboard-section-warehouse-spend"),
     ).toBeInTheDocument();
@@ -95,11 +95,13 @@ describe("CostDashboard", () => {
     // "Warehouse spend" appears twice: the section heading and the detail table.
     expect(screen.getAllByText("Warehouse spend").length).toBeGreaterThan(0);
     expect(screen.getByText("User compute spend")).toBeInTheDocument();
-    // "Storage by database" appears twice: the storage section's right-side
-    // table and the detail-tables section at the bottom of the dashboard.
+    // After the rename, the storage section's right-side card is titled
+    // "Total spend by database" while the bottom 2x2 detail table still
+    // renders "Storage by database". Assert both are present.
     expect(
-      screen.getAllByText("Storage by database").length,
-    ).toBeGreaterThan(0);
+      screen.getByText("Total spend by database"),
+    ).toBeInTheDocument(); // storage section right card
+    expect(screen.getByText("Storage by database")).toBeInTheDocument(); // bottom 2x2 detail table
     expect(screen.getAllByText("Analysis complete").length).toBeGreaterThan(0);
   });
 

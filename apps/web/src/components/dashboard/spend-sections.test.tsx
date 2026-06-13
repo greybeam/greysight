@@ -80,8 +80,8 @@ describe("spend sections", () => {
     // The total spend card spans two of the three columns.
     expect(totalSection).toHaveClass("lg:col-span-2");
 
-    // Ranked services occupies the third column.
-    expect(screen.getByText("Ranked services")).toBeInTheDocument();
+    // Total spend by service occupies the third column.
+    expect(screen.getByText("Total spend by service")).toBeInTheDocument();
     expect(
       screen.getByText(demoDashboardView.serviceSpend.rankedServices[0].name),
     ).toBeInTheDocument();
@@ -114,7 +114,7 @@ describe("spend sections", () => {
     ).toBeInTheDocument();
   });
 
-  it("stretches the ranked services panel to fill the overview row height", () => {
+  it("stretches the total spend by service panel to fill the overview row height", () => {
     render(
       <OverviewSection
         currency={demoDashboardView.header.currency}
@@ -126,7 +126,9 @@ describe("spend sections", () => {
 
     // The ranked panel must stretch to match the (taller) chart card and lay
     // out as a flex column so its scrollable list claims the leftover height.
-    const rankedPanel = screen.getByRole("region", { name: "Ranked services" });
+    const rankedPanel = screen.getByRole("region", {
+      name: "Total spend by service",
+    });
     expect(rankedPanel).toHaveClass("h-full");
     expect(rankedPanel.querySelector("[class*='flex-col']")).not.toBeNull();
   });
@@ -201,9 +203,11 @@ describe("spend sections", () => {
       within(totalCard).getByText("No service spend data"),
     ).toBeInTheDocument();
 
-    // Ranked services panel still renders its own empty state.
-    expect(screen.getByText("Ranked services")).toBeInTheDocument();
-    const rankedPanel = screen.getByRole("region", { name: "Ranked services" });
+    // Total spend by service panel still renders its own empty state.
+    expect(screen.getByText("Total spend by service")).toBeInTheDocument();
+    const rankedPanel = screen.getByRole("region", {
+      name: "Total spend by service",
+    });
     expect(
       within(rankedPanel).getByText("No service spend data"),
     ).toBeInTheDocument();
@@ -237,7 +241,7 @@ describe("spend sections", () => {
       within(totalCard).queryByText(demoDashboardView.totalSpend.totalLabel),
     ).not.toBeInTheDocument();
 
-    // Ranked services still renders its populated rows.
+    // Total spend by service still renders its populated rows.
     expect(
       screen.getByText(demoDashboardView.serviceSpend.rankedServices[0].name),
     ).toBeInTheDocument();
@@ -293,8 +297,12 @@ describe("spend sections", () => {
       name: "Warehouse ranking",
     });
     const userPanel = screen.getByRole("region", { name: "User ranking" });
-    expect(within(warehousePanel).getByText("Warehouses")).toBeInTheDocument();
-    expect(within(userPanel).getByText("Users")).toBeInTheDocument();
+    expect(
+      within(warehousePanel).getByText("Total spend by warehouse"),
+    ).toBeInTheDocument();
+    expect(
+      within(userPanel).getByText("Total spend by user"),
+    ).toBeInTheDocument();
 
     // Both panels share the row height (flex-1) and clip overflow (min-h-0) so
     // their internal ranked lists scroll instead of growing the row.
@@ -394,7 +402,7 @@ describe("spend sections", () => {
     );
 
     const tablePanel = screen.getByRole("region", {
-      name: "Storage by database",
+      name: "Total spend by database",
     });
     // Table headers match the pinned contract: period-scoped "Spend", not the
     // monthly estimate the bottom 2x2 detail table still shows.
@@ -443,7 +451,9 @@ describe("spend sections", () => {
     expect(
       screen.queryByTestId("storage-spend-tremor-bar-chart"),
     ).not.toBeInTheDocument();
-    expect(screen.queryByText("Storage by database")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Total spend by database"),
+    ).not.toBeInTheDocument();
   });
 
   it("renders the empty state for a legacy view that predates the storage series fields", () => {

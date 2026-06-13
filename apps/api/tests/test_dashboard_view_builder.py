@@ -1474,6 +1474,63 @@ def test_storage_falls_back_to_metadata_price_when_no_rate_row() -> None:
     assert view.storage_spend.databases[0].monthly_spend == pytest.approx(100.0 * 30.0)
 
 
+def test_storage_monthly_spend_uses_price_on_each_databases_latest_date() -> None:
+    # The storage rate CHANGES during the window (20/TB-month on 06-08, then
+    # 25/TB-month on 06-09). RAW's latest row is on 06-08 (an EARLIER date than
+    # the global latest storage date of 06-09, which belongs to STAGING).
+    # RAW's monthly_spend must pair its size snapshot with the price in effect on
+    # ITS OWN latest date (20), not the global latest-date price (25).
+    storage_rows = [
+        {
+            "usage_date": "2026-06-08",
+            "database_name": "RAW",
+            "average_database_bytes": 100_000_000_000_000,
+            "average_failsafe_bytes": 0,
+            "average_hybrid_table_storage_bytes": 0,
+        },
+        {
+            "usage_date": "2026-06-09",
+            "database_name": "STAGING",
+            "average_database_bytes": 50_000_000_000_000,
+            "average_failsafe_bytes": 0,
+            "average_hybrid_table_storage_bytes": 0,
+        },
+    ]
+    rate_rows = [
+        {
+            "usage_date": "2026-06-08",
+            "service_type": "STORAGE",
+            "usage_type": "storage",
+            "rating_type": "STORAGE",
+            "currency": "USD",
+            "effective_rate": 20.0,
+        },
+        {
+            "usage_date": "2026-06-09",
+            "service_type": "STORAGE",
+            "usage_type": "storage",
+            "rating_type": "STORAGE",
+            "currency": "USD",
+            "effective_rate": 25.0,
+        },
+    ]
+
+    view = _estimated_storage_view(
+        storage_rows=storage_rows,
+        rate_rows=rate_rows,
+        start_date=date(2026, 6, 8),
+        end_date=date(2026, 6, 9),
+        account_usage_through_date=date(2026, 6, 9),
+    )
+
+    databases = {row.name: row for row in view.storage_spend.databases}
+    # RAW is priced from its own latest date (06-08 => 20), NOT the global
+    # latest-date price (06-09 => 25).
+    assert databases["RAW"].monthly_spend == pytest.approx(100.0 * 20.0)
+    # STAGING sits on the global latest date, so its price is unchanged.
+    assert databases["STAGING"].monthly_spend == pytest.approx(50.0 * 25.0)
+
+
 @pytest.mark.parametrize("usage_type", ["Storage", "STORAGE", "storage"])
 def test_storage_rate_usage_type_match_is_case_insensitive(usage_type: str) -> None:
     storage_rates = _build_storage_rate_index(

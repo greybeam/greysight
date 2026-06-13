@@ -1276,9 +1276,11 @@ def _build_storage_spend(
     ) or 0.0
     databases = _rank_storage_rows(
         rows,
-        latest_price,
-        currency,
-        period_spend_by_db,
+        fallback_price_per_tb_month=latest_price,
+        currency=currency,
+        period_spend_by_db=period_spend_by_db,
+        storage_rates=storage_rates,
+        metadata=metadata,
     )
     database_bars = _build_ranked_bar_rows(
         [
@@ -1435,9 +1437,12 @@ def _cap_detail_rows[T](rows: list[T]) -> list[T]:
 
 def _rank_storage_rows(
     rows: list[DatasetRow],
-    price_per_tb_month: float,
+    *,
+    fallback_price_per_tb_month: float,
     currency: str,
     period_spend_by_db: dict[str, float],
+    storage_rates: dict[date, RateIndexEntry],
+    metadata: DashboardDatasetMetadata,
 ) -> list[StorageDatabaseRow]:
     # For each database, take its OWN latest row in the window (max usage_date)
     # and size it from that row's bytes. A database that has window spend but no
@@ -1458,7 +1463,15 @@ def _rank_storage_rows(
         _build_storage_database_row(
             database_name=database_name,
             bytes_value=latest_bytes_by_database.get(database_name, 0.0),
-            price_per_tb_month=price_per_tb_month,
+            # Price each database from the rate in effect on ITS OWN latest date,
+            # so a size snapshot is never paired with a price from a different
+            # date. Databases with no storage row fall back to the global price.
+            price_per_tb_month=_price_for_database_latest(
+                latest_date_by_database.get(database_name),
+                storage_rates,
+                metadata,
+                fallback_price_per_tb_month,
+            ),
             period_spend=period_spend_by_db.get(database_name, 0.0),
             currency=currency,
         )
@@ -1466,6 +1479,20 @@ def _rank_storage_rows(
     ]
 
     return sorted(ranked_rows, key=lambda row: row.period_spend, reverse=True)
+
+
+def _price_for_database_latest(
+    latest_date: date | None,
+    storage_rates: dict[date, RateIndexEntry],
+    metadata: DashboardDatasetMetadata,
+    fallback_price_per_tb_month: float,
+) -> float:
+    if latest_date is None:
+        return fallback_price_per_tb_month
+    return (
+        _storage_price_for(latest_date, storage_rates, metadata)
+        or fallback_price_per_tb_month
+    )
 
 
 def _build_storage_database_row(
