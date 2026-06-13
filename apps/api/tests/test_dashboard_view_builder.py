@@ -1699,6 +1699,87 @@ def test_storage_period_spend_sums_to_total_and_sorts_desc() -> None:
     )
 
 
+def test_storage_databases_include_dbs_absent_on_latest_date() -> None:
+    # STALE_DB has storage rows only on early window dates (none on the latest
+    # date). Its window spend is still part of period_spend_by_db and total, so
+    # it MUST appear in storage_spend.databases and the per-database period_spend
+    # values MUST still sum to the KPI total.
+    storage_rows = [
+        # STALE_DB only on the first day; LIVE_DB on both days.
+        {
+            "usage_date": "2026-06-08",
+            "database_name": "STALE_DB",
+            "average_database_bytes": 40 * 1_000_000_000_000,
+            "average_failsafe_bytes": 0,
+            "average_hybrid_table_storage_bytes": 0,
+        },
+        {
+            "usage_date": "2026-06-08",
+            "database_name": "LIVE_DB",
+            "average_database_bytes": 100 * 1_000_000_000_000,
+            "average_failsafe_bytes": 0,
+            "average_hybrid_table_storage_bytes": 0,
+        },
+        {
+            "usage_date": "2026-06-09",
+            "database_name": "LIVE_DB",
+            "average_database_bytes": 100 * 1_000_000_000_000,
+            "average_failsafe_bytes": 0,
+            "average_hybrid_table_storage_bytes": 0,
+        },
+    ]
+    rate_rows = [
+        {
+            "usage_date": usage_date,
+            "service_type": "STORAGE",
+            "usage_type": "storage",
+            "rating_type": "STORAGE",
+            "currency": "USD",
+            "effective_rate": 25.0,
+        }
+        for usage_date in ("2026-06-08", "2026-06-09")
+    ]
+
+    view = _estimated_storage_view(
+        storage_rows=storage_rows,
+        rate_rows=rate_rows,
+        start_date=date(2026, 6, 8),
+        end_date=date(2026, 6, 9),
+        account_usage_through_date=date(2026, 6, 9),
+    )
+
+    databases = view.storage_spend.databases
+    names = {row.name for row in databases}
+    # STALE_DB has no row on the latest date but still has window spend.
+    assert "STALE_DB" in names
+    assert "LIVE_DB" in names
+    # Per-database period_spend still reconciles with the KPI total.
+    assert round(sum(d.period_spend for d in databases), 2) == round(
+        view.storage_spend.total, 2
+    )
+
+
+def test_demo_storage_section_not_marked_empty() -> None:
+    # Demo mode resolves to the billed basis, but the demo dataset has no billed
+    # STORAGE rows. Emptiness must follow the estimated grid total (what the
+    # storage section actually renders) rather than the all-zero billed series.
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+
+    view = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=_demo_metadata(),
+        source_start_date=source_start,
+        source_end_date=source_end,
+        window_days=30,
+    )
+
+    assert view.storage_spend.is_empty is False
+    assert view.storage_spend.total > 0
+    assert len(view.storage_spend.databases) > 0
+
+
 def test_storage_stacked_series_buckets_overflow_into_thirteen_plus_other() -> None:
     # 16 databases (> 14) => top 13 by total kept, rest folded into "Other"
     # (last). Per-date totals are conserved across bucketing.

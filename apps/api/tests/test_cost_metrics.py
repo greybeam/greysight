@@ -229,6 +229,49 @@ def test_build_dashboard_summary_uses_float_storage_bytes_and_cost() -> None:
     assert summary.estimated_monthly_storage_cost_usd == pytest.approx(40.25)
 
 
+def test_build_dashboard_summary_includes_hybrid_table_storage_bytes() -> None:
+    summary = build_dashboard_summary(
+        account_spend_daily=[],
+        warehouse_spend_daily=[],
+        database_storage_daily=[
+            {
+                "usage_date": date(2026, 6, 6),
+                "database_name": "RAW",
+                "average_database_bytes": 2_000_000_000_000,
+                "average_failsafe_bytes": 500_000_000_000,
+                "average_hybrid_table_storage_bytes": 1_000_000_000_000,
+            },
+        ],
+        current_usage_date=date(2026, 6, 7),
+        window_days=1,
+        storage_price_usd_per_tb_month=23.0,
+    )
+
+    assert summary.storage_bytes == 3_500_000_000_000
+    assert summary.estimated_monthly_storage_cost_usd == pytest.approx(80.5)
+
+
+def test_build_dashboard_summary_treats_missing_hybrid_storage_as_zero() -> None:
+    summary = build_dashboard_summary(
+        account_spend_daily=[],
+        warehouse_spend_daily=[],
+        database_storage_daily=[
+            {
+                "usage_date": date(2026, 6, 6),
+                "database_name": "RAW",
+                "average_database_bytes": 2_000_000_000_000,
+                "average_failsafe_bytes": 500_000_000_000,
+            },
+        ],
+        current_usage_date=date(2026, 6, 7),
+        window_days=1,
+        storage_price_usd_per_tb_month=23.0,
+    )
+
+    assert summary.storage_bytes == 2_500_000_000_000
+    assert summary.estimated_monthly_storage_cost_usd == pytest.approx(57.5)
+
+
 def test_build_dashboard_summary_averages_over_sparse_calendar_window() -> None:
     summary = build_dashboard_summary(
         account_spend_daily=[

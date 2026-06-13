@@ -1275,11 +1275,7 @@ def _build_storage_spend(
         else None
     ) or 0.0
     databases = _rank_storage_rows(
-        [
-            row
-            for row in rows
-            if latest_date and _as_date(row["usage_date"]) == latest_date
-        ],
+        rows,
         latest_price,
         currency,
         period_spend_by_db,
@@ -1306,7 +1302,7 @@ def _build_storage_spend(
         database_daily_series=database_daily_series,
         databases=databases,
         database_bars=database_bars,
-        is_empty=all(row.spend == 0 for row in daily_series),
+        is_empty=total == 0,
     )
 
 
@@ -1443,30 +1439,53 @@ def _rank_storage_rows(
     currency: str,
     period_spend_by_db: dict[str, float],
 ) -> list[StorageDatabaseRow]:
-    by_database: dict[str, float] = {}
+    # For each database, take its OWN latest row in the window (max usage_date)
+    # and size it from that row's bytes. A database that has window spend but no
+    # storage row (only present in period_spend_by_db) gets bytes=0.0.
+    latest_bytes_by_database: dict[str, float] = {}
+    latest_date_by_database: dict[str, date] = {}
     for row in rows:
         database_name = _string_field(row, "database_name", "Unknown database")
-        by_database[database_name] = by_database.get(
-            database_name, 0.0
-        ) + _storage_bytes(row)
+        usage_date = _as_date(row["usage_date"])
+        current_latest = latest_date_by_database.get(database_name)
+        if current_latest is None or usage_date >= current_latest:
+            latest_date_by_database[database_name] = usage_date
+            latest_bytes_by_database[database_name] = _storage_bytes(row)
 
-    ranked_rows = []
-    for database_name, bytes_value in by_database.items():
-        monthly_spend = (bytes_value / 1_000_000_000_000) * price_per_tb_month
-        period_spend = period_spend_by_db.get(database_name, 0.0)
-        ranked_rows.append(
-            StorageDatabaseRow(
-                name=database_name,
-                bytes=bytes_value,
-                bytes_label=_format_bytes(bytes_value),
-                monthly_spend=monthly_spend,
-                monthly_spend_label=_format_currency(monthly_spend, currency),
-                period_spend=period_spend,
-                period_spend_label=_format_currency(period_spend, currency),
-            )
+    database_names = sorted(set(latest_bytes_by_database) | set(period_spend_by_db))
+
+    ranked_rows = [
+        _build_storage_database_row(
+            database_name=database_name,
+            bytes_value=latest_bytes_by_database.get(database_name, 0.0),
+            price_per_tb_month=price_per_tb_month,
+            period_spend=period_spend_by_db.get(database_name, 0.0),
+            currency=currency,
         )
+        for database_name in database_names
+    ]
 
     return sorted(ranked_rows, key=lambda row: row.period_spend, reverse=True)
+
+
+def _build_storage_database_row(
+    *,
+    database_name: str,
+    bytes_value: float,
+    price_per_tb_month: float,
+    period_spend: float,
+    currency: str,
+) -> StorageDatabaseRow:
+    monthly_spend = (bytes_value / 1_000_000_000_000) * price_per_tb_month
+    return StorageDatabaseRow(
+        name=database_name,
+        bytes=bytes_value,
+        bytes_label=_format_bytes(bytes_value),
+        monthly_spend=monthly_spend,
+        monthly_spend_label=_format_currency(monthly_spend, currency),
+        period_spend=period_spend,
+        period_spend_label=_format_currency(period_spend, currency),
+    )
 
 
 def _build_warehouse_details(

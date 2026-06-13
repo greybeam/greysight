@@ -28,6 +28,7 @@ class DatabaseStorageDaily(BaseModel):
     database_name: str | None = None
     average_database_bytes: float
     average_failsafe_bytes: float
+    average_hybrid_table_storage_bytes: float | None = None
 
 
 class DashboardSummary(BaseModel):
@@ -172,7 +173,9 @@ def _latest_complete_storage_bytes(
 
     latest_usage_date = max(row.usage_date for row in complete_rows)
     return sum(
-        row.average_database_bytes + row.average_failsafe_bytes
+        row.average_database_bytes
+        + row.average_failsafe_bytes
+        + (row.average_hybrid_table_storage_bytes or 0.0)
         for row in complete_rows
         if row.usage_date == latest_usage_date
     )

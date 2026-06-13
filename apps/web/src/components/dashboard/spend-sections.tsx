@@ -111,17 +111,17 @@ export function OverviewSection({
         )}
         {serviceSpend.isEmpty ? (
           <DashboardPanel
-            ariaLabel="Ranked services"
+            ariaLabel="Total spend by service"
             fill
-            title="Ranked services"
+            title="Total spend by service"
           >
             <SectionEmptyState message="No service spend data" />
           </DashboardPanel>
         ) : (
           <DashboardPanel
-            ariaLabel="Ranked services"
+            ariaLabel="Total spend by service"
             fill
-            title="Ranked services"
+            title="Total spend by service"
           >
             <RankedSpendBars rows={serviceSpend.serviceBars} />
           </DashboardPanel>
@@ -185,7 +185,7 @@ export function WarehouseSpendSection({
               data-dashboard-panel="true"
             >
               <Card className="flex h-full flex-col p-6">
-                <Text>Warehouses</Text>
+                <Text>Total spend by warehouse</Text>
                 <div className="flex min-h-0 flex-1 flex-col">
                   <RankedSpendBars rows={viewModel.warehouseBars} />
                 </div>
@@ -197,7 +197,7 @@ export function WarehouseSpendSection({
               data-dashboard-panel="true"
             >
               <Card className="flex h-full flex-col p-6">
-                <Text>Users</Text>
+                <Text>Total spend by user</Text>
                 <div className="flex min-h-0 flex-1 flex-col">
                   <RankedSpendBars rows={viewModel.userBars} />
                 </div>
@@ -280,12 +280,12 @@ function StorageSpendBody({
           card that scrolls its own list (here a compact table) internally
           instead of growing the row. */}
       <section
-        aria-label="Storage by database"
+        aria-label="Total spend by database"
         className="flex h-full min-h-0 flex-col"
         data-dashboard-panel="true"
       >
         <DetailTable
-          title="Spend per database in period"
+          title="Total spend by database"
           headers={["Database", "Spend", "Size"]}
           fillHeight
           truncateFirstColumn
