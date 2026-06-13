@@ -229,6 +229,7 @@ export function TotalSpendBarCard({
             currency={currency}
             data={data}
             heightClass="h-80"
+            segmentGap
             showLegend={false}
             stack
             testId={chartTestId}
@@ -379,6 +380,7 @@ export function SpendBarChart({
   currency,
   data,
   heightClass = "h-64",
+  segmentGap = false,
   showLegend = true,
   stack = false,
   testId,
@@ -387,6 +389,10 @@ export function SpendBarChart({
   currency: string;
   data: ChartPoint[];
   heightClass?: string;
+  // Opt-in: draw a 1px surface-colored stroke between stacked segments so small
+  // segments stay legible. Backed by the `.bar-segment-gap` rule in globals.css
+  // since Tremor doesn't expose a per-bar stroke. Only meaningful with `stack`.
+  segmentGap?: boolean;
   showLegend?: boolean;
   stack?: boolean;
   testId: string;
@@ -406,7 +412,11 @@ export function SpendBarChart({
   return (
     <BarChart
       categories={orderedCategories}
-      className={cx("mt-4 w-full", heightClass)}
+      className={cx(
+        "mt-4 w-full",
+        heightClass,
+        segmentGap ? "bar-segment-gap" : undefined,
+      )}
       colors={getSeriesColors(orderedCategories)}
       customTooltip={createChartTooltip(valueFormatter)}
       data={chartData}
@@ -555,6 +565,15 @@ export function buildTotalWarehouseSpendLabel(
   range: DashboardViewRange | null | undefined,
 ): string {
   return buildSpendPeriodLabel("Total Warehouse Spend", range);
+}
+
+/**
+ * Storage-section KPI label, e.g. "Storage Spend in Last 30 Days".
+ */
+export function buildStorageSpendLabel(
+  range: DashboardViewRange | null | undefined,
+): string {
+  return buildSpendPeriodLabel("Storage Spend", range);
 }
 
 /**

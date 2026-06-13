@@ -2,7 +2,8 @@ select
     usage_date,
     database_name,
     avg(average_database_bytes) as average_database_bytes,
-    avg(average_failsafe_bytes) as average_failsafe_bytes
+    avg(average_failsafe_bytes) as average_failsafe_bytes,
+    avg(average_hybrid_table_storage_bytes) as average_hybrid_table_storage_bytes
 from snowflake.account_usage.database_storage_usage_history
 where usage_date >= dateadd(
     day,

@@ -12,6 +12,7 @@ import type {
 } from "../../lib/dashboard-contracts";
 import {
   buildEndingBalanceLabel,
+  buildStorageSpendLabel,
   buildTotalSpendLabel,
   buildTotalWarehouseSpendLabel,
   CapacityBalanceCard,
@@ -20,9 +21,9 @@ import {
   DashboardSection,
   RankedSpendBars,
   SpendBarChart,
-  SpendLineChart,
   TotalSpendBarCard,
 } from "./dashboard-design-system";
+import { DetailTable } from "./detail-tables";
 import SectionEmptyState from "./section-empty-state";
 
 type StackedChartPoint = {
@@ -161,6 +162,7 @@ export function WarehouseSpendSection({
                 currency={currency}
                 data={chartData}
                 heightClass="h-96"
+                segmentGap
                 showLegend={false}
                 stack
                 testId="warehouse-spend-tremor-bar-chart"
@@ -210,11 +212,15 @@ export function WarehouseSpendSection({
 
 export function StorageSpendSection({
   currency,
+  range,
   viewModel,
 }: {
   currency: string;
+  range?: DashboardViewRange | null;
   viewModel: StorageSpendViewModel;
 }) {
+  const totalLabel = buildStorageSpendLabel(range);
+
   return (
     <DashboardSection
       ariaLabel="Storage spend"
@@ -224,24 +230,75 @@ export function StorageSpendSection({
       {viewModel.isEmpty ? (
         <SectionEmptyState message="No storage spend data" />
       ) : (
-        <DashboardGrid columns={2} testId="dashboard-grid-storage-spend">
-          <DashboardPanel ariaLabel="Daily storage" fill title="Daily storage">
-            <SpendLineChart
-              currency={currency}
-              data={viewModel.dailySeries}
-              heightClass="h-64"
-              testId="storage-spend-tremor-line-chart"
-            />
-          </DashboardPanel>
-          <DashboardPanel
-            ariaLabel="Latest storage by database"
-            fill
-            title="Latest storage by database"
-          >
-            <RankedSpendBars rows={viewModel.databaseBars} />
-          </DashboardPanel>
-        </DashboardGrid>
+        <StorageSpendBody
+          currency={currency}
+          totalLabel={totalLabel}
+          viewModel={viewModel}
+        />
       )}
     </DashboardSection>
+  );
+}
+
+function StorageSpendBody({
+  currency,
+  totalLabel,
+  viewModel,
+}: {
+  currency: string;
+  totalLabel: string;
+  viewModel: StorageSpendViewModel;
+}) {
+  const chartData = flattenServiceDailySeries(viewModel.databaseDailySeries);
+
+  return (
+    <DashboardGrid columns={3} testId="dashboard-grid-storage-spend">
+      <TotalSpendBarCard
+        ariaLabel="Storage spend"
+        categories={viewModel.databaseNames}
+        chart={
+          <SpendBarChart
+            categories={viewModel.databaseNames}
+            currency={currency}
+            data={chartData}
+            heightClass="h-80"
+            segmentGap
+            showLegend={false}
+            stack
+            testId="storage-spend-tremor-bar-chart"
+          />
+        }
+        currency={currency}
+        label={totalLabel}
+        value={viewModel.totalLabel}
+        data={chartData}
+        span={2}
+        testId="storage-spend-card"
+        chartTestId="storage-spend-tremor-bar-chart"
+      />
+      {/* Right column mirrors the warehouse section's third column: a single
+          card that scrolls its own list (here a compact table) internally
+          instead of growing the row. */}
+      <section
+        aria-label="Storage by database"
+        className="flex h-full min-h-0 flex-col"
+        data-dashboard-panel="true"
+      >
+        <DetailTable
+          title="Spend per database in period"
+          headers={["Database", "Spend", "Size"]}
+          fillHeight
+          truncateFirstColumn
+          rows={viewModel.databases.map((row) => ({
+            key: row.name,
+            cells: [
+              { key: "name", value: row.name },
+              { key: "periodSpend", value: row.periodSpendLabel },
+              { key: "bytes", value: row.bytesLabel },
+            ],
+          }))}
+        />
+      </section>
+    </DashboardGrid>
   );
 }

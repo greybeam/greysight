@@ -1,6 +1,7 @@
 select
     date as usage_date,
     service_type,
+    usage_type,
     rating_type,
     currency,
     max(effective_rate) as effective_rate
@@ -14,5 +15,5 @@ where account_locator = %(account_locator)s
       convert_timezone('UTC', current_timestamp())::date
   )
   and date < convert_timezone('UTC', current_timestamp())::date
-group by usage_date, service_type, rating_type, currency
-order by usage_date, service_type, rating_type
+group by usage_date, service_type, usage_type, rating_type, currency
+order by usage_date, service_type, usage_type, rating_type

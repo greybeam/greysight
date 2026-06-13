@@ -106,14 +106,26 @@ class WarehouseSpendViewModel(BaseModel):
 class StorageDatabaseRow(BaseModel):
     name: str
     bytes: float
+    bytes_label: str
     monthly_spend: float
     monthly_spend_label: str
+    period_spend: float
+    period_spend_label: str
+
+
+class StorageDatabasePoint(BaseModel):
+    date: str
+    values: dict[str, float]
 
 
 class StorageSpendViewModel(BaseModel):
     basis: SpendBasis
     database_basis: SpendBasis
+    total: float
+    total_label: str
     daily_series: list[DollarPoint]
+    database_names: list[str]
+    database_daily_series: list[StorageDatabasePoint]
     databases: list[StorageDatabaseRow]
     database_bars: list[RankedBarRow]
     is_empty: bool

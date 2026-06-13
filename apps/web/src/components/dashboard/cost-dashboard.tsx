@@ -448,6 +448,7 @@ function CostDashboardContent({
               />
               <StorageSpendSection
                 currency={viewModel.header.currency}
+                range={activeRange ?? viewModel.range}
                 viewModel={viewModel.storageSpend}
               />
               <DetailTables viewModel={viewModel.detailTables} />

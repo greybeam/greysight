@@ -40,6 +40,7 @@ sources:
     grain:
       - usage_date
       - service_type
+      - usage_type
       - rating_type
       - currency
   - id: capacity_balance_daily

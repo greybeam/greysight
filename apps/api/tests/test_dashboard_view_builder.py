@@ -12,6 +12,13 @@ from app.services.dashboard_view_builder import (
     DashboardInvalidRangeError,
     DashboardRangeOutOfBoundsError,
     _bucket_stacked_series,
+    _build_rate_index,
+    _build_storage_rate_index,
+    _credits_to_dollars,
+    _format_bytes,
+    _format_currency,
+    _rate_key,
+    _storage_price_for,
     _warehouse_row_dollars,
     build_dashboard_view,
     resolve_dashboard_view_range,
@@ -1042,6 +1049,25 @@ def test_bucket_stacked_series_keeps_series_at_or_under_limit_untouched() -> Non
     assert bucketed_values[0] is not values_by_date[0]
 
 
+def test_bucket_stacked_series_keeps_real_other_as_normal_category_under_limit() -> (
+    None
+):
+    # At/under the limit, a real category named "Other" (not last, nonzero) stays
+    # a normal category: order is unchanged (not pinned last) and values are not
+    # aggregated into a synthetic bucket.
+    names = ["S0", OTHER_STACKED_SERIES_LABEL, "S1", "S2"]
+    values_by_date = [
+        {"S0": 1.0, OTHER_STACKED_SERIES_LABEL: 2.0, "S1": 3.0, "S2": 4.0},
+        {"S0": 5.0, OTHER_STACKED_SERIES_LABEL: 6.0, "S1": 7.0, "S2": 8.0},
+    ]
+
+    bucketed_names, bucketed_values = _bucket_stacked_series(names, values_by_date)
+
+    # Incoming order is preserved verbatim; "Other" is not moved last.
+    assert bucketed_names == names
+    assert bucketed_values == values_by_date
+
+
 def test_bucket_stacked_series_buckets_overflow_into_top_thirteen_plus_other() -> None:
     # 16 categories (> 14). Total spend ranks them by their trailing index, so
     # the smallest three (S0, S1, S2) collapse into "Other".
@@ -1246,3 +1272,575 @@ def test_warehouse_total_sums_window_daily_dollars() -> None:
     assert view.warehouse_spend.total == pytest.approx(expected)
     assert view.warehouse_spend.total == pytest.approx(chart_total)
     assert view.warehouse_spend.total_label == "$32.00"
+
+
+# ---------------------------------------------------------------------------
+# Storage Spend backend rework — new-feature coverage.
+# ---------------------------------------------------------------------------
+
+
+def _estimated_storage_view(
+    *,
+    storage_rows: list[dict[str, object]],
+    rate_rows: list[dict[str, object]],
+    storage_price_usd_per_tb_month: float = 25.0,
+    start_date: date = date(2026, 6, 8),
+    end_date: date = date(2026, 6, 8),
+    account_usage_through_date: date = date(2026, 6, 8),
+) -> DashboardViewResponse:
+    """Build an estimated-basis view isolated to the storage path.
+
+    org_spend_daily is cleared so the storage daily_series follows the estimated
+    branch (the per-date rate-sheet/hybrid grid) rather than billed totals.
+    """
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    source_end = max(source_end, account_usage_through_date)
+    datasets["org_spend_daily"] = []
+    datasets["rate_sheet_daily"] = rate_rows
+    datasets["database_storage_daily"] = storage_rows
+    metadata = _demo_metadata().model_copy(
+        update={
+            "data_mode": "estimated",
+            "billing_through_date": None,
+            "account_usage_through_date": account_usage_through_date,
+            "storage_price_usd_per_tb_month": storage_price_usd_per_tb_month,
+            "organization_usage": SourceAvailability(
+                available=False, detail="org unavailable"
+            ),
+        }
+    )
+    return build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=metadata,
+        source_start_date=source_start,
+        source_end_date=source_end,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+
+# --- 1. Rate index max-dedup regression -----------------------------------
+
+
+def test_rate_index_dedups_grain_rows_to_max_effective_rate() -> None:
+    # rate_sheet_daily now carries usage_type in its grain, so the same
+    # (date, service_type, rating_type) can appear twice differing only by
+    # usage_type. The index must collapse them to the MAX effective_rate,
+    # replicating the old SQL max() so the grain change can't shift pricing.
+    usage_date = date(2026, 6, 8)
+    rows = [
+        {
+            "usage_date": usage_date.isoformat(),
+            "service_type": "WAREHOUSE_METERING",
+            "usage_type": "compute",
+            "rating_type": "COMPUTE",
+            "currency": "USD",
+            "effective_rate": 2.0,
+        },
+        {
+            "usage_date": usage_date.isoformat(),
+            "service_type": "WAREHOUSE_METERING",
+            "usage_type": "cloud_services",
+            "rating_type": "COMPUTE",
+            "currency": "USD",
+            "effective_rate": 3.0,
+        },
+    ]
+
+    index = _build_rate_index(rows)
+
+    rating_key = _rate_key(usage_date, "WAREHOUSE_METERING", "COMPUTE")
+    service_key = _rate_key(usage_date, "WAREHOUSE_METERING")
+    assert index[rating_key].effective_rate == 3.0
+    assert index[service_key].effective_rate == 3.0
+
+
+def test_rate_index_grain_change_matches_single_row_baseline_pricing() -> None:
+    # The dollar pricing produced from the deduped two-row grain must equal the
+    # pricing from a single max-rate baseline row: the grain change is invisible
+    # to warehouse/service costing.
+    usage_date = date(2026, 6, 8)
+    metadata = _demo_metadata()
+
+    baseline_index = _build_rate_index(
+        [
+            {
+                "usage_date": usage_date.isoformat(),
+                "service_type": "WAREHOUSE_METERING",
+                "usage_type": "compute",
+                "rating_type": "COMPUTE",
+                "currency": "USD",
+                "effective_rate": 3.0,
+            }
+        ]
+    )
+    grain_index = _build_rate_index(
+        [
+            {
+                "usage_date": usage_date.isoformat(),
+                "service_type": "WAREHOUSE_METERING",
+                "usage_type": "compute",
+                "rating_type": "COMPUTE",
+                "currency": "USD",
+                "effective_rate": 2.0,
+            },
+            {
+                "usage_date": usage_date.isoformat(),
+                "service_type": "WAREHOUSE_METERING",
+                "usage_type": "cloud_services",
+                "rating_type": "COMPUTE",
+                "currency": "USD",
+                "effective_rate": 3.0,
+            },
+        ]
+    )
+
+    def dollars(index: dict[str, object]) -> float | None:
+        return _credits_to_dollars(
+            credits=10.0,
+            usage_date=usage_date,
+            service_type="WAREHOUSE_METERING",
+            rates=index,
+            metadata=metadata,
+            rating_type="COMPUTE",
+        )
+
+    assert dollars(grain_index) == dollars(baseline_index)
+    assert dollars(grain_index) == pytest.approx(30.0)
+
+
+# --- 2. Storage rate lookup -----------------------------------------------
+
+
+def test_storage_rate_sheet_row_drives_daily_and_monthly_cost() -> None:
+    # 100 TB of cost-bearing bytes at a rate-sheet storage rate of 25/TB-month.
+    # Daily = 100 * 25 / 30 ; monthly (ranking) = 100 * 25.
+    storage_rows = [
+        {
+            "usage_date": "2026-06-08",
+            "database_name": "RAW",
+            "average_database_bytes": 100_000_000_000_000,
+            "average_failsafe_bytes": 0,
+            "average_hybrid_table_storage_bytes": 0,
+        }
+    ]
+    rate_rows = [
+        {
+            "usage_date": "2026-06-08",
+            "service_type": "STORAGE",
+            "usage_type": "storage",
+            "rating_type": "STORAGE",
+            "currency": "USD",
+            "effective_rate": 25.0,
+        }
+    ]
+
+    view = _estimated_storage_view(
+        storage_rows=storage_rows,
+        rate_rows=rate_rows,
+        storage_price_usd_per_tb_month=999.0,  # must be ignored when rate present
+    )
+
+    assert view.storage_spend.daily_series[0].spend == pytest.approx(
+        100.0 * 25.0 / 30.0
+    )
+    assert view.storage_spend.total == pytest.approx(100.0 * 25.0 / 30.0)
+    assert view.storage_spend.databases[0].monthly_spend == pytest.approx(100.0 * 25.0)
+
+
+def test_storage_falls_back_to_metadata_price_when_no_rate_row() -> None:
+    # No storage rate-sheet row => fall back to metadata price.
+    storage_rows = [
+        {
+            "usage_date": "2026-06-08",
+            "database_name": "RAW",
+            "average_database_bytes": 100_000_000_000_000,
+            "average_failsafe_bytes": 0,
+            "average_hybrid_table_storage_bytes": 0,
+        }
+    ]
+
+    view = _estimated_storage_view(
+        storage_rows=storage_rows,
+        rate_rows=[],
+        storage_price_usd_per_tb_month=30.0,
+    )
+
+    assert view.storage_spend.daily_series[0].spend == pytest.approx(
+        100.0 * 30.0 / 30.0
+    )
+    assert view.storage_spend.databases[0].monthly_spend == pytest.approx(100.0 * 30.0)
+
+
+@pytest.mark.parametrize("usage_type", ["Storage", "STORAGE", "storage"])
+def test_storage_rate_usage_type_match_is_case_insensitive(usage_type: str) -> None:
+    storage_rates = _build_storage_rate_index(
+        [
+            {
+                "usage_date": "2026-06-08",
+                "service_type": "STORAGE",
+                "usage_type": usage_type,
+                "rating_type": "STORAGE",
+                "currency": "USD",
+                "effective_rate": 25.0,
+            }
+        ]
+    )
+    metadata = _demo_metadata().model_copy(
+        update={"storage_price_usd_per_tb_month": 30.0}
+    )
+
+    # The rate-sheet rate (25) is preferred over the metadata fallback (30).
+    assert _storage_price_for(date(2026, 6, 8), storage_rates, metadata) == 25.0
+
+
+def test_storage_rate_index_dedups_to_max_per_date() -> None:
+    storage_rates = _build_storage_rate_index(
+        [
+            {
+                "usage_date": "2026-06-08",
+                "service_type": "STORAGE",
+                "usage_type": "storage",
+                "rating_type": "STORAGE",
+                "currency": "USD",
+                "effective_rate": 20.0,
+            },
+            {
+                "usage_date": "2026-06-08",
+                "service_type": "STORAGE",
+                "usage_type": "storage",
+                "rating_type": "STORAGE",
+                "currency": "USD",
+                "effective_rate": 25.0,
+            },
+        ]
+    )
+
+    assert storage_rates[date(2026, 6, 8)].effective_rate == 25.0
+
+
+# --- 3. Hybrid bytes -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "storage_row",
+    [
+        {
+            "usage_date": "2026-06-08",
+            "database_name": "RAW",
+            "average_database_bytes": 100_000_000_000_000,
+            "average_failsafe_bytes": 0,
+            "average_hybrid_table_storage_bytes": None,
+        },
+        {
+            "usage_date": "2026-06-08",
+            "database_name": "RAW",
+            "average_database_bytes": 100_000_000_000_000,
+            "average_failsafe_bytes": 0,
+        },
+    ],
+)
+def test_nullable_or_absent_hybrid_bytes_counts_as_zero(
+    storage_row: dict[str, object],
+) -> None:
+    rate_rows = [
+        {
+            "usage_date": "2026-06-08",
+            "service_type": "STORAGE",
+            "usage_type": "storage",
+            "rating_type": "STORAGE",
+            "currency": "USD",
+            "effective_rate": 25.0,
+        }
+    ]
+
+    view = _estimated_storage_view(storage_rows=[storage_row], rate_rows=rate_rows)
+
+    # Only the 100 TB database bytes count; hybrid is treated as zero.
+    assert view.storage_spend.databases[0].bytes == pytest.approx(100_000_000_000_000)
+    assert view.storage_spend.daily_series[0].spend == pytest.approx(
+        100.0 * 25.0 / 30.0
+    )
+
+
+def test_present_hybrid_bytes_included_in_series_and_per_database() -> None:
+    # database + failsafe + hybrid all contribute to cost-bearing bytes.
+    storage_rows = [
+        {
+            "usage_date": "2026-06-08",
+            "database_name": "RAW",
+            "average_database_bytes": 100_000_000_000_000,
+            "average_failsafe_bytes": 8_000_000_000_000,
+            "average_hybrid_table_storage_bytes": 3_000_000_000_000,
+        }
+    ]
+    rate_rows = [
+        {
+            "usage_date": "2026-06-08",
+            "service_type": "STORAGE",
+            "usage_type": "storage",
+            "rating_type": "STORAGE",
+            "currency": "USD",
+            "effective_rate": 25.0,
+        }
+    ]
+
+    view = _estimated_storage_view(storage_rows=storage_rows, rate_rows=rate_rows)
+
+    total_tb = 100 + 8 + 3  # 111 TB
+    assert view.storage_spend.databases[0].bytes == pytest.approx(111_000_000_000_000)
+    assert view.storage_spend.databases[0].monthly_spend == pytest.approx(
+        total_tb * 25.0
+    )
+    assert view.storage_spend.daily_series[0].spend == pytest.approx(
+        total_tb * 25.0 / 30.0
+    )
+    # The per-database stacked point reflects the same hybrid-inclusive dollars.
+    assert view.storage_spend.database_daily_series[0].values["RAW"] == pytest.approx(
+        total_tb * 25.0 / 30.0
+    )
+
+
+# --- 4. Stacked series construction ---------------------------------------
+
+
+def test_storage_stacked_series_values_match_daily_dollars() -> None:
+    storage_rows = [
+        {
+            "usage_date": "2026-06-08",
+            "database_name": name,
+            "average_database_bytes": tb * 1_000_000_000_000,
+            "average_failsafe_bytes": 0,
+            "average_hybrid_table_storage_bytes": 0,
+        }
+        for name, tb in (("RAW", 100), ("ANALYTICS", 50))
+    ]
+    rate_rows = [
+        {
+            "usage_date": "2026-06-08",
+            "service_type": "STORAGE",
+            "usage_type": "storage",
+            "rating_type": "STORAGE",
+            "currency": "USD",
+            "effective_rate": 25.0,
+        }
+    ]
+
+    view = _estimated_storage_view(storage_rows=storage_rows, rate_rows=rate_rows)
+
+    point = view.storage_spend.database_daily_series[0]
+    assert point.values["RAW"] == pytest.approx(100.0 * 25.0 / 30.0)
+    assert point.values["ANALYTICS"] == pytest.approx(50.0 * 25.0 / 30.0)
+    # Overall daily series equals the sum of the per-database stacked values.
+    assert view.storage_spend.daily_series[0].spend == pytest.approx(
+        sum(point.values.values())
+    )
+
+
+def test_storage_period_spend_sums_to_total_and_sorts_desc() -> None:
+    # Two databases over a two-day window. period_spend per database = the sum of
+    # its daily storage dollars across the window (the same grid as the KPI
+    # total), so the per-database period_spend values MUST sum to total.
+    storage_rows = [
+        {
+            "usage_date": usage_date,
+            "database_name": name,
+            "average_database_bytes": tb * 1_000_000_000_000,
+            "average_failsafe_bytes": 0,
+            "average_hybrid_table_storage_bytes": 0,
+        }
+        for usage_date in ("2026-06-08", "2026-06-09")
+        # ANALYTICS is larger per day, so it must rank first by period_spend even
+        # though both appear on the latest day.
+        for name, tb in (("RAW", 40), ("ANALYTICS", 100))
+    ]
+    rate_rows = [
+        {
+            "usage_date": usage_date,
+            "service_type": "STORAGE",
+            "usage_type": "storage",
+            "rating_type": "STORAGE",
+            "currency": "USD",
+            "effective_rate": 25.0,
+        }
+        for usage_date in ("2026-06-08", "2026-06-09")
+    ]
+
+    view = _estimated_storage_view(
+        storage_rows=storage_rows,
+        rate_rows=rate_rows,
+        start_date=date(2026, 6, 8),
+        end_date=date(2026, 6, 9),
+        account_usage_through_date=date(2026, 6, 9),
+    )
+
+    databases = view.storage_spend.databases
+    # Per-database period_spend sums to the KPI total.
+    assert sum(row.period_spend for row in databases) == pytest.approx(
+        view.storage_spend.total
+    )
+    # Sorted by period_spend DESC: ANALYTICS (100 TB/day) outranks RAW (40 TB/day).
+    assert [row.name for row in databases] == ["ANALYTICS", "RAW"]
+    period_spends = [row.period_spend for row in databases]
+    assert period_spends == sorted(period_spends, reverse=True)
+    # ANALYTICS: 100 TB * 25/TB-month / 30 days/month * 2 days.
+    assert databases[0].period_spend == pytest.approx(100.0 * 25.0 / 30.0 * 2)
+    assert databases[0].period_spend_label == _format_currency(
+        databases[0].period_spend, "USD"
+    )
+    # monthly_spend stays the latest-day snapshot estimate (kept for the detail
+    # table) and is distinct from the windowed period_spend.
+    assert databases[0].monthly_spend == pytest.approx(100.0 * 25.0)
+    # detail_tables.storage carries the same rows, so it gets period_spend too.
+    assert view.detail_tables.storage[0].period_spend == pytest.approx(
+        databases[0].period_spend
+    )
+
+
+def test_storage_stacked_series_buckets_overflow_into_thirteen_plus_other() -> None:
+    # 16 databases (> 14) => top 13 by total kept, rest folded into "Other"
+    # (last). Per-date totals are conserved across bucketing.
+    storage_rows = [
+        {
+            "usage_date": "2026-06-08",
+            "database_name": f"DB_{index:02}",
+            # Larger index => more bytes => higher rank.
+            "average_database_bytes": (index + 1) * 1_000_000_000_000,
+            "average_failsafe_bytes": 0,
+            "average_hybrid_table_storage_bytes": 0,
+        }
+        for index in range(16)
+    ]
+    rate_rows = [
+        {
+            "usage_date": "2026-06-08",
+            "service_type": "STORAGE",
+            "usage_type": "storage",
+            "rating_type": "STORAGE",
+            "currency": "USD",
+            "effective_rate": 25.0,
+        }
+    ]
+
+    view = _estimated_storage_view(storage_rows=storage_rows, rate_rows=rate_rows)
+
+    names = view.storage_spend.database_names
+    assert len(names) == DASHBOARD_STACKED_SERIES_LIMIT
+    assert names[-1] == OTHER_STACKED_SERIES_LABEL
+    assert names.count(OTHER_STACKED_SERIES_LABEL) == 1
+    # 16 databases, 13 kept => the 3 smallest (DB_00, DB_01, DB_02) fold into
+    # "Other".
+    point = view.storage_spend.database_daily_series[0]
+    assert "DB_00" not in point.values
+    assert "DB_01" not in point.values
+    assert "DB_02" not in point.values
+    assert point.values[OTHER_STACKED_SERIES_LABEL] == pytest.approx(
+        (1 + 2 + 3) * 25.0 / 30.0
+    )
+    # Total is conserved: sum of stacked values equals the overall daily spend
+    # and the pre-bucketing KPI total.
+    stacked_sum = sum(point.values.values())
+    assert view.storage_spend.daily_series[0].spend == pytest.approx(stacked_sum)
+    expected_total = sum(range(1, 17)) * 25.0 / 30.0
+    assert view.storage_spend.total == pytest.approx(expected_total)
+
+
+# --- 5. total / total_label ------------------------------------------------
+
+
+def test_storage_total_sums_all_databases_across_window() -> None:
+    # Two dates, two databases. total == sum of every per-database daily dollar
+    # across the window (pre-bucketing); total_label == _format_currency(total).
+    storage_rows = [
+        {
+            "usage_date": usage_date,
+            "database_name": name,
+            "average_database_bytes": tb * 1_000_000_000_000,
+            "average_failsafe_bytes": 0,
+            "average_hybrid_table_storage_bytes": 0,
+        }
+        for usage_date in ("2026-06-07", "2026-06-08")
+        for name, tb in (("RAW", 100), ("ANALYTICS", 50))
+    ]
+    rate_rows = [
+        {
+            "usage_date": usage_date,
+            "service_type": "STORAGE",
+            "usage_type": "storage",
+            "rating_type": "STORAGE",
+            "currency": "USD",
+            "effective_rate": 25.0,
+        }
+        for usage_date in ("2026-06-07", "2026-06-08")
+    ]
+
+    view = _estimated_storage_view(
+        storage_rows=storage_rows,
+        rate_rows=rate_rows,
+        start_date=date(2026, 6, 7),
+        end_date=date(2026, 6, 8),
+    )
+
+    per_day = (100 + 50) * 25.0 / 30.0
+    expected_total = per_day * 2
+    assert view.storage_spend.total == pytest.approx(expected_total)
+    assert view.storage_spend.total_label == _format_currency(
+        view.storage_spend.total, "USD"
+    )
+    # And the total equals the sum of the overall daily series.
+    assert view.storage_spend.total == pytest.approx(
+        sum(point.spend for point in view.storage_spend.daily_series)
+    )
+
+
+# --- 6. _format_bytes unit tests ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (0, "0.0 B"),
+        (512, "512.0 B"),
+        (1000, "1.0 KB"),
+        (1500, "1.5 KB"),
+        (1_000_000, "1.0 MB"),
+        (1_000_000_000, "1.0 GB"),
+        (1_000_000_000_000, "1.0 TB"),
+        (10_539_124_266_240, "10.5 TB"),
+        (1_000_000_000_000_000, "1.0 PB"),
+        (2_500_000_000_000_000, "2.5 PB"),
+        # PB is the largest unit: very large values stay in PB, never overflow.
+        (5_000_000_000_000_000_000, "5000.0 PB"),
+        (-1500, "-1.5 KB"),
+    ],
+)
+def test_format_bytes_contract(value: float, expected: str) -> None:
+    assert _format_bytes(value) == expected
+
+
+# --- 7. Demo data shape ----------------------------------------------------
+
+
+def test_demo_rate_rows_carry_usage_type_with_per_date_storage() -> None:
+    datasets = _demo_datasets()
+    rate_rows = datasets["rate_sheet_daily"]
+
+    assert all("usage_type" in row for row in rate_rows)
+    storage_dates = {
+        row["usage_date"]
+        for row in rate_rows
+        if str(row["usage_type"]).casefold() == "storage"
+    }
+    all_dates = {row["usage_date"] for row in rate_rows}
+    # Every usage_date has at least one "storage" rate row.
+    assert storage_dates == all_dates
+
+
+def test_demo_storage_rows_carry_hybrid_bytes() -> None:
+    datasets = _demo_datasets()
+    storage_rows = datasets["database_storage_daily"]
+
+    assert storage_rows
+    assert all("average_hybrid_table_storage_bytes" in row for row in storage_rows)

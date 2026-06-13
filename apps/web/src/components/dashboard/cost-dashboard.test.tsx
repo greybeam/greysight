@@ -95,7 +95,11 @@ describe("CostDashboard", () => {
     // "Warehouse spend" appears twice: the section heading and the detail table.
     expect(screen.getAllByText("Warehouse spend").length).toBeGreaterThan(0);
     expect(screen.getByText("User compute spend")).toBeInTheDocument();
-    expect(screen.getByText("Storage by database")).toBeInTheDocument();
+    // "Storage by database" appears twice: the storage section's right-side
+    // table and the detail-tables section at the bottom of the dashboard.
+    expect(
+      screen.getAllByText("Storage by database").length,
+    ).toBeGreaterThan(0);
     expect(screen.getAllByText("Analysis complete").length).toBeGreaterThan(0);
   });
 

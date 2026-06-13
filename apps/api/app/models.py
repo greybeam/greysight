@@ -36,6 +36,7 @@ SAFE_DATASET_ROW_FIELDS: dict[str, frozenset[str]] = {
             "database_name",
             "average_database_bytes",
             "average_failsafe_bytes",
+            "average_hybrid_table_storage_bytes",
         }
     ),
     "top_warehouses_table": frozenset({"warehouse_name", "credits_used"}),
@@ -51,7 +52,14 @@ SAFE_DATASET_ROW_FIELDS: dict[str, frozenset[str]] = {
         }
     ),
     "rate_sheet_daily": frozenset(
-        {"usage_date", "service_type", "rating_type", "currency", "effective_rate"}
+        {
+            "usage_date",
+            "service_type",
+            "usage_type",
+            "rating_type",
+            "currency",
+            "effective_rate",
+        }
     ),
     "capacity_balance_daily": frozenset({"usage_date", "currency", "balance"}),
     "current_account": frozenset({"account_locator"}),

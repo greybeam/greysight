@@ -181,20 +181,29 @@
     "storage": [
       {
         "bytes": 4657824000000.0,
+        "bytes_label": "4.7 TB",
         "monthly_spend": 116.4456,
         "monthly_spend_label": "$116.45",
+        "period_spend": 116.445,
+        "period_spend_label": "$116.45",
         "name": "RAW"
       },
       {
         "bytes": 2975832000000.0,
+        "bytes_label": "3.0 TB",
         "monthly_spend": 74.3958,
         "monthly_spend_label": "$74.40",
+        "period_spend": 74.397,
+        "period_spend_label": "$74.40",
         "name": "ANALYTICS"
       },
       {
         "bytes": 1423224000000.0,
+        "bytes_label": "1.4 TB",
         "monthly_spend": 35.580600000000004,
         "monthly_spend_label": "$35.58",
+        "period_spend": 35.58,
+        "period_spend_label": "$35.58",
         "name": "APP"
       }
     ],
@@ -762,27 +771,71 @@
       }
     ],
     "database_basis": "estimated",
+    "database_names": ["RAW", "ANALYTICS", "APP"],
+    "database_daily_series": [
+      { "date": "2026-05-10", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-05-11", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-05-12", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-05-13", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-05-14", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-05-15", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-05-16", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-05-17", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-05-18", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-05-19", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-05-20", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-05-21", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-05-22", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-05-23", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-05-24", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-05-25", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-05-26", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-05-27", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-05-28", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-05-29", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-05-30", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-05-31", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-06-01", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-06-02", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-06-03", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-06-04", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-06-05", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-06-06", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-06-07", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } },
+      { "date": "2026-06-08", "values": { "RAW": 3.8815, "ANALYTICS": 2.4799, "APP": 1.186 } }
+    ],
     "databases": [
       {
         "bytes": 4657824000000.0,
+        "bytes_label": "4.7 TB",
         "monthly_spend": 116.4456,
         "monthly_spend_label": "$116.45",
+        "period_spend": 116.445,
+        "period_spend_label": "$116.45",
         "name": "RAW"
       },
       {
         "bytes": 2975832000000.0,
+        "bytes_label": "3.0 TB",
         "monthly_spend": 74.3958,
         "monthly_spend_label": "$74.40",
+        "period_spend": 74.397,
+        "period_spend_label": "$74.40",
         "name": "ANALYTICS"
       },
       {
         "bytes": 1423224000000.0,
+        "bytes_label": "1.4 TB",
         "monthly_spend": 35.580600000000004,
         "monthly_spend_label": "$35.58",
+        "period_spend": 35.58,
+        "period_spend_label": "$35.58",
         "name": "APP"
       }
     ],
-    "is_empty": true
+    "is_empty": false,
+    "total": 226.422,
+    "total_label": "$226.42"
   },
   "total_spend": {
     "average_daily": 100.69699999999999,

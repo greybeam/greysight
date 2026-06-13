@@ -191,6 +191,9 @@ def _build_database_storage_daily(usage_dates: list[date]) -> list[dict[str, Any
                     "average_failsafe_bytes": round(
                         base_tb * 0.08 * growth_factor * 1_000_000_000_000
                     ),
+                    "average_hybrid_table_storage_bytes": round(
+                        base_tb * 0.03 * growth_factor * 1_000_000_000_000
+                    ),
                 }
             )
     return rows
@@ -225,11 +228,22 @@ def _build_rate_sheet_daily(usage_dates: list[date]) -> list[dict[str, Any]]:
                 {
                     "usage_date": usage_date,
                     "service_type": service_type,
+                    "usage_type": "compute",
                     "rating_type": rating_type,
                     "currency": "USD",
                     "effective_rate": DEMO_CREDIT_RATE_USD,
                 }
             )
+        rows.append(
+            {
+                "usage_date": usage_date,
+                "service_type": "STORAGE",
+                "usage_type": "storage",
+                "rating_type": "STORAGE",
+                "currency": "USD",
+                "effective_rate": DEMO_STORAGE_RATE_USD,
+            }
+        )
     return rows
 
 

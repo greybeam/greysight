@@ -94,6 +94,9 @@ const databaseStorageDaily = usageDates.flatMap((usage_date, index) =>
       average_failsafe_bytes: Math.round(
         baseTb * 0.08 * growthFactor * 1_000_000_000_000,
       ),
+      // Demo account has no hybrid (Unistore) tables, matching the common case
+      // where Snowflake reports this column as null.
+      average_hybrid_table_storage_bytes: null,
     };
   }),
 );
@@ -115,6 +118,9 @@ const rateSheetDaily = usageDates.flatMap((usage_date) =>
   SERVICES.map(([service_type, rating_type]) => ({
     usage_date,
     service_type,
+    // Snowflake's rate sheet keys each rate by a usage type; the demo's compute
+    // services all bill as credits.
+    usage_type: "credits",
     rating_type,
     currency: "USD",
     effective_rate: CREDIT_RATE_USD,

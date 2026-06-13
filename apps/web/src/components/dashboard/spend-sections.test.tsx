@@ -347,16 +347,122 @@ describe("spend sections", () => {
     expect(screen.getByText("No warehouse spend data")).toBeInTheDocument();
   });
 
+  it("renders a storage-spend KPI card with a stacked chart spanning two columns", () => {
+    render(
+      <StorageSpendSection
+        currency={demoDashboardView.header.currency}
+        range={demoDashboardView.range}
+        viewModel={demoDashboardView.storageSpend}
+      />,
+    );
+
+    const grid = screen.getByTestId("dashboard-grid-storage-spend");
+    expect(screen.getByText("Storage spend")).toBeInTheDocument();
+    expect(grid).toHaveClass("grid", "gap-4", "lg:grid-cols-3");
+
+    // KPI card spans two columns, carries the period-scoped label plus the total.
+    const totalCard = screen.getByTestId("storage-spend-card");
+    const chartPanel = totalCard.closest("section");
+    expect(chartPanel).toHaveClass("lg:col-span-2");
+    expect(
+      within(totalCard).getByText("Storage Spend in Last 30 Days"),
+    ).toBeInTheDocument();
+    expect(
+      within(totalCard).getByText(demoDashboardView.storageSpend.totalLabel),
+    ).toBeInTheDocument();
+
+    // The stacked daily-by-database bar chart lives inside the card, sized to
+    // the storage section's shorter height.
+    const chart = screen.getByTestId("storage-spend-tremor-bar-chart");
+    expect(chart).toHaveAttribute("data-chart-library", "tremor");
+    expect(chart).toHaveClass("h-80");
+
+    // The view model exposes the bucketed database names the chart stacks by.
+    expect(demoDashboardView.storageSpend.databaseNames).toEqual([
+      "RAW",
+      "ANALYTICS",
+      "APP",
+    ]);
+  });
+
+  it("renders a right-side database table with name, spend, and size", () => {
+    render(
+      <StorageSpendSection
+        currency={demoDashboardView.header.currency}
+        viewModel={demoDashboardView.storageSpend}
+      />,
+    );
+
+    const tablePanel = screen.getByRole("region", {
+      name: "Storage by database",
+    });
+    // Table headers match the pinned contract: period-scoped "Spend", not the
+    // monthly estimate the bottom 2x2 detail table still shows.
+    expect(within(tablePanel).getByText("Database")).toBeInTheDocument();
+    expect(within(tablePanel).getByText("Spend")).toBeInTheDocument();
+    expect(within(tablePanel).getByText("Size")).toBeInTheDocument();
+    expect(
+      within(tablePanel).queryByText("Est. monthly spend"),
+    ).not.toBeInTheDocument();
+
+    // Each database row renders name / period spend label / humanized size.
+    const firstRow = demoDashboardView.storageSpend.databases[0];
+    expect(within(tablePanel).getByText(firstRow.name)).toBeInTheDocument();
+    expect(
+      within(tablePanel).getByText(firstRow.periodSpendLabel),
+    ).toBeInTheDocument();
+    expect(
+      within(tablePanel).getByText(firstRow.bytesLabel),
+    ).toBeInTheDocument();
+  });
+
   it("renders a storage empty state when storage data is missing", () => {
+    // A storage view model flagged empty must render the empty state without
+    // ever reaching into its stacked-series data (the regression: chartData was
+    // computed before the isEmpty guard, throwing on a missing/empty series).
     render(
       <StorageSpendSection
         currency={demoDashboardView.header.currency}
         viewModel={{
           basis: "billed",
           databaseBasis: "estimated",
+          total: 0,
+          totalLabel: "$0.00",
           dailySeries: [],
           databases: [],
           databaseBars: [],
+          databaseNames: [],
+          databaseDailySeries: [],
+          isEmpty: true,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("No storage spend data")).toBeInTheDocument();
+    // The chart and table from the populated layout never render.
+    expect(
+      screen.queryByTestId("storage-spend-tremor-bar-chart"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Storage by database")).not.toBeInTheDocument();
+  });
+
+  it("renders the empty state for a legacy view that predates the storage series fields", () => {
+    // Real legacy payloads are parsed by parseStorageSpendViewModel, which
+    // defaults the new series fields to empty arrays. Simulate the parsed result
+    // of such a payload (empty series, flagged empty) and confirm it renders.
+    render(
+      <StorageSpendSection
+        currency={demoDashboardView.header.currency}
+        viewModel={{
+          basis: "billed",
+          databaseBasis: "estimated",
+          total: 0,
+          totalLabel: "$0.00",
+          dailySeries: [],
+          databases: [],
+          databaseBars: [],
+          databaseNames: [],
+          databaseDailySeries: [],
           isEmpty: true,
         }}
       />,
