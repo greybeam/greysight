@@ -51,36 +51,61 @@ existing boundary.
 
 ### 1. Readiness derivation (the B2 seam)
 
-A single helper/hook inside `CostDashboardContent` owns readiness and is the
-**only** integration point for B2. It maps each section to the datasets it
-needs and derives a section status shape that components consume:
+A single hook inside `CostDashboardContent` owns readiness and is the **only**
+integration point for B2. It maps each section to the data it needs and derives
+a section status shape that components consume:
 
 ```ts
 type SectionStatus = "loading" | "ready";
 
-type DashboardSectionStatuses = {
-  overview: SectionStatus;   // composite: capacity balance + total spend + service spend
-  warehouse: SectionStatus;
-  storage: SectionStatus;
-};
+type DashboardSectionKey = "overview" | "warehouse" | "storage";
+
+type DashboardSectionStatuses = Record<DashboardSectionKey, SectionStatus>;
 ```
 
-- **Today:** derivation is trivial — when the single fetch is in flight, all
-  three are `loading`; when it resolves, all three are `ready` (revealed via the
-  stagger below). A view served from cache resolves to `ready` immediately
-  (no stagger).
-- **B2 later:** only the *derivation source* changes — readiness is computed
-  from per-section/per-dataset completion events instead of the single fetch.
-  Section components, skeletons, and layout are untouched.
+**Two distinct concepts — keep them separate:**
 
-Readiness derivation lives in one place (helper/hook), not scattered as inline
-state across components. Overview is explicitly the composite/edge case: its
-readiness may later depend on multiple datasets resolving, so the helper owns
-that composition rather than a component.
+- **data-ready** — is the underlying data for a section available? Today this is
+  a single boolean (the one fetch resolved), the same for all three sections.
+- **revealed** — has the staggered-reveal animation flipped this section on yet?
+  Per-section, driven by timers (§4).
+
+A section's public `status` is `"ready"` only when it is **both** data-ready and
+revealed; otherwise `"loading"`.
+
+**Hook interface (concrete):**
+
+```ts
+// Input: the existing loadState + the guard refs already in CostDashboardContent.
+function useSectionStatuses(args: {
+  view: DashboardView | null;        // loadState.view
+  loadStatus: LoadState["status"];   // "loading" | run status
+  servedFromCache: boolean;          // cache hit → skip stagger
+  reduceMotion: boolean;             // prefers-reduced-motion
+  revealGeneration: number;          // bumped on every new run/range request
+}): DashboardSectionStatuses;
+```
+
+- **Derivation today:** `dataReady = view != null && loadStatus !== "loading"`.
+  When `dataReady` is false → all sections `"loading"`. When it flips true →
+  sections become `"ready"` in stagger order (§4), unless `servedFromCache` or
+  `reduceMotion`, in which case all three flip to `"ready"` synchronously with
+  no timers.
+- **Reset:** any bump of `revealGeneration` (new run, range change) resets all
+  sections to `"loading"` and cancels pending reveal timers (§4) before the next
+  derivation runs.
+- **Reveal state lives in the hook** (a `useState<DashboardSectionStatuses>` plus
+  a timer ref), never in section components.
+- **B2 later:** only `dataReady` changes — from one boolean to a per-section
+  value computed from per-dataset/per-query completion events. The `revealed`
+  layer, the section components, the skeletons, and the layout are untouched.
+  Overview is the flagged composite case: its `dataReady` may later require
+  multiple datasets (capacity balance + total spend + service spend) to resolve;
+  the hook owns that composition, not the component.
 
 Sections **only ever** consume `loading | ready`. They never see datasets,
-fetch state, or partial-data shapes — that keeps the adapter boundary clean for
-B2.
+fetch state, cache flags, or partial-data shapes — that keeps the adapter
+boundary clean for B2.
 
 ### 2. Real layout in skeleton form
 
@@ -99,6 +124,31 @@ Layout must be **pixel-identical** between skeleton and ready so nothing jumps
 when data lands. Skeletons occupy the same body slots and match exact existing
 height classes — `h-80`, `h-96`, the ranked-list scroll container, and the
 storage table's fill-height behavior.
+
+**Rendering with no `viewModel`:** during initial load there is no view at all —
+no currency, range, service/warehouse names, or values. The `status="loading"`
+branch of each section therefore must render purely from the frame + skeletons
+and **must not read any data props**. Concretely, the section components take
+their data props as optional and only dereference them in the `status="ready"`
+branch:
+
+```ts
+function WarehouseSpendSection({
+  status,
+  currency,         // only read when status === "ready"
+  range,
+  viewModel,        // optional; absent during initial load
+}: {
+  status: SectionStatus;
+  currency?: string;
+  range?: DashboardViewRange | null;
+  viewModel?: WarehouseSpendViewModel;
+}) { ... }
+```
+
+This means the skeleton path never depends on header/range data, so it can
+render before the first fetch resolves. The `"ready"` path keeps today's
+required props and behavior unchanged.
 
 ### 3. Skeleton primitives (`dashboard-design-system.tsx`)
 
@@ -131,33 +181,77 @@ apart (Overview → Warehouse → Storage) so it feels progressive. The stagger 
 Safety requirements (mirroring the existing `runGenerationRef` /
 `rangeRequestSeqRef` guards in `CostDashboardContent`):
 
-- Reveal timers are keyed to the current run-generation / request-sequence. A
-  timer that fires after a newer request has superseded it is a no-op.
-- All pending reveal timers are cleared on refetch, range change, and unmount.
-- **Skip the stagger** (reveal instantly) for: cached views, and when
-  `prefers-reduced-motion: reduce` is set.
-- A range-change refetch that sets sections back to `loading` must cancel any
-  in-flight reveal so an old timer cannot flip a section `ready` over a newer
-  `loading`.
+- **Single reveal generation token.** The hook keeps one `revealGeneration`
+  number, bumped on every new run and every range request. Each scheduled timer
+  captures the generation value live at schedule time; on fire it no-ops unless
+  the captured value still equals the current generation. A timer that fires
+  after a newer request has superseded it is therefore inert.
+- **Single timer ref, cleared at every reset and on unmount.** All pending
+  reveal timeouts are tracked in one ref and cleared (a) before every transition
+  back to `"loading"` (new run / range change), and (b) in the reveal effect's
+  cleanup function (covers unmount and dependency change). There is no code path
+  that leaves a timer pending across a `loading` reset.
+- **Skip the stagger** (reveal all sections synchronously, no timers) for:
+  cached views (`servedFromCache`), and `prefers-reduced-motion: reduce`.
+- A range-change refetch that sets sections back to `loading` cancels any
+  in-flight reveal (via the two mechanisms above) so an old timer cannot flip a
+  section `ready` over a newer `loading`.
 
 The header and `RunStatus` badge keep rendering throughout
 (`queued → running → loading → complete`), as they do today.
 
+### 5. Edge states (non-`loading`/`ready` paths)
+
+These must be explicit so the skeleton path doesn't swallow them:
+
+- **Failed initial fetch (no `viewModel`).** When the run/fetch fails and there
+  is no view, do **not** render perpetual skeletons. The skeleton layout is only
+  for `loadStatus === "loading"` with a fetch genuinely in flight. On `failed`/
+  `expired`/`deleted` with no view, render an error/empty state (reuse
+  `SectionEmptyState` with the run's `user_safe_message`/error) in the content
+  region; the `RunStatus` badge already reflects the failure. This replaces the
+  current behavior where the blank boxes persist behind a failed badge.
+- **Unsupported views.** The existing `viewModel.unsupported` branch is unchanged
+  and **bypasses section reveal entirely** — it renders the unsupported
+  `SectionEmptyState`, never skeletons.
+- **Range-refetch UI continuity.** On a range change the header **and the filter
+  bar remain mounted and visible** (the user just interacted with them); only the
+  three section bodies revert to `"loading"` skeletons. The skeleton-with-no-
+  `viewModel` rule (§2) applies only to the *initial* load; during a range
+  refetch the previously loaded `currency`/`range`/names are still available, so
+  sections may keep their frames fully populated and only swap chart/list bodies
+  to shimmer. Either way the filter bar is never replaced by a skeleton.
+
 ## Affected files
 
-- `apps/web/src/components/dashboard/cost-dashboard.tsx` — readiness helper/hook,
-  replace blank-box branch with skeleton layout, reveal-timer logic + cleanup.
-- `apps/web/src/components/dashboard/spend-sections.tsx` — `status` prop on the
-  three section components; render skeleton vs content.
+Source:
+
+- `apps/web/src/components/dashboard/cost-dashboard.tsx` — `useSectionStatuses`
+  hook, replace blank-box branch with skeleton layout, reveal-timer logic +
+  cleanup, failed-initial-fetch state.
+- `apps/web/src/components/dashboard/spend-sections.tsx` — `status` prop + optional
+  data props on the three section components; render skeleton vs content.
 - `apps/web/src/components/dashboard/dashboard-design-system.tsx` — new skeleton
-  primitives.
-- Tests (see below).
+  primitives (`ChartSkeleton`, `RankedSpendBarsSkeleton`, `DetailTableSkeleton`,
+  `StatValueSkeleton`).
+
+Tests (Vitest):
+
+- `apps/web/src/components/dashboard/cost-dashboard.test.tsx` — update existing
+  blank-box loading assertion; add reveal/transition/edge-state cases.
+- `apps/web/src/components/dashboard/spend-sections.test.tsx` — section skeleton
+  vs content per `status`.
+- `apps/web/src/components/dashboard/dashboard-design-system.test.tsx` —
+  `ChartSkeleton` bar-vs-line branching only.
 
 ## Testing
 
-Concentrate on behavior and integration, not static markup. Per-primitive unit
-tests only where a skeleton has meaningful branching (e.g. `ChartSkeleton`
-bar vs line) — not for static variants.
+Concentrate on behavior and integration, not static markup. **Deliberate
+decision** (per the design review): we do *not* write per-primitive markup tests
+for static skeleton variants — they're brittle and low-value. Per-primitive unit
+tests only where a skeleton has meaningful branching (e.g. `ChartSkeleton` bar vs
+line). Layout/height parity is covered by the integration height-parity assertions
+below, not by per-primitive snapshots.
 
 Integration (`cost-dashboard` test):
 
@@ -166,11 +260,27 @@ Integration (`cost-dashboard` test):
 - After the fetch resolves, sections transition to `ready` and render content.
 - Stagger verified with fake timers (Overview before Warehouse before Storage).
 - Reduced-motion path reveals all sections instantly (no stagger).
-- Timer cleanup: a range-change refetch mid-reveal cancels pending timers and
-  no stale timer flips a section `ready` over the newer `loading`.
-- Cached-view path reveals instantly.
+- Cached-view path reveals instantly (no timers).
+- **Range-change race:** a range-change refetch mid-reveal cancels pending
+  timers; advancing fake timers past the old stagger does not flip a section
+  `ready` over the newer `loading`.
+- **Unmount mid-reveal:** unmounting while reveal timers are pending clears them
+  (no post-unmount state update / act warning).
+- **Failed initial fetch:** with no `viewModel`, renders the error/empty state,
+  not perpetual skeletons.
+- **Height parity:** the highest-risk containers assert identical height classes
+  between skeleton and ready states — the warehouse chart (`h-96`), storage chart
+  (`h-80`), the ranked-list scroll container, and the storage table fill-height —
+  so the reveal cannot cause a layout jump.
 
 Update the existing blank-box loading test to assert the new skeleton layout.
+
+### Verification commands
+
+- `npm run test:web` — full web Vitest suite green.
+- `npm run typecheck` — `tsc --noEmit` clean.
+- `npm run lint:web` — eslint clean.
+- Targeted during development: `npm --workspace apps/web run test -- cost-dashboard`.
 
 ## Risks & mitigations
 
