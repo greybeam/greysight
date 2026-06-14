@@ -1,29 +1,37 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 
 const QUERY = "(prefers-reduced-motion: reduce)";
 
+function subscribe(onChange: () => void): () => void {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return () => undefined;
+  }
+  const query = window.matchMedia(QUERY);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+}
+
+function getSnapshot(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return false;
+  }
+  return window.matchMedia(QUERY).matches;
+}
+
+// Server (and matchMedia-less) snapshot: default to animate so the staggered
+// reveal is the default and reduced motion is an opt-out.
+function getServerSnapshot(): boolean {
+  return false;
+}
+
 /**
- * Reports the user's reduced-motion preference. Defaults to false (animate) on
- * the server and in environments without matchMedia, so the staggered reveal is
- * the default and reduced motion is an opt-out.
+ * Reports the user's reduced-motion preference via useSyncExternalStore, which
+ * reads the live `matchMedia` value on the client, returns false during SSR to
+ * avoid hydration mismatches, and re-renders when the preference changes —
+ * without a synchronous setState inside an effect.
  */
 export function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(false);
-
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
-      return;
-    }
-
-    const query = window.matchMedia(QUERY);
-    setReduced(query.matches);
-
-    const onChange = (event: MediaQueryListEvent) => setReduced(event.matches);
-    query.addEventListener("change", onChange);
-    return () => query.removeEventListener("change", onChange);
-  }, []);
-
-  return reduced;
+  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 }

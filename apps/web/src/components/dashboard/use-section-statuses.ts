@@ -74,6 +74,11 @@ export function useSectionStatuses({
     prevDataReadyRef.current = dataReady;
 
     if (!dataReady) {
+      // Intentional synchronous reset: when a new run/range starts (dataReady
+      // flips false), every section must immediately return to its skeleton so
+      // a stale reveal can't paint over the next load. This is derived-state
+      // synchronization, not a cascading update loop.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setStatuses(ALL_LOADING);
       return clearTimers;
     }

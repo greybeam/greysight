@@ -5,6 +5,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -120,7 +121,7 @@ describe("CostDashboard", () => {
 
     render(<CostDashboard demoMode />);
 
-    await screen.findByText("Overview");
+    await screen.findByText("Total Spend in Last 30 Days");
     expect(fetchDemoDashboardView).toHaveBeenCalledWith({ windowDays: 30 });
     expect(fetchDemoDashboardView).toHaveBeenCalledWith({ windowDays: 7 });
     expect(fetchDemoDashboardView).toHaveBeenCalledWith({ windowDays: 90 });
@@ -133,7 +134,7 @@ describe("CostDashboard", () => {
 
     render(<CostDashboard demoMode />);
 
-    await screen.findByText("Overview");
+    await screen.findByLabelText("Start date");
     await waitFor(() => expect(fetchDemoDashboardView).toHaveBeenCalledTimes(3));
 
     fireEvent.click(screen.getByRole("button", { name: "7 days" }));
@@ -152,7 +153,7 @@ describe("CostDashboard", () => {
 
     render(<CostDashboard demoMode />);
 
-    await screen.findByText("Overview");
+    await screen.findByLabelText("Start date");
     fireEvent.change(screen.getByLabelText("Start date"), {
       target: { value: "2026-06-01" },
     });
@@ -254,7 +255,10 @@ describe("CostDashboard", () => {
     await waitFor(() =>
       expect(screen.queryByText("ORG_A")).not.toBeInTheDocument(),
     );
-    expect(screen.getByLabelText("Loading dashboard")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("dashboard-section-overview"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("overview-skeleton")).toBeInTheDocument();
   });
 
   it("keeps the latest range response active when custom range requests resolve out of order", async () => {
@@ -272,7 +276,7 @@ describe("CostDashboard", () => {
 
     render(<CostDashboard demoMode />);
 
-    await screen.findByText("Overview");
+    await screen.findByLabelText("Start date");
     fireEvent.change(screen.getByLabelText("Start date"), {
       target: { value: "2026-06-01" },
     });
@@ -466,7 +470,7 @@ describe("CostDashboard", () => {
 
     render(<CostDashboard demoMode />);
 
-    await screen.findByText("Overview");
+    await screen.findByLabelText("Start date");
     fireEvent.change(screen.getByLabelText("Start date"), {
       target: { value: "2026-06-01" },
     });
@@ -502,7 +506,7 @@ describe("CostDashboard", () => {
 
     render(<CostDashboard demoMode />);
 
-    await screen.findByText("Overview");
+    await screen.findByLabelText("Start date");
     fireEvent.change(screen.getByLabelText("Start date"), {
       target: { value: "2026-06-01" },
     });
@@ -545,7 +549,7 @@ describe("CostDashboard", () => {
     expect(screen.queryByText("Overview")).not.toBeInTheDocument();
   });
 
-  it("disables the run action and shows placeholders while loading", () => {
+  it("disables the run action and shows skeleton sections while loading", () => {
     vi.mocked(fetchDemoDashboardView).mockReturnValue(
       new Promise(() => undefined),
     );
@@ -553,7 +557,17 @@ describe("CostDashboard", () => {
     render(<CostDashboard demoMode />);
 
     expect(screen.getByRole("button", { name: "Run analysis" })).toBeDisabled();
-    expect(screen.getByLabelText("Loading dashboard")).toBeInTheDocument();
+    expect(screen.getByTestId("overview-skeleton")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("dashboard-section-warehouse-spend"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("dashboard-section-storage-spend"),
+    ).toBeInTheDocument();
+    // The filter bar is not rendered until a view exists.
+    expect(
+      screen.queryByRole("button", { name: "Apply date range" }),
+    ).not.toBeInTheDocument();
   });
 
   it("starts a Snowflake run with selected organization and bearer token", async () => {
@@ -641,5 +655,74 @@ describe("CostDashboard", () => {
 
     await waitFor(() => expect(startDashboardRun).toHaveBeenCalledTimes(1));
     expect(screen.getByRole("button", { name: "Run analysis" })).toBeDisabled();
+  });
+
+  it("staggers section reveal on initial demo load", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetchDemoDashboardView).mockResolvedValue(demoDashboardView);
+
+      render(<CostDashboard demoMode />);
+
+      // Flush the initial fetch microtasks.
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // Data resolved but sections still revealing: overview first.
+      act(() => {
+        vi.advanceTimersByTime(140);
+      });
+      expect(screen.getByTestId("dashboard-section-overview")).toBeInTheDocument();
+
+      act(() => {
+        vi.advanceTimersByTime(140 * 3);
+      });
+      // After the full stagger, ready content is present.
+      expect(
+        screen.getByText("Total Spend in Last 30 Days"),
+      ).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reveals all sections instantly under reduced motion", async () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn().mockImplementation((query: string) => ({
+        matches: true,
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    );
+    try {
+      vi.mocked(fetchDemoDashboardView).mockResolvedValue(demoDashboardView);
+      render(<CostDashboard demoMode />);
+      expect(
+        await screen.findByText("Total Spend in Last 30 Days"),
+      ).toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("shows an error state instead of skeletons when the initial run fails", async () => {
+    vi.mocked(fetchDemoDashboardView).mockRejectedValue(new Error("boom"));
+
+    render(<CostDashboard demoMode />);
+
+    // `RunStatus` (rendered above the content region) ALSO displays
+    // loadState.message, which is "Could not load dashboard data." in the
+    // failed state — so the SAME text appears twice on screen. A bare
+    // findByText would throw "Found multiple elements". Scope the query to the
+    // "Dashboard content" region so it matches only the SectionEmptyState.
+    const content = screen.getByLabelText("Dashboard content");
+    expect(
+      await within(content).findByText("Could not load dashboard data."),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("overview-skeleton")).not.toBeInTheDocument();
   });
 });
