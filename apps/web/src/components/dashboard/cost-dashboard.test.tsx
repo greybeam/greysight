@@ -670,25 +670,33 @@ describe("CostDashboard", () => {
         await Promise.resolve();
       });
 
-      // Data resolved but sections still revealing: overview first.
+      // Data resolved but sections still revealing: overview reveals first,
+      // so its skeleton is gone while the warehouse skeleton is still present.
       act(() => {
         vi.advanceTimersByTime(140);
       });
-      expect(screen.getByTestId("dashboard-section-overview")).toBeInTheDocument();
+      expect(screen.queryByTestId("overview-skeleton")).not.toBeInTheDocument();
+      expect(
+        screen.getByTestId("warehouse-spend-skeleton-chart"),
+      ).toBeInTheDocument();
 
       act(() => {
         vi.advanceTimersByTime(140 * 3);
       });
-      // After the full stagger, ready content is present.
+      // After the full stagger, ready content is present and no skeletons remain.
       expect(
         screen.getByText("Total Spend in Last 30 Days"),
       ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId("storage-spend-skeleton-chart"),
+      ).not.toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
   });
 
   it("reveals all sections instantly under reduced motion", async () => {
+    vi.useFakeTimers();
     vi.stubGlobal(
       "matchMedia",
       vi.fn().mockImplementation((query: string) => ({
@@ -701,11 +709,24 @@ describe("CostDashboard", () => {
     try {
       vi.mocked(fetchDemoDashboardView).mockResolvedValue(demoDashboardView);
       render(<CostDashboard demoMode />);
+
+      // Flush only the fetch microtasks; do NOT advance any timers.
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // `usePrefersReducedMotion` reads matchMedia().matches synchronously via
+      // useSyncExternalStore, so the hook reveals all sections at once with no
+      // timers. Ready content must therefore be present with zero timer
+      // advancement — under a normal stagger this would still be skeletons.
       expect(
-        await screen.findByText("Total Spend in Last 30 Days"),
+        screen.getByText("Total Spend in Last 30 Days"),
       ).toBeInTheDocument();
+      expect(screen.queryByTestId("overview-skeleton")).toBeNull();
     } finally {
       vi.unstubAllGlobals();
+      vi.useRealTimers();
     }
   });
 

@@ -458,7 +458,7 @@ function CostDashboardContent({
               />
             ) : null}
             <OverviewSection
-              {...(sectionStatuses.overview === "ready" && viewModel
+              {...(sectionStatuses.overview === "ready" && dataReady && viewModel
                 ? {
                     status: "ready",
                     capacityBalance: viewModel.capacityBalance,
@@ -470,7 +470,7 @@ function CostDashboardContent({
                 : { status: "loading" })}
             />
             <WarehouseSpendSection
-              {...(sectionStatuses.warehouse === "ready" && viewModel
+              {...(sectionStatuses.warehouse === "ready" && dataReady && viewModel
                 ? {
                     status: "ready",
                     currency: viewModel.header.currency,
@@ -480,7 +480,7 @@ function CostDashboardContent({
                 : { status: "loading" })}
             />
             <StorageSpendSection
-              {...(sectionStatuses.storage === "ready" && viewModel
+              {...(sectionStatuses.storage === "ready" && dataReady && viewModel
                 ? {
                     status: "ready",
                     currency: viewModel.header.currency,
