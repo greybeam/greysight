@@ -144,33 +144,61 @@ existing verifier — no new DB driver):
 
 ```text
 GET {SUPABASE_URL}/rest/v1/organization_memberships
-    ?user_id=eq.<sub>&select=organization_id
-headers: apikey + authorization = SUPABASE_SERVICE_ROLE_KEY
+    params: user_id = eq.<sub>, select = organization_id
+    headers:
+      apikey:        {settings.supabase_service_role_key}
+      authorization: Bearer {settings.supabase_service_role_key}
 ```
+
+Exact details (locked to avoid subtle auth failures):
+- **Config prerequisite:** add `supabase_service_role_key` to
+  `apps/api/app/config.py` `Settings` (alias `SUPABASE_SERVICE_ROLE_KEY`);
+  **require it when `AUTH_REQUIRED=true`** and fail closed at startup if missing.
+  Today `Settings` only exposes `supabase_url` + `supabase_anon_key`.
+- **Header `authorization` carries the `Bearer ` prefix** (matching the existing
+  verifier at `auth.py:43`); `apikey` is the raw key. Build the query with
+  `params=`, not manual URL string concatenation.
+- **Fail closed on lookup failure.** A network error / non-200 / malformed JSON
+  from PostgREST raises the existing 401 path — it is **never** silently treated
+  as "zero memberships" (which would be indistinguishable from revocation). Mirror
+  the existing verifier's timeout + error handling.
+- **Pagination:** v1 assumes a small membership count; request with an explicit
+  capped `Range`/`limit` and treat truncation as an error rather than silently
+  dropping org ids.
 
 The result populates `AuthContext.memberships`. The query is **strictly scoped
 to the authenticated `sub`** — the service role bypasses RLS, so the API must
 never accept a client-supplied user id here. The `SupabaseSessionVerifier` seam,
 `AuthContext` shape, and demo bypass (`AUTH_REQUIRED=false` short-circuits before
 any Supabase call) are preserved. `_extract_memberships`' JWT-claim path is
-removed (the token no longer carries memberships).
+removed (the token no longer carries memberships). Reuse a single
+`httpx.AsyncClient` across the auth + membership calls rather than opening one
+per call.
 
 This corrects the original CRITICAL: the prior draft read memberships from
 `/auth/v1/user`'s `app_metadata`, which never carried them. Live lookup sources
 membership from the table directly, so there is no claim-path to mismatch.
 
 **3b. Frontend reads memberships from the API, not the JWT.** A small
-authenticated endpoint returns the caller's live memberships:
+authenticated endpoint returns the caller's live memberships **with display
+names** (PostgREST embed `organizations(name)` via the FK), since the dashboard
+runtime needs an org name, not just an id (`org-shell`'s `SelectedOrganization`
+has `{ id, name }`):
 
 ```text
-GET /api/session/memberships  ->  { organization_ids: string[] }
+GET /api/session/memberships  ->  { organizations: [{ id: string, name: string }] }
 ```
 
 `org-shell` calls this after sign-in (token attached) to decide interim-screen
 vs. dashboard and to drive org selection, replacing today's read of
 `session.user.appMetadata`. Backend owns the membership decision (AGENTS.md:
 backend is the trust boundary); the frontend never infers membership from the
-token. New route file `apps/api/app/routes/session.py` (small, focused).
+token. New route file `apps/api/app/routes/session.py` (small, focused),
+**mounted in `apps/api/app/main.py`** alongside the existing routers.
+
+The frontend handles three explicit states: **loading** (lookup in flight),
+**lookup failed** (error with retry + sign-out — *not* shown as "no org"), and
+**resolved** → zero orgs = interim onboarding screen (§4) / ≥1 org = dashboard.
 
 **Scope of "immediate":** membership/authorization revocation is immediate
 (next request re-reads the table). The Supabase **access token** is a stateless
@@ -233,8 +261,10 @@ seeded sees the interim screen (§4) — expected, not a bug.
 | `apps/web/src/lib/supabase-client.ts` | add `verifyOtp`; passcode-mode `signInWithOtp` |
 | `apps/web/src/components/auth/login-form.tsx` | two-step email → code form |
 | `apps/web/src/components/org/org-shell.tsx` | interim no-org screen; sign-out; drop dead create-org form |
-| `apps/api/app/auth.py` | **CHANGE**: after `/auth/v1/user` auth, live-query `organization_memberships` (service-role REST, scoped to `sub`) for `AuthContext.memberships`; drop JWT-claim membership path |
-| `apps/api/app/routes/session.py` | **NEW**: `GET /api/session/memberships` → live `organization_ids` for the caller |
+| `apps/api/app/auth.py` | **CHANGE**: after `/auth/v1/user` auth, live-query `organization_memberships` (service-role REST, scoped to `sub`, fail-closed) for `AuthContext.memberships`; drop JWT-claim membership path; shared `httpx.AsyncClient` |
+| `apps/api/app/config.py` | **CHANGE**: add `supabase_service_role_key` to `Settings`; require it when `AUTH_REQUIRED=true` (fail closed at startup) |
+| `apps/api/app/routes/session.py` | **NEW**: `GET /api/session/memberships` → `{ organizations: [{ id, name }] }` for the caller (live) |
+| `apps/api/app/main.py` | **CHANGE**: import + `include_router(session_router)` |
 | `apps/web/src/components/org/org-shell.tsx` | read memberships from `GET /api/session/memberships` instead of `session.user.appMetadata` |
 | `.env.example` | clarifying comments; web-public vs API-server grouping |
 | `docs/` | deployment/env split, Vercel-functions caveat, first-user bootstrap, **deployment checklist** (short JWT expiry; email template `{{ .Token }}`; set `GREYSIGHT_CORS_ALLOWED_ORIGINS`) |
@@ -250,15 +280,21 @@ seeded sees the interim screen (§4) — expected, not a bug.
   create-org form); single-membership → dashboard children; demo mode unchanged;
   **`TOKEN_REFRESHED` updates the token**; **sign-out clears session, access
   token, and selected org**; memberships come from `GET /api/session/memberships`
-  (mocked), not the JWT.
+  (mocked), not the JWT; **membership-lookup failure renders the error/retry
+  state, not the no-org screen**.
 - API auth (`apps/api` tests): valid session → `AuthContext.memberships` equals
   the **live** `organization_memberships` rows for `sub` (mock the service-role
   REST call); **a membership removed between requests → denied on the next
   request** (the revocation-is-immediate assertion); invalid/expired token →
   401; demo bypass (`AUTH_REQUIRED=false`) short-circuits before any Supabase
-  call; the membership query is scoped to `sub` and never to client input.
-- `GET /api/session/memberships`: returns the caller's live org ids; requires
-  auth; demo/unauth handling matches the rest of the API.
+  call; the membership query is scoped to `sub` and never to client input;
+  **lookup failure (timeout / non-200 / bad JSON) → 401 fail-closed, not empty
+  memberships**.
+- Config: with `AUTH_REQUIRED=true` and **`SUPABASE_SERVICE_ROLE_KEY` missing,
+  startup fails** (assertion test); present → loads.
+- `GET /api/session/memberships`: returns `{ organizations: [{ id, name }] }`
+  for the caller; requires auth; **error states tested (401/403/500/timeout)**;
+  demo/unauth handling matches the rest of the API.
 - OTP error UX: login-form surfaces expired/invalid-code and rate-limited
   (HTTP 429) responses from Supabase, not just generic failure.
 
