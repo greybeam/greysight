@@ -17,6 +17,7 @@ describe("spend sections", () => {
   it("renders capacity balance as a full-width row above the total spend grid", () => {
     render(
       <OverviewSection
+        status="ready"
         currency={demoDashboardView.header.currency}
         capacityBalance={demoDashboardView.capacityBalance}
         serviceSpend={demoDashboardView.serviceSpend}
@@ -52,6 +53,7 @@ describe("spend sections", () => {
   it("renders a 3-col overview row with a 2-col total spend card and ranked services", () => {
     render(
       <OverviewSection
+        status="ready"
         currency={demoDashboardView.header.currency}
         capacityBalance={demoDashboardView.capacityBalance}
         serviceSpend={demoDashboardView.serviceSpend}
@@ -95,6 +97,7 @@ describe("spend sections", () => {
   it("scopes the total spend KPI label to the active range", () => {
     render(
       <OverviewSection
+        status="ready"
         currency={demoDashboardView.header.currency}
         capacityBalance={demoDashboardView.capacityBalance}
         range={{
@@ -117,6 +120,7 @@ describe("spend sections", () => {
   it("stretches the total spend by service panel to fill the overview row height", () => {
     render(
       <OverviewSection
+        status="ready"
         currency={demoDashboardView.header.currency}
         capacityBalance={demoDashboardView.capacityBalance}
         serviceSpend={demoDashboardView.serviceSpend}
@@ -136,6 +140,7 @@ describe("spend sections", () => {
   it("renders an empty capacity card for older views without capacity balance", () => {
     render(
       <OverviewSection
+        status="ready"
         currency={demoDashboardView.header.currency}
         serviceSpend={demoDashboardView.serviceSpend}
         totalSpend={demoDashboardView.totalSpend}
@@ -152,6 +157,7 @@ describe("spend sections", () => {
   it("renders a combined empty panel when both total and service spend are empty", () => {
     render(
       <OverviewSection
+        status="ready"
         currency={demoDashboardView.header.currency}
         capacityBalance={demoDashboardView.capacityBalance}
         serviceSpend={{
@@ -178,6 +184,7 @@ describe("spend sections", () => {
   it("keeps the total spend KPI when only the service breakdown is empty", () => {
     render(
       <OverviewSection
+        status="ready"
         currency={demoDashboardView.header.currency}
         capacityBalance={demoDashboardView.capacityBalance}
         serviceSpend={{
@@ -216,6 +223,7 @@ describe("spend sections", () => {
   it("keeps the service breakdown chart when only total spend is empty", () => {
     render(
       <OverviewSection
+        status="ready"
         currency={demoDashboardView.header.currency}
         capacityBalance={demoDashboardView.capacityBalance}
         serviceSpend={demoDashboardView.serviceSpend}
@@ -250,6 +258,7 @@ describe("spend sections", () => {
   it("renders a total-warehouse-spend KPI card with a stacked chart spanning two columns", () => {
     render(
       <WarehouseSpendSection
+        status="ready"
         currency={demoDashboardView.header.currency}
         range={demoDashboardView.range}
         viewModel={demoDashboardView.warehouseSpend}
@@ -287,6 +296,7 @@ describe("spend sections", () => {
   it("renders two half-height ranked panels in the third column", () => {
     render(
       <WarehouseSpendSection
+        status="ready"
         currency={demoDashboardView.header.currency}
         viewModel={demoDashboardView.warehouseSpend}
       />,
@@ -327,6 +337,7 @@ describe("spend sections", () => {
 
     render(
       <WarehouseSpendSection
+        status="ready"
         currency={demoDashboardView.header.currency}
         viewModel={{
           ...demoDashboardView.warehouseSpend,
@@ -344,6 +355,7 @@ describe("spend sections", () => {
   it("renders a warehouse empty state when warehouse data is missing", () => {
     render(
       <WarehouseSpendSection
+        status="ready"
         currency={demoDashboardView.header.currency}
         viewModel={{
           ...demoDashboardView.warehouseSpend,
@@ -358,6 +370,7 @@ describe("spend sections", () => {
   it("renders a storage-spend KPI card with a stacked chart spanning two columns", () => {
     render(
       <StorageSpendSection
+        status="ready"
         currency={demoDashboardView.header.currency}
         range={demoDashboardView.range}
         viewModel={demoDashboardView.storageSpend}
@@ -396,6 +409,7 @@ describe("spend sections", () => {
   it("renders a right-side database table with name, spend, and size", () => {
     render(
       <StorageSpendSection
+        status="ready"
         currency={demoDashboardView.header.currency}
         viewModel={demoDashboardView.storageSpend}
       />,
@@ -430,6 +444,7 @@ describe("spend sections", () => {
     // computed before the isEmpty guard, throwing on a missing/empty series).
     render(
       <StorageSpendSection
+        status="ready"
         currency={demoDashboardView.header.currency}
         viewModel={{
           basis: "billed",
@@ -462,6 +477,7 @@ describe("spend sections", () => {
     // of such a payload (empty series, flagged empty) and confirm it renders.
     render(
       <StorageSpendSection
+        status="ready"
         currency={demoDashboardView.header.currency}
         viewModel={{
           basis: "billed",
@@ -500,5 +516,43 @@ describe("spend sections", () => {
         Storage: 3,
       },
     ]);
+  });
+});
+
+describe("section skeletons", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("renders the Overview skeleton with title and chart skeleton when loading", () => {
+    render(<OverviewSection status="loading" />);
+    expect(screen.getByText("Overview")).toBeInTheDocument();
+    expect(screen.getByTestId("dashboard-section-overview")).toBeInTheDocument();
+    expect(screen.getByTestId("overview-skeleton")).toBeInTheDocument();
+    // The capacity line skeleton matches the real h-80 height.
+    const lineChart = screen.getByTestId("overview-capacity-skeleton");
+    expect(lineChart).toHaveAttribute("data-chart-skeleton", "line");
+    expect(lineChart).toHaveClass("h-80");
+  });
+
+  it("renders the Warehouse skeleton chart at h-96 when loading", () => {
+    render(<WarehouseSpendSection status="loading" />);
+    expect(
+      screen.getByTestId("dashboard-section-warehouse-spend"),
+    ).toBeInTheDocument();
+    const chart = screen.getByTestId("warehouse-spend-skeleton-chart");
+    expect(chart).toHaveAttribute("data-chart-skeleton", "bar");
+    expect(chart).toHaveClass("h-96");
+  });
+
+  it("renders the Storage skeleton with chart h-80 and table skeleton when loading", () => {
+    render(<StorageSpendSection status="loading" />);
+    expect(
+      screen.getByTestId("dashboard-section-storage-spend"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("storage-spend-skeleton-chart")).toHaveClass(
+      "h-80",
+    );
+    expect(screen.getByTestId("detail-table-skeleton")).toBeInTheDocument();
   });
 });
