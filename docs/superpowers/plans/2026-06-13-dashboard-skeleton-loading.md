@@ -587,6 +587,28 @@ Convert the three section components to discriminated-union props and render ske
 - Modify: `apps/web/src/components/dashboard/spend-sections.tsx`
 - Test: `apps/web/src/components/dashboard/spend-sections.test.tsx`
 
+- [ ] **Step 0: Migrate existing section renders to `status="ready"`**
+
+The discriminated-union props in this task make `status` required, so every existing render of `OverviewSection`, `WarehouseSpendSection`, and `StorageSpendSection` in `spend-sections.test.tsx` becomes a type error until updated. There are ~16 such renders (the `OverviewSection` blocks plus the `WarehouseSpendSection`/`StorageSpendSection` blocks). Add `status="ready"` as the first prop to each — the existing data props (`currency`, `capacityBalance`, `serviceSpend`, `totalSpend`, `range`, `viewModel`) stay as-is. Example:
+
+```tsx
+// before
+<OverviewSection
+  currency={demoDashboardView.header.currency}
+  capacityBalance={demoDashboardView.capacityBalance}
+  serviceSpend={demoDashboardView.serviceSpend}
+  totalSpend={demoDashboardView.totalSpend}
+/>
+// after
+<OverviewSection
+  status="ready"
+  currency={demoDashboardView.header.currency}
+  capacityBalance={demoDashboardView.capacityBalance}
+  serviceSpend={demoDashboardView.serviceSpend}
+  totalSpend={demoDashboardView.totalSpend}
+/>
+```
+
 - [ ] **Step 1: Write the failing test**
 
 Append to `spend-sections.test.tsx` (preserve existing tests/imports; add `OverviewSection`, `WarehouseSpendSection`, `StorageSpendSection`, and the design-system testids to imports as needed):
@@ -902,7 +924,18 @@ Replace the blank-box loading branch with the always-rendered skeleton/ready sec
 
 Replace the existing two assertions that reference `getByLabelText("Loading dashboard")` and add the new behavior tests.
 
-First, update the two existing tests:
+First, fix the data-ready sentinels. Several existing tests use `await screen.findByText("Overview")` as a "demo data has loaded" gate, then immediately interact with the filter bar (`getByLabelText("Start date")`, `"Apply date range"`). After this change the skeleton renders the `"Overview"` title on mount, so that wait resolves before data lands and the `FilterBar` (gated on `viewModel`) does not yet exist — the subsequent `getByLabelText`/`getByRole` calls throw. Update each such sentinel (cost-dashboard.test.tsx lines ~123, 136, 155, 275, 469, 505) to wait on a ready-only signal instead — the `FilterBar` control they're about to use:
+
+```tsx
+// before
+await screen.findByText("Overview");
+// after — wait for the filter bar (only present once viewModel resolves)
+await screen.findByLabelText("Start date");
+```
+
+For the test at line ~123 (which asserts on prefetch calls, not the filter bar), wait on a populated KPI such as `await screen.findByText("Total Spend in Last 30 Days")` instead, so the assertion still gates on real data rather than the skeleton title. General rule: replace every `findByText("Overview")` sentinel with a wait on a ready-only signal (a `FilterBar` control the test then uses, or a populated KPI) — never the section title, which now renders during the skeleton state.
+
+Then, update the two existing tests:
 
 In `"resets stale prepared view state when the organization changes"` (currently asserts `getByLabelText("Loading dashboard")` at ~line 257), change the final assertion to:
 
@@ -998,12 +1031,20 @@ Then add new tests inside the `describe("CostDashboard", ...)` block:
 
     render(<CostDashboard demoMode />);
 
+    // `RunStatus` (rendered above the content region) ALSO displays
+    // loadState.message, which is "Could not load dashboard data." in the
+    // failed state — so the SAME text appears twice on screen. A bare
+    // findByText would throw "Found multiple elements". Scope the query to the
+    // "Dashboard content" region so it matches only the SectionEmptyState.
+    const content = screen.getByLabelText("Dashboard content");
     expect(
-      await screen.findByText("Could not load dashboard data."),
+      await within(content).findByText("Could not load dashboard data."),
     ).toBeInTheDocument();
     expect(screen.queryByTestId("overview-skeleton")).not.toBeInTheDocument();
   });
 ```
+
+> `within` must be imported from `@testing-library/react` in `cost-dashboard.test.tsx` (add it to the existing import if absent).
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -1177,10 +1218,9 @@ describe("skeleton/ready height parity", () => {
 });
 ```
 
-At the top of the test file, import a non-empty warehouse fixture from the demo view:
+`demoDashboardView` is already imported at the top of `spend-sections.test.tsx` (line 4) — do **not** add a second import. Just derive the fixture from it (place this const near the top-level test helpers, or inline `demoDashboardView.warehouseSpend` at the call site):
 
 ```tsx
-import demoDashboardView from "../../lib/demo-dashboard-view";
 const demoWarehouseSpend = demoDashboardView.warehouseSpend;
 ```
 
