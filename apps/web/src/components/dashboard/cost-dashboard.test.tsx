@@ -657,6 +657,116 @@ describe("CostDashboard", () => {
     expect(screen.getByRole("button", { name: "Run analysis" })).toBeDisabled();
   });
 
+  it("shows skeletons instead of stale data while a Snowflake re-run is in flight", async () => {
+    const priorView = {
+      ...demoDashboardView,
+      run: {
+        ...demoDashboardView.run,
+        id: "run-prior",
+        source: "snowflake" as const,
+        status: "completed" as const,
+      },
+    };
+    const queuedRun: DashboardRun = {
+      ...demoDashboardView.run,
+      id: "run-rerun",
+      source: "snowflake",
+      status: "queued",
+    };
+    vi.mocked(startDashboardRun).mockResolvedValue(queuedRun);
+    // Keep the poll pending so the re-run stays in flight.
+    vi.mocked(pollDashboardRun).mockReturnValue(new Promise(() => undefined));
+
+    render(
+      <CostDashboard
+        demoMode={false}
+        data={priorView}
+        runtime={{
+          accessToken: "test-access-token",
+          organizationId: "org-123",
+          organizationName: "Acme Analytics",
+        }}
+      />,
+    );
+
+    // The prior successful view is rendered before the re-run starts.
+    expect(
+      screen.getByText("Total Spend in Last 30 Days"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+
+    // The run resolves to queued and the poll stays pending, so runInFlight
+    // remains true. Sections must show skeletons, not the stale prior KPI.
+    await waitFor(() => expect(startDashboardRun).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(screen.getByTestId("overview-skeleton")).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByTestId("warehouse-spend-skeleton-chart"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("storage-spend-skeleton-chart"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Total Spend in Last 30 Days"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows skeletons instead of the stale unsupported state while a re-run is in flight", async () => {
+    const unsupportedView = {
+      ...demoDashboardView,
+      run: {
+        ...demoDashboardView.run,
+        id: "run-unsupported",
+        source: "snowflake" as const,
+        status: "completed" as const,
+      },
+      unsupported: {
+        title: "Mixed currencies are not supported",
+        detail:
+          "Select a single billing currency before running the dashboard.",
+      },
+    };
+    const queuedRun: DashboardRun = {
+      ...demoDashboardView.run,
+      id: "run-rerun",
+      source: "snowflake",
+      status: "queued",
+    };
+    vi.mocked(startDashboardRun).mockResolvedValue(queuedRun);
+    vi.mocked(pollDashboardRun).mockReturnValue(new Promise(() => undefined));
+
+    render(
+      <CostDashboard
+        demoMode={false}
+        data={unsupportedView}
+        runtime={{
+          accessToken: "test-access-token",
+          organizationId: "org-123",
+          organizationName: "Acme Analytics",
+        }}
+      />,
+    );
+
+    // The stale unsupported message is shown before the re-run starts.
+    expect(
+      screen.getByText(/Mixed currencies are not supported/),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+
+    // While the re-run is in flight, the unsupported branch is skipped and the
+    // skeleton layout shows instead of the stale unsupported message.
+    await waitFor(() => expect(startDashboardRun).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(screen.getByTestId("overview-skeleton")).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByText(/Mixed currencies are not supported/),
+    ).not.toBeInTheDocument();
+  });
+
   it("staggers section reveal on initial demo load", async () => {
     vi.useFakeTimers();
     try {

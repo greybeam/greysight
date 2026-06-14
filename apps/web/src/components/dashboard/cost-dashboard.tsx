@@ -400,7 +400,8 @@ function CostDashboardContent({
 
   const viewModel = loadState.view ?? data ?? null;
   const reduceMotion = usePrefersReducedMotion();
-  const dataReady = viewModel != null && loadState.status !== "loading";
+  const dataReady =
+    viewModel != null && loadState.status !== "loading" && !runInFlight;
   const isFailedWithoutView =
     !viewModel &&
     (loadState.status === "failed" ||
@@ -435,7 +436,7 @@ function CostDashboardContent({
         aria-label="Dashboard content"
         className="mx-auto grid w-full max-w-[1200px] gap-6 px-6 py-6"
       >
-        {viewModel?.unsupported ? (
+        {!runInFlight && viewModel?.unsupported ? (
           <SectionEmptyState
             message={`${viewModel.unsupported.title}. ${viewModel.unsupported.detail}`}
           />
