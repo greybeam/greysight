@@ -556,3 +556,33 @@ describe("section skeletons", () => {
     expect(screen.getByTestId("detail-table-skeleton")).toBeInTheDocument();
   });
 });
+
+describe("skeleton/ready height parity", () => {
+  afterEach(cleanup);
+
+  // demoDashboardView.warehouseSpend is a non-empty fixture (isEmpty === false),
+  // so the ready branch renders the real SpendBarChart rather than the empty
+  // state — letting us assert h-96 in both the loading and ready states.
+  const demoWarehouseSpend = demoDashboardView.warehouseSpend;
+
+  it("uses h-96 for the warehouse chart in both states", () => {
+    const { unmount } = render(<WarehouseSpendSection status="loading" />);
+    expect(screen.getByTestId("warehouse-spend-skeleton-chart")).toHaveClass(
+      "h-96",
+    );
+    unmount();
+    // The ready warehouse chart is rendered via SpendBarChart heightClass="h-96"
+    // (see WarehouseSpendSection ready branch). Assert the class on its testid.
+    render(
+      <WarehouseSpendSection
+        status="ready"
+        currency="USD"
+        range={null}
+        viewModel={demoWarehouseSpend}
+      />,
+    );
+    expect(
+      screen.getByTestId("warehouse-spend-tremor-bar-chart"),
+    ).toHaveClass("h-96");
+  });
+});
