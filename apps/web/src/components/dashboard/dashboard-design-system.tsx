@@ -203,6 +203,115 @@ export function RankedSpendBars({ rows }: { rows: RankedBarRow[] }) {
   );
 }
 
+// Fixed bar heights (percent) for the bar-chart skeleton. A static array — the
+// runtime forbids Math.random and a deterministic shape keeps tests stable.
+const SKELETON_BAR_HEIGHTS = [40, 65, 50, 80, 55, 70, 45, 60, 75, 50, 68, 42];
+
+/**
+ * Placeholder that mimics a chart's frame (gridlines + plot area) at the exact
+ * height of the real chart, so revealing data swaps content without a layout
+ * shift. `bar` shows vertical bar stubs; `line` shows a single horizontal sweep.
+ */
+export function ChartSkeleton({
+  variant,
+  heightClass = "h-80",
+  testId,
+}: {
+  variant: "bar" | "line";
+  heightClass?: string;
+  testId?: string;
+}) {
+  return (
+    <div
+      className={cx("relative mt-4 w-full", heightClass)}
+      data-chart-skeleton={variant}
+      data-testid={testId}
+      role="presentation"
+    >
+      {/* Faint horizontal gridlines behind the plot placeholder. */}
+      <div className="absolute inset-0 flex flex-col justify-between py-1">
+        {[0, 1, 2, 3, 4].map((line) => (
+          <div key={line} className="h-px w-full bg-hairline/50" />
+        ))}
+      </div>
+      {variant === "bar" ? (
+        <div className="absolute inset-x-1 bottom-0 top-2 flex items-end gap-1.5">
+          {SKELETON_BAR_HEIGHTS.map((height, index) => (
+            <div
+              key={index}
+              className="flex-1 animate-pulse rounded-sm bg-hairline/70"
+              data-skeleton-bar
+              style={{ height: `${height}%` }}
+            />
+          ))}
+        </div>
+      ) : (
+        <div
+          className="absolute inset-x-1 top-1/3 h-16 animate-pulse rounded-md bg-hairline/40"
+          data-skeleton-line
+        />
+      )}
+    </div>
+  );
+}
+
+/** Shimmer rows matching the RankedSpendBars three-column grid + scroll wrapper. */
+export function RankedSpendBarsSkeleton({ rows = 6 }: { rows?: number }) {
+  return (
+    <div
+      className="relative mt-4 min-h-[16rem] flex-1 lg:min-h-0"
+      data-testid="ranked-spend-skeleton"
+      role="presentation"
+    >
+      <ul className="absolute inset-0 grid grid-cols-[minmax(0,9rem)_minmax(1.5rem,1fr)_auto] content-start items-center gap-x-3 gap-y-2">
+        {Array.from({ length: rows }, (_, index) => (
+          <li className="contents" key={index}>
+            <span className="h-3 animate-pulse rounded bg-hairline/70" />
+            <span className="h-2 animate-pulse rounded bg-hairline/50" />
+            <span className="h-3 w-10 animate-pulse rounded bg-hairline/70" />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** Fill-height shimmer rows mirroring the storage DetailTable card frame. */
+export function DetailTableSkeleton({
+  title,
+  rows = 6,
+}: {
+  title: string;
+  rows?: number;
+}) {
+  return (
+    <Card className="flex h-full flex-col p-4" data-testid="detail-table-skeleton">
+      <Text>{title}</Text>
+      <div className="relative mt-2 min-h-0 flex-1">
+        <div className="absolute inset-0 flex flex-col gap-2 overflow-hidden">
+          {Array.from({ length: rows }, (_, index) => (
+            <div
+              key={index}
+              className="h-4 w-full animate-pulse rounded bg-hairline/60"
+            />
+          ))}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+/** Shimmer block standing in for a large KPI value. */
+export function StatValueSkeleton() {
+  return (
+    <div
+      className="mt-2 h-9 w-48 animate-pulse rounded bg-hairline/70"
+      data-testid="stat-value-skeleton"
+      role="presentation"
+    />
+  );
+}
+
 export function TotalSpendBarCard({
   ariaLabel,
   categories,

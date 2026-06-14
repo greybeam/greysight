@@ -8,6 +8,7 @@ import {
   buildTotalSpendLabel,
   buildTotalWarehouseSpendLabel,
   CapacityBalanceCard,
+  ChartSkeleton,
   createChartTooltip,
   createCurrencyTickFormatter,
   formatChartDateLabel,
@@ -443,5 +444,25 @@ describe("stacked service spend ordering", () => {
       "CLOUD_SERVICES",
       "AUTO_CLUSTERING",
     ]);
+  });
+});
+
+describe("ChartSkeleton", () => {
+  it("renders vertical bar placeholders for the bar variant", () => {
+    render(<ChartSkeleton variant="bar" heightClass="h-96" testId="chart-skel" />);
+    const root = screen.getByTestId("chart-skel");
+    expect(root).toHaveAttribute("data-chart-skeleton", "bar");
+    expect(root).toHaveClass("h-96");
+    // Bar variant renders the fixed set of bar placeholders.
+    expect(root.querySelectorAll("[data-skeleton-bar]").length).toBeGreaterThan(0);
+  });
+
+  it("renders a line sweep placeholder for the line variant", () => {
+    render(<ChartSkeleton variant="line" heightClass="h-80" testId="chart-skel" />);
+    const root = screen.getByTestId("chart-skel");
+    expect(root).toHaveAttribute("data-chart-skeleton", "line");
+    expect(root).toHaveClass("h-80");
+    expect(root.querySelector("[data-skeleton-line]")).not.toBeNull();
+    expect(root.querySelectorAll("[data-skeleton-bar]").length).toBe(0);
   });
 });
