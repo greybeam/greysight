@@ -21,7 +21,8 @@ describe("DashboardPage", () => {
 
     expect(screen.getByText("Greysight")).toBeInTheDocument();
     expect(screen.getByText("Loading dashboard data")).toBeInTheDocument();
-    expect(screen.getByLabelText("Loading dashboard")).toBeInTheDocument();
+    // The blank-box loading state is now an always-rendered skeleton section.
+    expect(screen.getByTestId("overview-skeleton")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Run analysis" })).toBeDisabled();
   });
 });

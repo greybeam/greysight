@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { usePrefersReducedMotion } from "../../lib/use-prefers-reduced-motion";
 import {
   fetchDashboardView,
   fetchDemoDashboardView,
@@ -30,6 +31,7 @@ import {
   StorageSpendSection,
   WarehouseSpendSection,
 } from "./spend-sections";
+import { useSectionStatuses } from "./use-section-statuses";
 
 export type CostDashboardRuntime = {
   accessToken: string | null;
@@ -126,6 +128,7 @@ function CostDashboardContent({
   const [endDate, setEndDate] = useState(data?.range.endDate ?? "");
   const [runInFlight, setRunInFlight] = useState(false);
   const [rangeFetchesInFlight, setRangeFetchesInFlight] = useState(0);
+  const [revealGeneration, setRevealGeneration] = useState(0);
   const [loadState, setLoadState] = useState<LoadState>({
     status: data?.run.status ?? (shouldUseDemo ? "loading" : "queued"),
     view: data,
@@ -180,6 +183,7 @@ function CostDashboardContent({
   );
 
   const loadDemoRun = useCallback(async () => {
+    setRevealGeneration((value) => value + 1);
     runGenerationRef.current += 1;
     setRunInFlight(true);
     setLoadState((current) => ({ ...current, status: "loading" }));
@@ -216,6 +220,7 @@ function CostDashboardContent({
     }
 
     const options = { accessToken: runtime.accessToken };
+    setRevealGeneration((value) => value + 1);
     runGenerationRef.current += 1;
     setRunInFlight(true);
     setLoadState((current) => ({ ...current, status: "loading" }));
@@ -281,6 +286,7 @@ function CostDashboardContent({
     let isActive = true;
 
     async function fetchInitialDemoView() {
+      setRevealGeneration((value) => value + 1);
       setRunInFlight(true);
       try {
         const dashboardView = await fetchDemoDashboardView(DEFAULT_VIEW_RANGE);
@@ -324,6 +330,7 @@ function CostDashboardContent({
         return;
       }
 
+      setRevealGeneration((value) => value + 1);
       rangeRequestSeqRef.current += 1;
       const requestSeq = rangeRequestSeqRef.current;
       const runGeneration = runGenerationRef.current;
@@ -392,6 +399,19 @@ function CostDashboardContent({
   }, [endDate, loadRange, startDate]);
 
   const viewModel = loadState.view ?? data ?? null;
+  const reduceMotion = usePrefersReducedMotion();
+  const dataReady =
+    viewModel != null && loadState.status !== "loading" && !runInFlight;
+  const isFailedWithoutView =
+    !viewModel &&
+    (loadState.status === "failed" ||
+      loadState.status === "expired" ||
+      loadState.status === "deleted");
+  const sectionStatuses = useSectionStatuses({
+    dataReady,
+    instant: reduceMotion,
+    revealGeneration,
+  });
   const runDisabled =
     runInFlight ||
     rangeFetchesInFlight > 0 ||
@@ -416,13 +436,17 @@ function CostDashboardContent({
         aria-label="Dashboard content"
         className="mx-auto grid w-full max-w-[1200px] gap-6 px-6 py-6"
       >
-        {viewModel ? (
-          viewModel.unsupported ? (
-            <SectionEmptyState
-              message={`${viewModel.unsupported.title}. ${viewModel.unsupported.detail}`}
-            />
-          ) : (
-            <>
+        {!runInFlight && viewModel?.unsupported ? (
+          <SectionEmptyState
+            message={`${viewModel.unsupported.title}. ${viewModel.unsupported.detail}`}
+          />
+        ) : isFailedWithoutView ? (
+          <SectionEmptyState
+            message={loadState.message ?? "Could not load dashboard data."}
+          />
+        ) : (
+          <>
+            {viewModel ? (
               <FilterBar
                 range={activeRange ?? viewModel.range}
                 currency={viewModel.header.currency}
@@ -433,37 +457,40 @@ function CostDashboardContent({
                 onEndDateChange={setEndDate}
                 onApplyDateRange={handleCustomRangeApply}
               />
-              <OverviewSection
-                capacityBalance={viewModel.capacityBalance}
-                currency={viewModel.header.currency}
-                range={activeRange ?? viewModel.range}
-                serviceSpend={viewModel.serviceSpend}
-                totalSpend={viewModel.totalSpend}
-              />
-              <WarehouseSpendSection
-                currency={viewModel.header.currency}
-                range={activeRange ?? viewModel.range}
-                viewModel={viewModel.warehouseSpend}
-              />
-              <StorageSpendSection
-                currency={viewModel.header.currency}
-                range={activeRange ?? viewModel.range}
-                viewModel={viewModel.storageSpend}
-              />
-            </>
-          )
-        ) : (
-          <section
-            aria-label="Loading dashboard"
-            className="grid min-h-96 gap-4"
-          >
-            {[0, 1, 2].map((placeholder) => (
-              <div
-                key={placeholder}
-                className="h-40 animate-pulse rounded-lg border border-hairline bg-surface"
-              />
-            ))}
-          </section>
+            ) : null}
+            <OverviewSection
+              {...(sectionStatuses.overview === "ready" && dataReady && viewModel
+                ? {
+                    status: "ready",
+                    capacityBalance: viewModel.capacityBalance,
+                    currency: viewModel.header.currency,
+                    range: activeRange ?? viewModel.range,
+                    serviceSpend: viewModel.serviceSpend,
+                    totalSpend: viewModel.totalSpend,
+                  }
+                : { status: "loading" })}
+            />
+            <WarehouseSpendSection
+              {...(sectionStatuses.warehouse === "ready" && dataReady && viewModel
+                ? {
+                    status: "ready",
+                    currency: viewModel.header.currency,
+                    range: activeRange ?? viewModel.range,
+                    viewModel: viewModel.warehouseSpend,
+                  }
+                : { status: "loading" })}
+            />
+            <StorageSpendSection
+              {...(sectionStatuses.storage === "ready" && dataReady && viewModel
+                ? {
+                    status: "ready",
+                    currency: viewModel.header.currency,
+                    range: activeRange ?? viewModel.range,
+                    viewModel: viewModel.storageSpend,
+                  }
+                : { status: "loading" })}
+            />
+          </>
         )}
       </div>
     </main>

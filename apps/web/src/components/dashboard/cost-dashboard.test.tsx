@@ -5,6 +5,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -18,6 +19,7 @@ import {
 import demoDashboardView from "../../lib/demo-dashboard-view";
 import { FETCH_WINDOW_DAYS, type DashboardRun } from "../../lib/dashboard-contracts";
 import CostDashboard from "./cost-dashboard";
+import { REVEAL_STEP_MS } from "./use-section-statuses";
 
 vi.mock("../../lib/dashboard-api", () => ({
   fetchDashboardView: vi.fn(),
@@ -120,7 +122,7 @@ describe("CostDashboard", () => {
 
     render(<CostDashboard demoMode />);
 
-    await screen.findByText("Overview");
+    await screen.findByText("Total Spend in Last 30 Days");
     expect(fetchDemoDashboardView).toHaveBeenCalledWith({ windowDays: 30 });
     expect(fetchDemoDashboardView).toHaveBeenCalledWith({ windowDays: 7 });
     expect(fetchDemoDashboardView).toHaveBeenCalledWith({ windowDays: 90 });
@@ -133,7 +135,7 @@ describe("CostDashboard", () => {
 
     render(<CostDashboard demoMode />);
 
-    await screen.findByText("Overview");
+    await screen.findByLabelText("Start date");
     await waitFor(() => expect(fetchDemoDashboardView).toHaveBeenCalledTimes(3));
 
     fireEvent.click(screen.getByRole("button", { name: "7 days" }));
@@ -152,7 +154,7 @@ describe("CostDashboard", () => {
 
     render(<CostDashboard demoMode />);
 
-    await screen.findByText("Overview");
+    await screen.findByLabelText("Start date");
     fireEvent.change(screen.getByLabelText("Start date"), {
       target: { value: "2026-06-01" },
     });
@@ -254,7 +256,10 @@ describe("CostDashboard", () => {
     await waitFor(() =>
       expect(screen.queryByText("ORG_A")).not.toBeInTheDocument(),
     );
-    expect(screen.getByLabelText("Loading dashboard")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("dashboard-section-overview"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("overview-skeleton")).toBeInTheDocument();
   });
 
   it("keeps the latest range response active when custom range requests resolve out of order", async () => {
@@ -272,7 +277,7 @@ describe("CostDashboard", () => {
 
     render(<CostDashboard demoMode />);
 
-    await screen.findByText("Overview");
+    await screen.findByLabelText("Start date");
     fireEvent.change(screen.getByLabelText("Start date"), {
       target: { value: "2026-06-01" },
     });
@@ -466,7 +471,7 @@ describe("CostDashboard", () => {
 
     render(<CostDashboard demoMode />);
 
-    await screen.findByText("Overview");
+    await screen.findByLabelText("Start date");
     fireEvent.change(screen.getByLabelText("Start date"), {
       target: { value: "2026-06-01" },
     });
@@ -502,7 +507,7 @@ describe("CostDashboard", () => {
 
     render(<CostDashboard demoMode />);
 
-    await screen.findByText("Overview");
+    await screen.findByLabelText("Start date");
     fireEvent.change(screen.getByLabelText("Start date"), {
       target: { value: "2026-06-01" },
     });
@@ -545,7 +550,7 @@ describe("CostDashboard", () => {
     expect(screen.queryByText("Overview")).not.toBeInTheDocument();
   });
 
-  it("disables the run action and shows placeholders while loading", () => {
+  it("disables the run action and shows skeleton sections while loading", () => {
     vi.mocked(fetchDemoDashboardView).mockReturnValue(
       new Promise(() => undefined),
     );
@@ -553,7 +558,17 @@ describe("CostDashboard", () => {
     render(<CostDashboard demoMode />);
 
     expect(screen.getByRole("button", { name: "Run analysis" })).toBeDisabled();
-    expect(screen.getByLabelText("Loading dashboard")).toBeInTheDocument();
+    expect(screen.getByTestId("overview-skeleton")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("dashboard-section-warehouse-spend"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("dashboard-section-storage-spend"),
+    ).toBeInTheDocument();
+    // The filter bar is not rendered until a view exists.
+    expect(
+      screen.queryByRole("button", { name: "Apply date range" }),
+    ).not.toBeInTheDocument();
   });
 
   it("starts a Snowflake run with selected organization and bearer token", async () => {
@@ -641,5 +656,224 @@ describe("CostDashboard", () => {
 
     await waitFor(() => expect(startDashboardRun).toHaveBeenCalledTimes(1));
     expect(screen.getByRole("button", { name: "Run analysis" })).toBeDisabled();
+  });
+
+  it("shows skeletons instead of stale data while a Snowflake re-run is in flight", async () => {
+    vi.useFakeTimers();
+    try {
+      const priorView = {
+        ...demoDashboardView,
+        run: {
+          ...demoDashboardView.run,
+          id: "run-prior",
+          source: "snowflake" as const,
+          status: "completed" as const,
+        },
+      };
+      const queuedRun: DashboardRun = {
+        ...demoDashboardView.run,
+        id: "run-rerun",
+        source: "snowflake",
+        status: "queued",
+      };
+      vi.mocked(startDashboardRun).mockResolvedValue(queuedRun);
+      // Keep the poll pending so the re-run stays in flight.
+      vi.mocked(pollDashboardRun).mockReturnValue(new Promise(() => undefined));
+
+      render(
+        <CostDashboard
+          demoMode={false}
+          data={priorView}
+          runtime={{
+            accessToken: "test-access-token",
+            organizationId: "org-123",
+            organizationName: "Acme Analytics",
+          }}
+        />,
+      );
+
+      // The prior successful view is rendered before the re-run starts.
+      expect(
+        screen.getByText("Total Spend in Last 30 Days"),
+      ).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+
+      // Flush the microtasks so `startDashboardRun` resolves and the load state
+      // flips from "loading" to "queued" while the poll stays pending. Under the
+      // pre-fix `dataReady` predicate (which ignored `runInFlight`), this queued
+      // window is treated as "ready", so the stagger effect schedules the reveal
+      // timers below against the STALE prior view.
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(startDashboardRun).toHaveBeenCalledTimes(1);
+
+      // Advance past the full stagger window (overview 1x, warehouse 2x, storage
+      // 3x REVEAL_STEP_MS) plus a margin. Pre-fix, this is exactly when the stale
+      // sections would reveal; the fix keeps `dataReady` false for the whole
+      // in-flight window so the skeletons must remain.
+      act(() => {
+        vi.advanceTimersByTime(REVEAL_STEP_MS * 3 + REVEAL_STEP_MS);
+      });
+
+      expect(screen.getByTestId("overview-skeleton")).toBeInTheDocument();
+      expect(
+        screen.getByTestId("warehouse-spend-skeleton-chart"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTestId("storage-spend-skeleton-chart"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText("Total Spend in Last 30 Days"),
+      ).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows skeletons instead of the stale unsupported state while a re-run is in flight", async () => {
+    const unsupportedView = {
+      ...demoDashboardView,
+      run: {
+        ...demoDashboardView.run,
+        id: "run-unsupported",
+        source: "snowflake" as const,
+        status: "completed" as const,
+      },
+      unsupported: {
+        title: "Mixed currencies are not supported",
+        detail:
+          "Select a single billing currency before running the dashboard.",
+      },
+    };
+    const queuedRun: DashboardRun = {
+      ...demoDashboardView.run,
+      id: "run-rerun",
+      source: "snowflake",
+      status: "queued",
+    };
+    vi.mocked(startDashboardRun).mockResolvedValue(queuedRun);
+    vi.mocked(pollDashboardRun).mockReturnValue(new Promise(() => undefined));
+
+    render(
+      <CostDashboard
+        demoMode={false}
+        data={unsupportedView}
+        runtime={{
+          accessToken: "test-access-token",
+          organizationId: "org-123",
+          organizationName: "Acme Analytics",
+        }}
+      />,
+    );
+
+    // The stale unsupported message is shown before the re-run starts.
+    expect(
+      screen.getByText(/Mixed currencies are not supported/),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+
+    // While the re-run is in flight, the unsupported branch is skipped and the
+    // skeleton layout shows instead of the stale unsupported message.
+    await waitFor(() => expect(startDashboardRun).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(screen.getByTestId("overview-skeleton")).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByText(/Mixed currencies are not supported/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("staggers section reveal on initial demo load", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetchDemoDashboardView).mockResolvedValue(demoDashboardView);
+
+      render(<CostDashboard demoMode />);
+
+      // Flush the initial fetch microtasks.
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // Data resolved but sections still revealing: overview reveals first,
+      // so its skeleton is gone while the warehouse skeleton is still present.
+      act(() => {
+        vi.advanceTimersByTime(140);
+      });
+      expect(screen.queryByTestId("overview-skeleton")).not.toBeInTheDocument();
+      expect(
+        screen.getByTestId("warehouse-spend-skeleton-chart"),
+      ).toBeInTheDocument();
+
+      act(() => {
+        vi.advanceTimersByTime(140 * 3);
+      });
+      // After the full stagger, ready content is present and no skeletons remain.
+      expect(
+        screen.getByText("Total Spend in Last 30 Days"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId("storage-spend-skeleton-chart"),
+      ).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reveals all sections instantly under reduced motion", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn().mockImplementation((query: string) => ({
+        matches: true,
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    );
+    try {
+      vi.mocked(fetchDemoDashboardView).mockResolvedValue(demoDashboardView);
+      render(<CostDashboard demoMode />);
+
+      // Flush only the fetch microtasks; do NOT advance any timers.
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // `usePrefersReducedMotion` reads matchMedia().matches synchronously via
+      // useSyncExternalStore, so the hook reveals all sections at once with no
+      // timers. Ready content must therefore be present with zero timer
+      // advancement — under a normal stagger this would still be skeletons.
+      expect(
+        screen.getByText("Total Spend in Last 30 Days"),
+      ).toBeInTheDocument();
+      expect(screen.queryByTestId("overview-skeleton")).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows an error state instead of skeletons when the initial run fails", async () => {
+    vi.mocked(fetchDemoDashboardView).mockRejectedValue(new Error("boom"));
+
+    render(<CostDashboard demoMode />);
+
+    // `RunStatus` (rendered above the content region) ALSO displays
+    // loadState.message, which is "Could not load dashboard data." in the
+    // failed state — so the SAME text appears twice on screen. A bare
+    // findByText would throw "Found multiple elements". Scope the query to the
+    // "Dashboard content" region so it matches only the SectionEmptyState.
+    const content = screen.getByLabelText("Dashboard content");
+    expect(
+      await within(content).findByText("Could not load dashboard data."),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("overview-skeleton")).not.toBeInTheDocument();
   });
 });

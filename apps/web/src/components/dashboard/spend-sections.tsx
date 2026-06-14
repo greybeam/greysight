@@ -16,11 +16,15 @@ import {
   buildTotalSpendLabel,
   buildTotalWarehouseSpendLabel,
   CapacityBalanceCard,
+  ChartSkeleton,
   DashboardGrid,
   DashboardPanel,
   DashboardSection,
+  DetailTableSkeleton,
   RankedSpendBars,
+  RankedSpendBarsSkeleton,
   SpendBarChart,
+  StatValueSkeleton,
   TotalSpendBarCard,
 } from "./dashboard-design-system";
 import { DetailTable } from "./detail-tables";
@@ -41,19 +45,22 @@ export function flattenServiceDailySeries(
   }));
 }
 
-export function OverviewSection({
-  capacityBalance,
-  currency,
-  range,
-  serviceSpend,
-  totalSpend,
-}: {
-  capacityBalance?: CapacityBalanceViewModel | null;
-  currency: string;
-  range?: DashboardViewRange | null;
-  serviceSpend: ServiceSpendViewModel;
-  totalSpend: TotalSpendViewModel;
-}) {
+type OverviewSectionProps =
+  | { status: "loading" }
+  | {
+      status: "ready";
+      capacityBalance?: CapacityBalanceViewModel | null;
+      currency: string;
+      range?: DashboardViewRange | null;
+      serviceSpend: ServiceSpendViewModel;
+      totalSpend: TotalSpendViewModel;
+    };
+
+export function OverviewSection(props: OverviewSectionProps) {
+  if (props.status === "loading") {
+    return <OverviewSectionSkeleton />;
+  }
+  const { capacityBalance, currency, range, serviceSpend, totalSpend } = props;
   const serviceChartData = flattenServiceDailySeries(serviceSpend.dailySeries);
   const totalSpendLabel = buildTotalSpendLabel(range);
 
@@ -131,15 +138,71 @@ export function OverviewSection({
   );
 }
 
-export function WarehouseSpendSection({
-  currency,
-  range,
-  viewModel,
-}: {
-  currency: string;
-  range?: DashboardViewRange | null;
-  viewModel: WarehouseSpendViewModel;
-}) {
+// Skeleton frame for the Overview section. Mirrors the ready body's structure —
+// a full-width capacity card above a 3-col grid (2-col total spend card + ranked
+// services panel) — so heights and layout match and revealing data never shifts.
+function OverviewSectionSkeleton() {
+  return (
+    <DashboardSection
+      ariaLabel="Overview"
+      testId="dashboard-section-overview"
+      title="Overview"
+    >
+      <div data-testid="overview-skeleton" className="grid gap-4">
+        <section aria-label="Capacity balance summary" data-dashboard-panel="true">
+          <Card className="p-6">
+            <Text>Ending Balance</Text>
+            <StatValueSkeleton />
+            <ChartSkeleton
+              variant="line"
+              heightClass="h-80"
+              testId="overview-capacity-skeleton"
+            />
+          </Card>
+        </section>
+        <DashboardGrid columns={3} testId="dashboard-grid-overview">
+          <section
+            aria-label="Total spend summary"
+            className="lg:col-span-2 h-full"
+            data-dashboard-panel="true"
+          >
+            <Card className="flex h-full flex-col p-6">
+              <Text>Total Spend</Text>
+              <StatValueSkeleton />
+              <ChartSkeleton
+                variant="bar"
+                heightClass="h-80"
+                testId="overview-total-skeleton-chart"
+              />
+            </Card>
+          </section>
+          <DashboardPanel
+            ariaLabel="Total spend by service"
+            fill
+            title="Total spend by service"
+          >
+            <RankedSpendBarsSkeleton />
+          </DashboardPanel>
+        </DashboardGrid>
+      </div>
+    </DashboardSection>
+  );
+}
+
+type WarehouseSpendSectionProps =
+  | { status: "loading" }
+  | {
+      status: "ready";
+      currency: string;
+      range?: DashboardViewRange | null;
+      viewModel: WarehouseSpendViewModel;
+    };
+
+export function WarehouseSpendSection(props: WarehouseSpendSectionProps) {
+  if (props.status === "loading") {
+    return <WarehouseSpendSectionSkeleton />;
+  }
+  const { currency, range, viewModel } = props;
   const chartData = flattenServiceDailySeries(viewModel.dailySeries);
   const totalLabel = buildTotalWarehouseSpendLabel(range);
 
@@ -210,15 +273,76 @@ export function WarehouseSpendSection({
   );
 }
 
-export function StorageSpendSection({
-  currency,
-  range,
-  viewModel,
-}: {
-  currency: string;
-  range?: DashboardViewRange | null;
-  viewModel: StorageSpendViewModel;
-}) {
+// Skeleton frame for the Warehouse section: a 2-col total spend card with the
+// taller h-96 chart, plus the third column's two half-height ranked panels.
+function WarehouseSpendSectionSkeleton() {
+  return (
+    <DashboardSection
+      ariaLabel="Warehouse spend"
+      testId="dashboard-section-warehouse-spend"
+      title="Warehouse spend"
+    >
+      <DashboardGrid columns={3} testId="dashboard-grid-warehouse-spend">
+        <section
+          aria-label="Total warehouse spend"
+          className="lg:col-span-2 h-full"
+          data-dashboard-panel="true"
+        >
+          <Card className="flex h-full flex-col p-6">
+            <Text>Total Warehouse Spend</Text>
+            <StatValueSkeleton />
+            <ChartSkeleton
+              variant="bar"
+              heightClass="h-96"
+              testId="warehouse-spend-skeleton-chart"
+            />
+          </Card>
+        </section>
+        <div className="flex h-full min-h-0 flex-col gap-4">
+          <section
+            aria-label="Warehouse ranking"
+            className="flex min-h-0 flex-1 flex-col"
+            data-dashboard-panel="true"
+          >
+            <Card className="flex h-full flex-col p-6">
+              <Text>Total spend by warehouse</Text>
+              <div className="flex min-h-0 flex-1 flex-col">
+                <RankedSpendBarsSkeleton rows={4} />
+              </div>
+            </Card>
+          </section>
+          <section
+            aria-label="User ranking"
+            className="flex min-h-0 flex-1 flex-col"
+            data-dashboard-panel="true"
+          >
+            <Card className="flex h-full flex-col p-6">
+              <Text>Total spend by user</Text>
+              <div className="flex min-h-0 flex-1 flex-col">
+                <RankedSpendBarsSkeleton rows={4} />
+              </div>
+            </Card>
+          </section>
+        </div>
+      </DashboardGrid>
+    </DashboardSection>
+  );
+}
+
+type StorageSpendSectionProps =
+  | { status: "loading" }
+  | {
+      status: "ready";
+      currency: string;
+      range?: DashboardViewRange | null;
+      viewModel: StorageSpendViewModel;
+    };
+
+export function StorageSpendSection(props: StorageSpendSectionProps) {
+  if (props.status === "loading") {
+    return <StorageSpendSectionSkeleton />;
+  }
+  const { currency, range, viewModel } = props;
   const totalLabel = buildStorageSpendLabel(range);
 
   return (
@@ -236,6 +360,43 @@ export function StorageSpendSection({
           viewModel={viewModel}
         />
       )}
+    </DashboardSection>
+  );
+}
+
+// Skeleton frame for the Storage section: a 2-col total spend card with the
+// h-80 chart, plus the right column's fill-height database table placeholder.
+function StorageSpendSectionSkeleton() {
+  return (
+    <DashboardSection
+      ariaLabel="Storage spend"
+      testId="dashboard-section-storage-spend"
+      title="Storage spend"
+    >
+      <DashboardGrid columns={3} testId="dashboard-grid-storage-spend">
+        <section
+          aria-label="Storage spend"
+          className="lg:col-span-2 h-full"
+          data-dashboard-panel="true"
+        >
+          <Card className="flex h-full flex-col p-6">
+            <Text>Storage Spend</Text>
+            <StatValueSkeleton />
+            <ChartSkeleton
+              variant="bar"
+              heightClass="h-80"
+              testId="storage-spend-skeleton-chart"
+            />
+          </Card>
+        </section>
+        <section
+          aria-label="Total spend by database"
+          className="flex h-full min-h-0 flex-col"
+          data-dashboard-panel="true"
+        >
+          <DetailTableSkeleton title="Total spend by database" />
+        </section>
+      </DashboardGrid>
     </DashboardSection>
   );
 }
