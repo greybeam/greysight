@@ -1,0 +1,92 @@
+# Auth & Deployment
+
+Magic-link (Spec A) login for Greysight: email → 6-digit passcode → verified
+Supabase session → bearer token attached to API calls → the API (the trust
+boundary) enforces auth and org membership live on every request.
+
+This document covers the environment-variable split, the Supabase deployment
+checklist, the first-user bootstrap, and notes on hosting the FastAPI backend.
+
+OSS dev / contributors are unaffected: `DATA_SOURCE=demo`, `AUTH_REQUIRED=false`
+→ no Supabase, no Snowflake, no auth. Everything below applies to a self-deploy
+with real data (`AUTH_REQUIRED=true`).
+
+## Environment-variable split
+
+Secrets split by *where the process runs*, not by a new code path. Web vars are
+public-safe (they ship to the browser); API vars stay on the API host only.
+
+| Where | Env vars |
+| --- | --- |
+| Web (e.g. Vercel) | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_AUTH_REQUIRED` (all public-safe) |
+| API (Vercel Python functions **or** Render/Fly/Cloud Run) | `SUPABASE_URL`, `SUPABASE_ANON_KEY` (token auth via `/auth/v1/user`), `SUPABASE_SERVICE_ROLE_KEY` (live membership lookup), `GREYSIGHT_CORS_ALLOWED_ORIGINS` (must list the web origin, else cross-origin bearer calls fail), `SNOWFLAKE_*` (server-only) |
+
+**Which dashboard key goes in which var.** New Supabase projects label the keys
+"Publishable" and "Secret" (Dashboard > Project Settings > API keys); our env
+vars keep the legacy names but accept the new `sb_*` keys:
+
+| Env var | Dashboard key | Prefix |
+| --- | --- | --- |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` / `SUPABASE_ANON_KEY` | Publishable (a.k.a. legacy "anon") — browser-safe | `sb_publishable_…` |
+| `SUPABASE_SERVICE_ROLE_KEY` | **Secret** (a.k.a. legacy "service_role") — server-only | `sb_secret_…` |
+
+Notes:
+
+- `SUPABASE_SERVICE_ROLE_KEY` takes the **Secret key** (`sb_secret_…`), **not**
+  the publishable key. It is **REQUIRED when `AUTH_REQUIRED=true`** — the API uses
+  it for the live membership lookup against `organization_memberships` and fails
+  closed at startup if it is missing. Pasting the publishable key here breaks the
+  lookup: it cannot bypass RLS, so the user sees no orgs.
+- `SUPABASE_JWT_SECRET` is **not** required in v1 (no local JWT decode; tokens
+  are verified by calling Supabase `/auth/v1/user`).
+- Never expose `SUPABASE_SERVICE_ROLE_KEY` to the browser — it bypasses RLS.
+
+## Supabase deployment checklist
+
+1. **Enable email OTP.** In the Supabase dashboard, enable the Email provider
+   and email OTP sign-in so `signInWithOtp` / `verifyOtp` work.
+2. **Send the 6-digit code, not a link.** Edit the "Magic Link" email template
+   so it sends the passcode via `{{ .Token }}` (the 6-digit code) instead of a
+   clickable `{{ .ConfirmationURL }}` link. The v1 flow is passcode-only — no
+   `/auth/callback` redirect route exists.
+3. **Set a short access-token lifetime.** Membership/authorization revocation is
+   immediate (the API re-reads the table every request), but the stateless
+   Supabase JWT's *global sign-out* is bounded by its `exp`. Keep the
+   access-token lifetime short to bound that window.
+4. **Set CORS to the web origin.** Set `GREYSIGHT_CORS_ALLOWED_ORIGINS` on the
+   API host to the web app's origin (e.g. `https://app.example.com`). Cross-origin
+   bearer-token calls fail if the web origin is not allowed.
+
+## First-user bootstrap (v1 onboarding)
+
+Org creation is deferred to Spec B, so Spec A is **login for pre-provisioned
+members**. To avoid a dead-ended deployment, the operator seeds the first org +
+owner membership directly in Supabase (SQL editor or migration).
+
+The user must have **signed in at least once** first, so their row exists in
+`auth.users`. Then insert an `organizations` row attributed to that user. The
+`organizations_create_owner_membership` trigger (function
+`create_organization_owner_membership()`) fires `after insert on organizations`
+and grants the owner membership automatically. The API's live membership lookup
+picks it up on the user's next request.
+
+```sql
+-- after the user has signed in once (so auth.users has their row):
+insert into organizations (name, created_by_user_id)
+values ('Greybeam', '<auth.users.id of the operator>');
+-- the organizations_create_owner_membership trigger inserts the matching
+-- organization_memberships row with role 'owner'; the API's live membership
+-- lookup picks it up on the user's next request.
+```
+
+A signed-in user who is *not* seeded sees the interim "no organization" screen —
+expected, not a bug. Self-serve org creation (via a validated Snowflake
+connection) is Spec B.
+
+## Hosting the FastAPI backend
+
+Vercel *can* host the FastAPI backend as Python serverless functions, alongside
+the Next.js web app. The caveats are serverless execution-time limits and the
+lack of persistent connection pooling versus potentially slow Snowflake queries.
+If those limits bite, host the API on a long-running platform instead
+(Render / Fly / Cloud Run) — the env-var split above is identical either way.

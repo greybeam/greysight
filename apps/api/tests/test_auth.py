@@ -110,6 +110,21 @@ def test_auth_startup_warns_when_required_without_verifier(monkeypatch, caplog) 
     assert "Supabase session verifier" in caplog.text
 
 
+def test_startup_requires_service_role_key_when_auth_required() -> None:
+    from app.main import require_membership_lookup_when_auth_required
+
+    with pytest.raises(RuntimeError, match="SUPABASE_SERVICE_ROLE_KEY"):
+        require_membership_lookup_when_auth_required(Settings(auth_required=True))
+
+
+def test_startup_allows_service_role_key_present() -> None:
+    from app.main import require_membership_lookup_when_auth_required
+
+    require_membership_lookup_when_auth_required(
+        Settings(auth_required=True, supabase_service_role_key="service-role-key")
+    )
+
+
 def test_supabase_validation_rejects_non_mapping_claims(monkeypatch) -> None:
     async def verifier(token: str) -> list[str]:
         assert token == "opaque-token"
@@ -148,46 +163,75 @@ def test_supabase_validation_rejects_missing_or_invalid_sub(
     assert exc_info.value.status_code == 401
 
 
-def test_supabase_validation_derives_memberships_from_verified_claims(
-    monkeypatch,
-) -> None:
+def test_validation_populates_memberships_from_live_lookup(monkeypatch) -> None:
+    from app.services.membership_directory import Organization
+
     async def verifier(token: str) -> dict[str, object]:
-        assert token == "opaque-token"
-        return {
-            "sub": "user_123",
-            "app_metadata": {
-                "organization_ids": ["org_123"],
-                "organizations": ["org_456"],
-            },
-            "memberships": ["org_789"],
-        }
+        return {"sub": "user_123"}
+
+    async def lookup(user_id: str) -> tuple[Organization, ...]:
+        assert user_id == "user_123"
+        return (Organization(id="org-1", name="Acme"),)
 
     monkeypatch.setattr("app.auth.supabase_session_verifier", verifier)
 
-    context = anyio.run(validate_supabase_session, "opaque-token")
+    context = anyio.run(validate_supabase_session, "opaque-token", None, lookup)
 
-    assert context.memberships == frozenset({"org_123", "org_456", "org_789"})
+    assert context.memberships == frozenset({"org-1"})
+    assert tuple(context.organizations) == (Organization(id="org-1", name="Acme"),)
 
 
-def test_supabase_validation_ignores_malformed_membership_items(monkeypatch) -> None:
+def test_validation_normalizes_membership_ids_from_lookup(monkeypatch) -> None:
+    from app.services.membership_directory import Organization
+
+    upper_uuid = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
+    canonical_uuid = upper_uuid.lower()
+
     async def verifier(token: str) -> dict[str, object]:
-        assert token == "opaque-token"
-        return {
-            "sub": "user_123",
-            "app_metadata": {
-                "organization_ids": [" org_123 ", 123, "", "   "],
-                "organizations": [None, "org_456"],
-            },
-            "memberships": ["org_789", {"malformed": True}, " org_999 "],
-        }
+        return {"sub": "user_123"}
+
+    async def lookup(user_id: str) -> tuple[Organization, ...]:
+        assert user_id == "user_123"
+        return (Organization(id=upper_uuid, name="Acme"),)
 
     monkeypatch.setattr("app.auth.supabase_session_verifier", verifier)
 
+    context = anyio.run(validate_supabase_session, "opaque-token", None, lookup)
+
+    assert canonical_uuid in context.memberships
+    assert require_org_membership(context, canonical_uuid) is None
+    assert require_org_membership(context, upper_uuid) is None
+    assert tuple(context.organizations) == (Organization(id=upper_uuid, name="Acme"),)
+
+
+def test_validation_fails_closed_when_lookup_errors(monkeypatch) -> None:
+    from app.services.membership_directory import MembershipLookupError
+
+    async def verifier(token: str) -> dict[str, object]:
+        return {"sub": "user_123"}
+
+    async def lookup(user_id: str):
+        raise MembershipLookupError()
+
+    monkeypatch.setattr("app.auth.supabase_session_verifier", verifier)
+
+    with pytest.raises(HTTPException) as exc_info:
+        anyio.run(validate_supabase_session, "opaque-token", None, lookup)
+
+    assert exc_info.value.status_code == 401
+
+
+def test_validation_without_lookup_yields_empty_memberships(monkeypatch) -> None:
+    async def verifier(token: str) -> dict[str, object]:
+        return {"sub": "user_123"}
+
+    monkeypatch.setattr("app.auth.supabase_session_verifier", verifier)
+    monkeypatch.setattr("app.auth.membership_lookup", None)
+
     context = anyio.run(validate_supabase_session, "opaque-token")
 
-    assert context.memberships == frozenset(
-        {"org_123", "org_456", "org_789", "org_999"}
-    )
+    assert context.memberships == frozenset()
+    assert tuple(context.organizations) == ()
 
 
 def test_supabase_auth_server_verifier_returns_claims() -> None:
@@ -270,28 +314,6 @@ def test_configure_supabase_session_verifier_clears_missing_config(
     assert auth.supabase_session_verifier is None
 
 
-def test_supabase_validation_normalizes_uuid_membership_claims(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def verifier(token: str) -> dict[str, object]:
-        assert token == "opaque-token"
-        return {
-            "sub": "user_123",
-            "app_metadata": {
-                "organization_ids": ["22222222-2222-4222-8222-ABCDEFABCDEF"]
-            },
-        }
-
-    monkeypatch.setattr("app.auth.supabase_session_verifier", verifier)
-
-    context = anyio.run(validate_supabase_session, "opaque-token")
-
-    assert "22222222-2222-4222-8222-abcdefabcdef" in context.memberships
-    assert (
-        require_org_membership(context, "22222222-2222-4222-8222-abcdefabcdef") is None
-    )
-
-
 def test_supabase_auth_server_verifier_rejects_malformed_json() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"not-json")
@@ -324,19 +346,16 @@ def test_supabase_auth_server_verifier_rejects_non_mapping_payload() -> None:
     assert exc_info.value.status_code == 401
 
 
-def test_supabase_validation_normalizes_non_uuid_membership_claim_case(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def verifier(token: str) -> dict[str, object]:
-        assert token == "opaque-token"
-        return {
-            "sub": "user_123",
-            "app_metadata": {"organization_ids": ["ORG_ABC"]},
-        }
+def test_normalize_membership_id_lowercases_non_uuid_values() -> None:
+    from app.auth import _normalize_membership_id
 
-    monkeypatch.setattr("app.auth.supabase_session_verifier", verifier)
+    assert _normalize_membership_id("ORG_ABC") == "org_abc"
 
-    context = anyio.run(validate_supabase_session, "opaque-token")
 
-    assert "org_abc" in context.memberships
-    assert require_org_membership(context, "org_abc") is None
+def test_normalize_membership_id_canonicalizes_uuid_values() -> None:
+    from app.auth import _normalize_membership_id
+
+    assert (
+        _normalize_membership_id("22222222-2222-4222-8222-ABCDEFABCDEF")
+        == "22222222-2222-4222-8222-abcdefabcdef"
+    )

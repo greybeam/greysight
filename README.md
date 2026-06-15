@@ -23,6 +23,32 @@ The web app runs at `http://localhost:3000`, and the FastAPI backend runs at
 `AUTH_REQUIRED=false`, the dashboard can render demo data without Supabase or
 Snowflake credentials.
 
+## Run Modes
+
+Two independent switches shape how the app runs: `DATA_SOURCE` (`demo` |
+`snowflake`) picks the data backend, and `AUTH_REQUIRED` (`false` | `true`)
+toggles the Supabase login and organization-membership gate. Both default to the
+demo / no-auth values, so a fresh checkout runs with no credentials.
+
+| `DATA_SOURCE` | `AUTH_REQUIRED` | What you get | Requires |
+| --- | --- | --- | --- |
+| `demo` | `false` | **Default / quick start.** Deterministic demo data, no login, "Demo mode" banner. | Nothing |
+| `demo` | `true` | Exercise the Supabase login + org-membership gate against demo data (no Snowflake). | Supabase URL + publishable key, secret (service-role) key, JWT secret |
+| `snowflake` | `false` | Live Snowflake Account Usage data with **no access control** — trusted local use only. | Snowflake credentials |
+| `snowflake` | `true` | **Production posture.** Live Snowflake data behind Supabase auth + org membership. | Snowflake credentials **and** full Supabase config |
+
+Notes:
+
+- `AUTH_REQUIRED=true` makes the API require `SUPABASE_SERVICE_ROLE_KEY` at
+  startup (for the live membership lookup) and a Supabase session verifier;
+  without them bearer-token requests are rejected fail-closed. Also set
+  `NEXT_PUBLIC_AUTH_REQUIRED=true` so the browser enforces login — only
+  `NEXT_PUBLIC_*` vars are inlined into the client bundle.
+- `DATA_SOURCE=snowflake` needs the Snowflake credentials described in
+  `docs/snowflake-setup.md`.
+- ⚠️ `snowflake` + `AUTH_REQUIRED=false` serves real account data with no login.
+  Never use it for shared preview, staging, or production deployments.
+
 ## Project Structure
 
 - `apps/web/`: Next.js dashboard, auth/org UI, browser API clients, and web tests.

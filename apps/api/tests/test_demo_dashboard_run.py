@@ -68,14 +68,17 @@ def _minimal_estimated_datasets(
 
 
 def _verified_token_for_org(monkeypatch, organization_id: str) -> dict[str, str]:
+    from app.services.membership_directory import Organization
+
     def verifier(token: str) -> dict[str, object]:
         assert token == "valid-token"
-        return {
-            "sub": "user-1",
-            "app_metadata": {"organization_ids": [organization_id]},
-        }
+        return {"sub": "user-1"}
+
+    async def lookup(user_id: str) -> tuple[Organization, ...]:
+        return (Organization(id=organization_id, name="Test Org"),)
 
     monkeypatch.setattr("app.auth.supabase_session_verifier", verifier)
+    monkeypatch.setattr("app.auth.membership_lookup", lookup)
     monkeypatch.setenv("AUTH_REQUIRED", "true")
     return {"Authorization": "Bearer valid-token"}
 

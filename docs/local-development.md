@@ -49,10 +49,10 @@ RLS, or authenticated API requests.
 
 1. Create a Supabase project.
 2. Apply the migration in `supabase/migrations/`.
-3. Use `.env.example` as a checklist for the values below. A root
-   `.env.local` is not automatically loaded by the FastAPI backend; export or
-   source backend values in the shell that starts the API, or inject them with
-   your process manager.
+3. Use `.env.example` as a checklist for the values below. Copy it to a root
+   `.env` and fill in the values: `npm run dev` auto-loads root `.env` for both
+   the web and API dev servers (tolerantly), so no shell-export step is needed.
+   `.env.local` is an optional Next.js-only personal override.
 4. Set the backend Supabase values:
 
 ```bash
@@ -77,15 +77,34 @@ browser-facing and configure the frontend passwordless flow.
 `SUPABASE_SERVICE_ROLE_KEY` and `SUPABASE_JWT_SECRET` are backend-only and must
 not be exposed to client code.
 
+In the dashboard (Project Settings > API keys), the keys are labeled
+"Publishable" and "Secret". The `*_ANON_KEY` vars take the **Publishable key**
+(`sb_publishable_…`, browser-safe); `SUPABASE_SERVICE_ROLE_KEY` takes the
+**Secret key** (`sb_secret_…`, server-only) — it bypasses RLS for the live
+membership lookup, so don't paste the publishable key into it.
+
+**Restart after editing `.env`.** The dev servers read `.env` only when they
+start — the API's `dev.py` loads it at launch, and `uvicorn --reload` reloads
+code, not env. After changing any value, fully restart `npm run dev` (stop and
+re-run); saving the file is not enough.
+
 With `AUTH_REQUIRED=true`, the backend validates bearer tokens through Supabase
 Auth when `SUPABASE_URL` and `SUPABASE_ANON_KEY` are configured. If either value
 is missing, bearer-token API calls are rejected fail-closed.
 
-Authenticated dashboard runs require the Supabase user metadata to contain an
-organization membership ID in `app_metadata.organization_ids`,
-`app_metadata.organizations`, or top-level `memberships`. Until the app has a
-backend org-provisioning flow, seed those IDs in Supabase before testing
-authenticated run creation.
+Authenticated dashboard runs require a real `organization_memberships` row for
+the signed-in user. Membership is read **live** by the API via the service-role
+lookup (`apps/api/app/services/membership_directory.py`, surfaced to the web app
+through `apps/web/src/lib/session-memberships.ts`) — it is **not** read from JWT
+metadata, so seeding `app_metadata` claims has no effect. A signed-in user with
+no membership sees the interim "no organization" screen, which is expected.
+
+There is no self-serve org creation in v1, so the first user/org must be
+provisioned through the service-role bootstrap path: the user signs in once (to
+create their `auth.users` row), then an operator inserts an `organizations` row,
+and a trigger grants the owner membership automatically. See
+[First-user bootstrap](./auth-and-deployment.md#first-user-bootstrap-v1-onboarding)
+for the exact SQL.
 
 ## Snowflake Setup
 

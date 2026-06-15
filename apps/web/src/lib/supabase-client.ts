@@ -23,10 +23,10 @@ export type BrowserAuthClient = {
   onAuthStateChange(callback: SessionChangeCallback): {
     unsubscribe(): void;
   };
-  signInWithOtp(input: {
-    email: string;
-    options: { emailRedirectTo: string };
-  }): Promise<{
+  signInWithOtp(input: { email: string }): Promise<{
+    error?: { message: string } | null;
+  }>;
+  verifyOtp(input: { email: string; token: string }): Promise<{
     error?: { message: string } | null;
   }>;
   signOut(): Promise<{
@@ -77,7 +77,15 @@ export const createSupabaseBrowserAuthClient: AuthClientFactory = ({
       };
     },
     async signInWithOtp(input) {
-      const { error } = await supabase.auth.signInWithOtp(input);
+      const { error } = await supabase.auth.signInWithOtp({ email: input.email });
+      return { error: error ? { message: error.message } : null };
+    },
+    async verifyOtp(input) {
+      const { error } = await supabase.auth.verifyOtp({
+        email: input.email,
+        token: input.token,
+        type: "email",
+      });
       return { error: error ? { message: error.message } : null };
     },
     async signOut() {
@@ -98,7 +106,14 @@ export function resetBrowserAuthClientFactory(): void {
 }
 
 export function createBrowserAuthClient(
-  env: PublicSupabaseEnv = process.env,
+  // The default MUST reference the exact static `process.env.NEXT_PUBLIC_*`
+  // tokens. Turbopack only inlines those literal tokens into the client bundle;
+  // an aliased `= process.env` default is not inlined and reads as `undefined`
+  // in the browser, which surfaced as "Authentication is not configured".
+  env: PublicSupabaseEnv = {
+    NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
+    NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+  },
 ): BrowserAuthClient | null {
   const supabaseUrl = env.NEXT_PUBLIC_SUPABASE_URL?.trim();
   const supabaseAnonKey = env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim();

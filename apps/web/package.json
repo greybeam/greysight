@@ -25,11 +25,11 @@
     "vitest": "4.1.8"
   },
   "scripts": {
-    "dev": "next dev",
+    "dev": "node scripts/with-env.mjs dev",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "build": "next build"
+    "build": "node scripts/with-env.mjs build"
   }
 }
