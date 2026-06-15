@@ -8,13 +8,24 @@ DEFAULT_ESTIMATED_CREDIT_PRICE_USD = 3.0
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="", extra="ignore", populate_by_name=True
+    )
 
     data_source: Literal["demo", "snowflake"] = "demo"
     auth_required: bool = False
-    supabase_url: str = Field(default="", validation_alias=AliasChoices("SUPABASE_URL"))
+    supabase_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL"),
+    )
     supabase_anon_key: str = Field(
-        default="", validation_alias=AliasChoices("SUPABASE_ANON_KEY")
+        default="",
+        validation_alias=AliasChoices(
+            "SUPABASE_ANON_KEY", "NEXT_PUBLIC_SUPABASE_ANON_KEY"
+        ),
+    )
+    supabase_service_role_key: str = Field(
+        default="", validation_alias=AliasChoices("SUPABASE_SERVICE_ROLE_KEY")
     )
     default_window_days: int = Field(
         default=30,

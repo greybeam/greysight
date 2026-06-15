@@ -9,6 +9,12 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import Settings
+from app.services.membership_directory import (
+    MembershipLookup,
+    MembershipLookupError,
+    Organization,
+    SupabaseServiceRoleMembershipLookup,
+)
 
 DEMO_ORGANIZATION_ID = "demo-org"
 _bearer_scheme = HTTPBearer(auto_error=False)
@@ -16,6 +22,7 @@ SupabaseSessionVerifier = Callable[
     [str], Mapping[str, object] | Awaitable[Mapping[str, object]]
 ]
 supabase_session_verifier: SupabaseSessionVerifier | None = None
+membership_lookup: MembershipLookup | None = None
 
 
 class SupabaseAuthServerVerifier:
@@ -75,11 +82,23 @@ def configure_supabase_session_verifier(settings: Settings) -> None:
         supabase_session_verifier = None
 
 
+def configure_membership_lookup(settings: Settings) -> None:
+    global membership_lookup
+    if settings.supabase_url.strip() and settings.supabase_service_role_key.strip():
+        membership_lookup = SupabaseServiceRoleMembershipLookup(
+            supabase_url=settings.supabase_url,
+            service_role_key=settings.supabase_service_role_key,
+        )
+    else:
+        membership_lookup = None
+
+
 @dataclass(frozen=True)
 class AuthContext:
     user_id: str | None
     auth_required: bool
     memberships: Collection[str] = field(default_factory=frozenset)
+    organizations: Collection[Organization] = field(default_factory=tuple)
 
 
 def require_org_membership(
@@ -127,6 +146,7 @@ async def require_auth_context(
 async def validate_supabase_session(
     token: str,
     verifier: SupabaseSessionVerifier | None = None,
+    lookup: MembershipLookup | None = None,
 ) -> AuthContext:
     stripped_token = token.strip()
     if not stripped_token:
@@ -147,37 +167,34 @@ async def validate_supabase_session(
     if not isinstance(user_id, str) or not user_id.strip():
         raise _authentication_required()
 
+    normalized_user_id = user_id.strip()
+    organizations = await _fetch_organizations(normalized_user_id, lookup)
+
     return AuthContext(
-        user_id=user_id.strip(),
+        user_id=normalized_user_id,
         auth_required=True,
-        memberships=_extract_memberships(claims),
+        memberships=frozenset(
+            _normalize_membership_id(org.id) for org in organizations
+        ),
+        organizations=organizations,
     )
 
 
-def _extract_memberships(claims: Mapping[str, object]) -> frozenset[str]:
-    memberships: set[str] = set()
-    app_metadata = claims.get("app_metadata")
-
-    if isinstance(app_metadata, Mapping):
-        memberships.update(_string_list_claim(app_metadata.get("organization_ids")))
-        memberships.update(_string_list_claim(app_metadata.get("organizations")))
-
-    memberships.update(_string_list_claim(claims.get("memberships")))
-    return frozenset(memberships)
-
-
-def _string_list_claim(value: object) -> frozenset[str]:
-    if not isinstance(value, list):
-        return frozenset()
-
-    items: set[str] = set()
-    for item in value:
-        if not isinstance(item, str):
-            continue
-        normalized_item = _normalize_membership_id(item)
-        if normalized_item:
-            items.add(normalized_item)
-    return frozenset(items)
+async def _fetch_organizations(
+    user_id: str,
+    lookup: MembershipLookup | None,
+) -> tuple[Organization, ...]:
+    selected_lookup = lookup if lookup is not None else membership_lookup
+    if selected_lookup is None:
+        return ()
+    try:
+        lookup_result = selected_lookup(user_id)
+        organizations = (
+            await lookup_result if inspect.isawaitable(lookup_result) else lookup_result
+        )
+    except MembershipLookupError as exc:
+        raise _authentication_required() from exc
+    return tuple(organizations)
 
 
 def _normalize_membership_id(value: str) -> str:

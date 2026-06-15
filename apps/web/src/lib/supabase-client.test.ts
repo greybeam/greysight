@@ -28,6 +28,7 @@ describe("supabase-client", () => {
       getSession: vi.fn(),
       onAuthStateChange: vi.fn(),
       signInWithOtp: vi.fn(),
+      verifyOtp: vi.fn(),
       signOut: vi.fn(),
     };
 
@@ -96,6 +97,9 @@ describe("supabase-client", () => {
         signInWithOtp: vi
           .fn()
           .mockResolvedValue({ error: { message: "Email rejected" } }),
+        verifyOtp: vi
+          .fn()
+          .mockResolvedValue({ error: { message: "Invalid code" } }),
         signOut: vi
           .fn()
           .mockResolvedValue({ error: { message: "Already signed out" } }),
@@ -113,13 +117,40 @@ describe("supabase-client", () => {
       session: null,
     });
     await expect(
-      authClient.signInWithOtp({
-        email: "owner@example.com",
-        options: { emailRedirectTo: "http://localhost:3000" },
-      }),
+      authClient.signInWithOtp({ email: "owner@example.com" }),
     ).resolves.toEqual({ error: { message: "Email rejected" } });
+    await expect(
+      authClient.verifyOtp({ email: "owner@example.com", token: "123456" }),
+    ).resolves.toEqual({ error: { message: "Invalid code" } });
     await expect(authClient.signOut()).resolves.toEqual({
       error: { message: "Already signed out" },
+    });
+  });
+
+  it("verifies an email OTP code", async () => {
+    const verifyOtp = vi.fn().mockResolvedValue({ data: {}, error: null });
+    const supabaseClient = {
+      auth: {
+        getSession: vi.fn(),
+        onAuthStateChange: vi.fn(),
+        signInWithOtp: vi.fn().mockResolvedValue({ error: null }),
+        signOut: vi.fn(),
+        verifyOtp,
+      },
+    };
+    createClient.mockReturnValue(supabaseClient);
+
+    const authClient = createSupabaseBrowserAuthClient({
+      supabaseUrl: "https://project.supabase.co",
+      supabaseAnonKey: "anon-key",
+    });
+
+    await authClient.verifyOtp({ email: "owner@example.com", token: "123456" });
+
+    expect(verifyOtp).toHaveBeenCalledWith({
+      email: "owner@example.com",
+      token: "123456",
+      type: "email",
     });
   });
 });

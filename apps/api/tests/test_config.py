@@ -40,6 +40,63 @@ def test_supabase_env_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.supabase_anon_key == "anon-key"
 
 
+def test_supabase_falls_back_to_next_public_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_ANON_KEY", raising=False)
+    monkeypatch.setenv("NEXT_PUBLIC_SUPABASE_URL", "https://public.supabase.co")
+    monkeypatch.setenv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "public-anon-key")
+
+    settings = Settings()
+
+    assert settings.supabase_url == "https://public.supabase.co"
+    assert settings.supabase_anon_key == "public-anon-key"
+
+
+def test_supabase_server_vars_take_precedence_over_next_public(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SUPABASE_URL", "https://server.supabase.co")
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "server-anon-key")
+    monkeypatch.setenv("NEXT_PUBLIC_SUPABASE_URL", "https://public.supabase.co")
+    monkeypatch.setenv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "public-anon-key")
+
+    settings = Settings()
+
+    assert settings.supabase_url == "https://server.supabase.co"
+    assert settings.supabase_anon_key == "server-anon-key"
+
+
+def test_supabase_service_role_key_has_no_next_public_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
+    monkeypatch.setenv("NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY", "should-not-be-read")
+
+    settings = Settings()
+
+    assert settings.supabase_service_role_key == ""
+
+
+def test_supabase_service_role_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-role-key")
+
+    settings = Settings()
+
+    assert settings.supabase_service_role_key == "service-role-key"
+
+
+def test_supabase_service_role_key_defaults_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
+
+    settings = Settings()
+
+    assert settings.supabase_service_role_key == ""
+
+
 def test_empty_storage_price_uses_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("STORAGE_PRICE_USD_PER_TB_MONTH", "")
 

@@ -18,13 +18,19 @@ vi.mock("../../lib/dashboard-api", () => ({
   startDashboardRun: vi.fn(),
 }));
 
+vi.mock("../../lib/session-memberships", () => ({
+  fetchSessionMemberships: vi
+    .fn()
+    .mockResolvedValue([
+      { id: "22222222-2222-4222-8222-222222222222", name: "Acme Analytics" },
+    ]),
+}));
+
 const session: AuthSession = {
   accessToken: "test-access-token",
   user: {
     email: "owner@example.com",
-    appMetadata: {
-      organization_ids: ["22222222-2222-4222-8222-222222222222"],
-    },
+    appMetadata: null,
   },
 };
 
@@ -36,6 +42,7 @@ vi.mock("../../lib/supabase-client", () => ({
       return { unsubscribe: vi.fn() };
     }),
     signInWithOtp: vi.fn(),
+    verifyOtp: vi.fn(),
     signOut: vi.fn(),
   })),
 }));
@@ -46,10 +53,7 @@ describe("DashboardRuntimeShell integration", () => {
     vi.restoreAllMocks();
   });
 
-  it("starts runs with a UUID organization id for a typed organization name", async () => {
-    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
-      "11111111-1111-4111-8111-111111111111",
-    );
+  it("starts runs with the resolved membership organization id", async () => {
     vi.mocked(startDashboardRun).mockResolvedValue({
       id: "run-1",
       source: "snowflake",
@@ -66,11 +70,13 @@ describe("DashboardRuntimeShell integration", () => {
 
     render(<DashboardRuntimeShell authRequired dataSource="snowflake" />);
 
-    fireEvent.change(await screen.findByLabelText("Organization name"), {
-      target: { value: "Acme Analytics" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Create organization" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Run analysis" }));
+    // Wait for the live membership lookup to resolve and select the org so the
+    // authenticated Snowflake runtime is in place (CostDashboard remounts on the
+    // demo -> snowflake key transition).
+    await screen.findByText("Sign out");
+    const runButton = await screen.findByRole("button", { name: "Run analysis" });
+    await waitFor(() => expect(runButton).toBeEnabled());
+    fireEvent.click(runButton);
 
     await waitFor(() => expect(startDashboardRun).toHaveBeenCalled());
 
@@ -78,13 +84,11 @@ describe("DashboardRuntimeShell integration", () => {
       startDashboardRun,
     ).mock.calls[0];
     expect(organizationId).toBe("22222222-2222-4222-8222-222222222222");
-    expect(organizationId).not.toBe("Acme Analytics");
     expect(windowDays).toBe(FETCH_WINDOW_DAYS);
     expect(fetchDashboardView).toHaveBeenCalledWith(
       "run-1",
       { windowDays: 30 },
       { accessToken: "test-access-token" },
     );
-    expect(screen.getByText("Acme Analytics")).toBeInTheDocument();
   });
 });

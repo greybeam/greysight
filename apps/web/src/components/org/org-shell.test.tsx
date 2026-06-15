@@ -1,10 +1,7 @@
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent } from "@testing-library/react";
+import { useState } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import OrgShell from "./org-shell";
 import type {
@@ -12,202 +9,306 @@ import type {
   BrowserAuthClient,
   SessionChangeCallback,
 } from "../../lib/supabase-client";
-import createBrowserAuthClient from "../../lib/supabase-client";
 
-vi.mock("../../lib/supabase-client", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("../../lib/supabase-client")>();
+function authClient(
+  session: AuthSession | null,
+  overrides: Partial<BrowserAuthClient> = {},
+): BrowserAuthClient {
   return {
-    ...actual,
-    default: vi.fn(() => null),
-  };
-});
-
-const session: AuthSession = {
-  accessToken: "test-access-token",
-  user: {
-    email: "owner@example.com",
-    appMetadata: {
-      organization_ids: ["22222222-2222-4222-8222-222222222222"],
-    },
-  },
-};
-
-const sessionWithoutOrganization: AuthSession = {
-  accessToken: "test-access-token",
-  user: { email: "owner@example.com", appMetadata: {} },
-};
-
-const sessionWithMultipleOrganizations: AuthSession = {
-  accessToken: "test-access-token",
-  user: {
-    email: "owner@example.com",
-    appMetadata: {
-      organization_ids: [
-        "22222222-2222-4222-8222-222222222222",
-        "33333333-3333-4333-8333-333333333333",
-      ],
-    },
-  },
-};
-
-function authClientWithSession(activeSession: AuthSession | null): BrowserAuthClient {
-  return {
-    getSession: vi.fn().mockResolvedValue({ session: activeSession, error: null }),
-    onAuthStateChange: vi.fn((callback: SessionChangeCallback) => {
-      callback(activeSession);
-      return { unsubscribe: vi.fn() };
-    }),
+    getSession: vi.fn().mockResolvedValue({ session, error: null }),
+    onAuthStateChange: vi.fn(() => ({ unsubscribe: vi.fn() })),
     signInWithOtp: vi.fn(),
-    signOut: vi.fn(),
+    verifyOtp: vi.fn(),
+    signOut: vi.fn().mockResolvedValue({ error: null }),
+    ...overrides,
   };
 }
 
-describe("OrgShell", () => {
-  afterEach(() => {
-    cleanup();
-    vi.clearAllMocks();
-  });
+const session: AuthSession = {
+  accessToken: "access-token",
+  user: { email: "owner@example.com", appMetadata: null },
+};
 
-  it("renders bypass demo mode when auth is disabled", () => {
+afterEach(() => cleanup());
+
+describe("OrgShell", () => {
+  it("renders children with the demo banner when auth is not required", () => {
     render(
       <OrgShell authRequired={false}>
-        <p>Dashboard body</p>
+        <p>dashboard</p>
       </OrgShell>,
     );
-
     expect(screen.getByText("Demo mode")).toBeInTheDocument();
-    expect(screen.getByText("Dashboard body")).toBeInTheDocument();
-    expect(createBrowserAuthClient).not.toHaveBeenCalled();
+    expect(screen.getByText("dashboard")).toBeInTheDocument();
   });
 
-  it("renders a custom bypass mode label when auth is disabled", () => {
+  it("renders a deterministic loading placeholder on the server when no authClient prop is provided", () => {
+    // Mimic an empty server runtime env so the OLD code (which called
+    // createBrowserAuthClient in a useState initializer) would have produced
+    // the "not configured" branch on the server render. The fixed component
+    // must defer client creation and show the loading placeholder instead,
+    // regardless of env, keeping SSR markup deterministic.
+    const originalUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const originalKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+    delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    try {
+      const markup = renderToStaticMarkup(
+        <OrgShell authRequired>
+          <p>dashboard</p>
+        </OrgShell>,
+      );
+      expect(markup).toContain("Loading authentication");
+      expect(markup).not.toContain("Authentication is not configured");
+    } finally {
+      if (originalUrl === undefined) {
+        delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+      } else {
+        process.env.NEXT_PUBLIC_SUPABASE_URL = originalUrl;
+      }
+      if (originalKey === undefined) {
+        delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+      } else {
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = originalKey;
+      }
+    }
+  });
+
+  it("renders the same loading placeholder on the server even when the public env vars are present", () => {
+    // The hydration invariant is that the FIRST render is identical whether or
+    // not the public env vars exist. With non-empty env, createBrowserAuthClient()
+    // WOULD return a real client post-mount, but the server/first-paint markup must
+    // still defer client creation and show the loading placeholder — identical to
+    // the empty-env case — so the first paint never diverges based on env presence.
+    const originalUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const originalKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    process.env.NEXT_PUBLIC_SUPABASE_URL = "https://example.supabase.co";
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "anon-key";
+    try {
+      const markup = renderToStaticMarkup(
+        <OrgShell authRequired>
+          <p>dashboard</p>
+        </OrgShell>,
+      );
+      expect(markup).toContain("Loading authentication");
+      expect(markup).not.toContain("Authentication is not configured");
+    } finally {
+      if (originalUrl === undefined) {
+        delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+      } else {
+        process.env.NEXT_PUBLIC_SUPABASE_URL = originalUrl;
+      }
+      if (originalKey === undefined) {
+        delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+      } else {
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = originalKey;
+      }
+    }
+  });
+
+  it("renders the login form when there is no session", async () => {
     render(
-      <OrgShell authRequired={false} bypassModeLabel="Local Snowflake mode">
-        <p>Dashboard body</p>
+      <OrgShell authRequired authClient={authClient(null)}>
+        <p>dashboard</p>
       </OrgShell>,
     );
-
-    expect(screen.getByText("Local Snowflake mode")).toBeInTheDocument();
-    expect(screen.queryByText("Demo mode")).not.toBeInTheDocument();
+    expect(await screen.findByLabelText("Email")).toBeInTheDocument();
+    expect(screen.queryByText("dashboard")).not.toBeInTheDocument();
   });
 
-  it("does not recreate the browser auth client on rerender", () => {
-    const { rerender } = render(
-      <OrgShell authRequired>
-        <p>Dashboard body</p>
-      </OrgShell>,
-    );
-
-    rerender(
-      <OrgShell authRequired>
-        <p>Dashboard body</p>
-      </OrgShell>,
-    );
-
-    expect(createBrowserAuthClient).toHaveBeenCalledTimes(1);
-  });
-
-  it("preserves explicit null auth client", () => {
-    render(
-      <OrgShell authClient={null} authRequired>
-        <p>Dashboard body</p>
-      </OrgShell>,
-    );
-
-    expect(
-      screen.getByText("Authentication is not configured"),
-    ).toBeInTheDocument();
-    expect(createBrowserAuthClient).not.toHaveBeenCalled();
-  });
-
-  it("renders authenticated org controls and exposes the access token", async () => {
-    const tokenSpy = vi.fn();
+  it("shows the interim screen when the user has no organization", async () => {
     render(
       <OrgShell
-        authClient={authClientWithSession(session)}
         authRequired
-        onAccessTokenChange={tokenSpy}
+        authClient={authClient(session)}
+        fetchMemberships={vi.fn().mockResolvedValue([])}
       >
-        <p>Dashboard body</p>
+        <p>dashboard</p>
       </OrgShell>,
     );
-
-    expect(await screen.findByText("owner@example.com")).toBeInTheDocument();
-    expect(screen.getByLabelText("Organization name")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Create organization" }),
+      await screen.findByText(/Connecting your Snowflake account is coming soon/i),
     ).toBeInTheDocument();
-    expect(screen.getByText("Dashboard body")).toBeInTheDocument();
+    expect(screen.queryByText("dashboard")).not.toBeInTheDocument();
+  });
+
+  it("renders the dashboard and selects the org when membership resolves", async () => {
+    const onOrganizationChange = vi.fn();
+    render(
+      <OrgShell
+        authRequired
+        authClient={authClient(session)}
+        fetchMemberships={vi
+          .fn()
+          .mockResolvedValue([{ id: "org-1", name: "Acme" }])}
+        onOrganizationChange={onOrganizationChange}
+      >
+        <p>dashboard</p>
+      </OrgShell>,
+    );
+    expect(await screen.findByText("dashboard")).toBeInTheDocument();
     await waitFor(() =>
-      expect(tokenSpy).toHaveBeenCalledWith("test-access-token"),
+      expect(onOrganizationChange).toHaveBeenCalledWith({
+        id: "org-1",
+        name: "Acme",
+      }),
     );
   });
 
-  it("stores and selects the submitted organization", async () => {
-    const organizationSpy = vi.fn();
+  it("shows an error state (not the no-org screen) when the lookup fails", async () => {
     render(
       <OrgShell
-        authClient={authClientWithSession(session)}
         authRequired
-        organizationIdGenerator={() => "11111111-1111-4111-8111-111111111111"}
-        onOrganizationChange={organizationSpy}
+        authClient={authClient(session)}
+        fetchMemberships={vi.fn().mockRejectedValue(new Error("boom"))}
       >
-        <p>Dashboard body</p>
+        <p>dashboard</p>
       </OrgShell>,
     );
-
-    fireEvent.change(await screen.findByLabelText("Organization name"), {
-      target: { value: "Acme Analytics" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Create organization" }));
-
-    expect(await screen.findByText("Selected organization")).toBeInTheDocument();
-    expect(screen.getByText("Acme Analytics")).toBeInTheDocument();
-    expect(organizationSpy).toHaveBeenCalledWith({
-      id: "22222222-2222-4222-8222-222222222222",
-      name: "Acme Analytics",
-    });
-  });
-
-  it("does not create a local organization when auth membership is missing", async () => {
-    const organizationSpy = vi.fn();
-    render(
-      <OrgShell
-        authClient={authClientWithSession(sessionWithoutOrganization)}
-        authRequired
-        organizationIdGenerator={() => "11111111-1111-4111-8111-111111111111"}
-        onOrganizationChange={organizationSpy}
-      >
-        <p>Dashboard body</p>
-      </OrgShell>,
-    );
-
     expect(
-      await screen.findByText("No organization membership is available for this session."),
+      await screen.findByText(/couldn’t load your organizations/i),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Create organization" })).toBeDisabled();
-    expect(organizationSpy).not.toHaveBeenCalled();
+    expect(
+      screen.queryByText(/coming soon/i),
+    ).not.toBeInTheDocument();
   });
 
-  it("does not bind a typed name to an arbitrary membership when multiple orgs exist", async () => {
-    const organizationSpy = vi.fn();
+  it("discards a stale membership result when the token has changed", async () => {
+    let onAuthStateChange: SessionChangeCallback | undefined;
+    const client = authClient(session, {
+      onAuthStateChange: vi.fn((callback: SessionChangeCallback) => {
+        onAuthStateChange = callback;
+        return { unsubscribe: vi.fn() };
+      }),
+    });
+
+    let resolveTokenA: ((orgs: { id: string; name: string }[]) => void) | undefined;
+    const fetchMemberships = vi.fn((token: string) => {
+      if (token === "access-token") {
+        return new Promise<{ id: string; name: string }[]>((resolve) => {
+          resolveTokenA = resolve;
+        });
+      }
+      return Promise.resolve([{ id: "org-b", name: "Bravo" }]);
+    });
+
+    const onOrganizationChange = vi.fn();
     render(
       <OrgShell
-        authClient={authClientWithSession(sessionWithMultipleOrganizations)}
         authRequired
-        onOrganizationChange={organizationSpy}
+        authClient={client}
+        fetchMemberships={fetchMemberships}
+        onOrganizationChange={onOrganizationChange}
       >
-        <p>Dashboard body</p>
+        <p>dashboard</p>
       </OrgShell>,
     );
 
+    await waitFor(() => expect(resolveTokenA).toBeDefined());
+
+    // Sign back in with token B before A resolves.
+    onAuthStateChange?.({
+      accessToken: "token-b",
+      user: { email: "owner@example.com", appMetadata: null },
+    });
+
+    await screen.findByText("dashboard");
+    await waitFor(() =>
+      expect(onOrganizationChange).toHaveBeenCalledWith({
+        id: "org-b",
+        name: "Bravo",
+      }),
+    );
+
+    // Now let the stale token-A request resolve last.
+    resolveTokenA?.([{ id: "org-a", name: "Alpha" }]);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(onOrganizationChange).not.toHaveBeenCalledWith({
+      id: "org-a",
+      name: "Alpha",
+    });
+  });
+
+  it("does not refetch when an inline onOrganizationChange changes identity", async () => {
+    const fetchMemberships = vi
+      .fn()
+      .mockResolvedValue([{ id: "org-1", name: "Acme" }]);
+    const client = authClient(session);
+
+    function Parent() {
+      const [, setTick] = useState(0);
+      return (
+        <OrgShell
+          authRequired
+          authClient={client}
+          fetchMemberships={fetchMemberships}
+          // Inline callback: new identity each render.
+          onOrganizationChange={() => setTick((value) => value + 1)}
+        >
+          <p>dashboard</p>
+        </OrgShell>
+      );
+    }
+
+    render(<Parent />);
+    await screen.findByText("dashboard");
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(fetchMemberships).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces a sign-out error and does not clear the organization", async () => {
+    const signOut = vi
+      .fn()
+      .mockResolvedValue({ error: { message: "Sign out failed" } });
+    const onOrganizationChange = vi.fn();
+    render(
+      <OrgShell
+        authRequired
+        authClient={authClient(session, { signOut })}
+        fetchMemberships={vi
+          .fn()
+          .mockResolvedValue([{ id: "org-1", name: "Acme" }])}
+        onOrganizationChange={onOrganizationChange}
+      >
+        <p>dashboard</p>
+      </OrgShell>,
+    );
+    await screen.findByText("dashboard");
+    onOrganizationChange.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+
+    await waitFor(() => expect(signOut).toHaveBeenCalled());
     expect(
-      await screen.findByText(
-        "Multiple organization memberships are available for this session.",
-      ),
+      await screen.findByText(/couldn’t sign you out/i),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Create organization" })).toBeDisabled();
-    expect(organizationSpy).not.toHaveBeenCalled();
+    expect(onOrganizationChange).not.toHaveBeenCalledWith(null);
+  });
+
+  it("signs out and clears the selected organization", async () => {
+    const signOut = vi.fn().mockResolvedValue({ error: null });
+    const onOrganizationChange = vi.fn();
+    render(
+      <OrgShell
+        authRequired
+        authClient={authClient(session, { signOut })}
+        fetchMemberships={vi
+          .fn()
+          .mockResolvedValue([{ id: "org-1", name: "Acme" }])}
+        onOrganizationChange={onOrganizationChange}
+      >
+        <p>dashboard</p>
+      </OrgShell>,
+    );
+    await screen.findByText("dashboard");
+
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+
+    await waitFor(() => expect(signOut).toHaveBeenCalled());
+    expect(onOrganizationChange).toHaveBeenLastCalledWith(null);
   });
 });
