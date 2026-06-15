@@ -28,7 +28,7 @@ def test_load_local_env_tolerates_missing_file(
     assert existed is False
 
 
-def test_load_local_env_does_not_override_existing(
+def test_load_local_env_overrides_existing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("DEV_ENV_TEST_KEY", "already-set")
@@ -37,7 +37,7 @@ def test_load_local_env_does_not_override_existing(
     existed = load_local_env(tmp_path)
 
     assert existed is True
-    assert os.environ["DEV_ENV_TEST_KEY"] == "already-set"
+    assert os.environ["DEV_ENV_TEST_KEY"] == "from-file"
 
 
 def test_importing_dev_does_not_load_env(

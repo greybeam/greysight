@@ -16,13 +16,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def load_local_env(root: Path) -> bool:
     """Tolerantly load ``root/.env`` for local dev.
 
-    Returns whether the file existed. Never raises if the file is absent, and
-    never overrides variables already present in the environment (``override``
-    is ``False``), so production env injection stays authoritative.
+    Returns whether the file existed. Never raises if the file is absent. Loads
+    ``root/.env`` with ``override=True`` so the ``.env`` file is the source of
+    truth for local dev, overriding any variables already present in the
+    environment (this avoids stale shell exports silently shadowing ``.env``).
     """
     env_path = root / ".env"
     existed = env_path.is_file()
-    load_dotenv(env_path, override=False)
+    load_dotenv(env_path, override=True)
     return existed
 
 
