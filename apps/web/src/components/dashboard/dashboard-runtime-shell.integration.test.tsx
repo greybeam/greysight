@@ -72,13 +72,19 @@ describe("DashboardRuntimeShell integration", () => {
 
     // Wait for the live membership lookup to resolve and select the org so the
     // authenticated Snowflake runtime is in place (CostDashboard remounts on the
-    // demo -> snowflake key transition).
-    await screen.findByText("Sign out");
-    const runButton = await screen.findByRole("button", { name: "Run analysis" });
-    await waitFor(() => expect(runButton).toBeEnabled());
-    fireEvent.click(runButton);
+    // demo -> snowflake key transition). Never hold a button reference across the
+    // remount: query it fresh inside each waitFor / at click time so a stale,
+    // detached pre-remount node can't deadlock the wait.
+    await screen.findByText("Sign out", undefined, { timeout: 3000 });
+    await waitFor(
+      () => expect(screen.getByRole("button", { name: "Run analysis" })).toBeEnabled(),
+      { timeout: 3000 },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
 
-    await waitFor(() => expect(startDashboardRun).toHaveBeenCalled());
+    await waitFor(() => expect(startDashboardRun).toHaveBeenCalled(), {
+      timeout: 3000,
+    });
 
     const [{ organizationId, windowDays }] = vi.mocked(
       startDashboardRun,
