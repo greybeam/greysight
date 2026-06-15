@@ -42,7 +42,8 @@ const child = spawn(process.execPath, [nextBin, ...process.argv.slice(2)], {
 // the Next process keeps running (which would orphan the dev server and leak port
 // 3000 under `concurrently`). The child `exit` handler below still re-raises the
 // signal / propagates the exit code so the wrapper exits correctly afterwards.
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+const forwardedSignals = ["SIGINT", "SIGTERM", "SIGHUP"];
+for (const signal of forwardedSignals) {
   process.on(signal, () => {
     try {
       child.kill(signal);
@@ -54,6 +55,12 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
 
 child.on("exit", (code, signal) => {
   if (signal) {
+    // Remove our forwarding handlers before re-raising, so the self-signal
+    // triggers the default OS action (terminate) instead of being swallowed by
+    // the handler above — which would leave the wrapper running.
+    for (const forwarded of forwardedSignals) {
+      process.removeAllListeners(forwarded);
+    }
     process.kill(process.pid, signal);
     return;
   }
