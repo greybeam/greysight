@@ -162,6 +162,13 @@ export default function OrgShell({
       setSignOutError("We couldn’t sign you out. Please try again.");
       return;
     }
+    // Synchronously clear local auth state instead of waiting for the async
+    // onAuthStateChange callback. Setting the session to null drives, via the
+    // existing effects, the membership reset to idle, the latest-token ref
+    // reset, onAccessTokenChange(null), and onOrganizationChange(null) — so the
+    // component cannot keep rendering as signed-in if that callback is delayed
+    // or never fires.
+    setSession(null);
     onOrganizationChangeRef.current?.(null);
   }, [authClient]);
 

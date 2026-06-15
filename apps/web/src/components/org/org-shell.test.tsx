@@ -289,6 +289,47 @@ describe("OrgShell", () => {
     expect(onOrganizationChange).not.toHaveBeenCalledWith(null);
   });
 
+  it("clears the signed-in state synchronously on sign-out without the auth-state callback firing", async () => {
+    const signOut = vi.fn().mockResolvedValue({ error: null });
+    const onAccessTokenChange = vi.fn();
+    const onOrganizationChange = vi.fn();
+    // The default onAuthStateChange mock captures the callback but never
+    // invokes it, simulating a delayed/never-firing auth-state event. The
+    // component must still fall back to the login form on its own.
+    render(
+      <OrgShell
+        authRequired
+        authClient={authClient(session, { signOut })}
+        fetchMemberships={vi
+          .fn()
+          .mockResolvedValue([{ id: "org-1", name: "Acme" }])}
+        onAccessTokenChange={onAccessTokenChange}
+        onOrganizationChange={onOrganizationChange}
+      >
+        <p>dashboard</p>
+      </OrgShell>,
+    );
+    await screen.findByText("dashboard");
+    onAccessTokenChange.mockClear();
+    onOrganizationChange.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+
+    await waitFor(() => expect(signOut).toHaveBeenCalled());
+
+    // Login form appears and the signed-in header is gone, proving local
+    // session state was cleared without the onAuthStateChange callback.
+    expect(await screen.findByLabelText("Email")).toBeInTheDocument();
+    expect(screen.queryByText("Signed in")).not.toBeInTheDocument();
+    expect(screen.queryByText("dashboard")).not.toBeInTheDocument();
+
+    // The cascade settled token and org callbacks to the signed-out values.
+    await waitFor(() =>
+      expect(onAccessTokenChange).toHaveBeenLastCalledWith(null),
+    );
+    expect(onOrganizationChange).toHaveBeenLastCalledWith(null);
+  });
+
   it("signs out and clears the selected organization", async () => {
     const signOut = vi.fn().mockResolvedValue({ error: null });
     const onOrganizationChange = vi.fn();
