@@ -1,7 +1,7 @@
 {
   "private": true,
   "scripts": {
-    "dev": "uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000",
+    "dev": "uv run python dev.py",
     "test": "uv run pytest",
     "test:coverage": "uv run pytest --cov=app --cov-report=term-missing --cov-fail-under=80",
     "lint": "uv run ruff check app tests && uv run ruff format --check app tests"
