@@ -55,6 +55,28 @@ def connect_snowflake(
     if len(request.private_key_pem.encode("utf-8")) > MAX_PEM_BYTES:
         raise HTTPException(status_code=422, detail="Private key is too large.")
 
+    from app.services.connect_rate_limit import (
+        ConnectInFlightError,
+        ConnectRateLimitedError,
+        get_connect_limiter,
+    )
+
+    try:
+        with get_connect_limiter().guard(auth_context.user_id):
+            return _validate_and_create(request, auth_context)
+    except ConnectInFlightError:
+        raise HTTPException(
+            status_code=409, detail="A connection attempt is already in progress."
+        ) from None
+    except ConnectRateLimitedError:
+        raise HTTPException(
+            status_code=429, detail="Too many connection attempts. Try again shortly."
+        ) from None
+
+
+def _validate_and_create(
+    request: ConnectRequest, auth_context: AuthContext
+) -> ConnectResponse:
     try:
         account = validate_account_identifier(request.account)
     except InvalidSnowflakeAccountError as exc:
