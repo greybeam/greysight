@@ -115,7 +115,9 @@ class SnowflakeConnectionConfig:
                 if self.private_key_pem is not None
                 else self.private_key_path.read_bytes()
             )
-            private_key = serialization.load_pem_private_key(pem_bytes, password=password)
+            private_key = serialization.load_pem_private_key(
+                pem_bytes, password=password
+            )
             return private_key.private_bytes(
                 encoding=serialization.Encoding.DER,
                 format=serialization.PrivateFormat.PKCS8,
@@ -135,7 +137,10 @@ def execute_source_query(
     connect: Callable[[SnowflakeConnectionConfig | None], Any] | None = None,
 ) -> list[dict[str, Any]]:
     _validate_window_params(bind_params)
-    connection = (connect or _connect)(config)
+    try:
+        connection = (connect or _connect)(config)
+    except Exception:
+        raise SnowflakeQueryError("Could not query Snowflake.") from None
     try:
         with connection.cursor() as cursor:
             cursor.execute(sql, bind_params)

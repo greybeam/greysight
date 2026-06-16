@@ -315,8 +315,13 @@ def _generate_pem() -> str:
 def test_loads_private_key_from_pem_content() -> None:
     pem = _generate_pem()
     config = SnowflakeConnectionConfig(
-        account="acct", user="u", role="r", warehouse="w",
-        database="SNOWFLAKE", schema="ACCOUNT_USAGE", private_key_pem=pem,
+        account="acct",
+        user="u",
+        role="r",
+        warehouse="w",
+        database="SNOWFLAKE",
+        schema="ACCOUNT_USAGE",
+        private_key_pem=pem,
     )
     kwargs = config.connector_kwargs()
     assert isinstance(kwargs["private_key"], bytes) and len(kwargs["private_key"]) > 0
@@ -325,7 +330,11 @@ def test_loads_private_key_from_pem_content() -> None:
 def test_database_and_schema_default_when_missing() -> None:
     pem = _generate_pem()
     config = SnowflakeConnectionConfig(
-        account="acct", user="u", role="r", warehouse="w", private_key_pem=pem,
+        account="acct",
+        user="u",
+        role="r",
+        warehouse="w",
+        private_key_pem=pem,
     )
     kwargs = config.connector_kwargs()
     assert kwargs["database"] == "SNOWFLAKE"
@@ -335,8 +344,12 @@ def test_database_and_schema_default_when_missing() -> None:
 def test_repr_does_not_leak_key_material() -> None:
     pem = _generate_pem()
     config = SnowflakeConnectionConfig(
-        account="acct", user="u", role="r", warehouse="w",
-        private_key_pem=pem, private_key_passphrase="hunter2",
+        account="acct",
+        user="u",
+        role="r",
+        warehouse="w",
+        private_key_pem=pem,
+        private_key_passphrase="hunter2",
     )
     text = repr(config)
     assert "BEGIN PRIVATE KEY" not in text
@@ -348,8 +361,35 @@ def test_connector_kwargs_rejects_malformed_account() -> None:
 
     pem = _generate_pem()
     config = SnowflakeConnectionConfig(
-        account="http://evil.example.com", user="u", role="r", warehouse="w",
+        account="http://evil.example.com",
+        user="u",
+        role="r",
+        warehouse="w",
         private_key_pem=pem,
     )
     with pytest.raises(InvalidSnowflakeAccountError):
         config.connector_kwargs()
+
+
+def test_execute_source_query_normalizes_connection_failure() -> None:
+    def boom(_config: object) -> object:
+        raise RuntimeError("connector auth failed")
+
+    with pytest.raises(SnowflakeQueryError) as exc_info:
+        execute_source_query("select 1", {}, None, connect=boom)
+
+    assert str(exc_info.value) == "Could not query Snowflake."
+    assert "connector auth failed" not in str(exc_info.value)
+
+
+def test_execute_source_query_normalizes_invalid_account() -> None:
+    config = SnowflakeConnectionConfig(
+        account="http://evil",
+        user="u",
+        role="r",
+        warehouse="w",
+        private_key_pem=_generate_pem(),
+    )
+
+    with pytest.raises(SnowflakeQueryError):
+        execute_source_query("select 1", {}, config)

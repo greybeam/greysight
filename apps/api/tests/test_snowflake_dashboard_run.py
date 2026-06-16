@@ -419,6 +419,24 @@ def test_build_forwards_connection_config_to_execute_source_query(monkeypatch) -
     assert used["config"].account == "per-org"
 
 
+def test_build_treats_failing_connection_as_unavailable_not_500() -> None:
+    from app.config import Settings
+    from app.services.dashboard_datasets import (
+        DashboardSourcesUnavailableError,
+        build_snowflake_dashboard_data,
+    )
+
+    def failing_execute(
+        sql: str, bind_params: dict[str, Any], config: Any = None
+    ) -> list[dict[str, Any]]:
+        raise SnowflakeQueryError("Could not query Snowflake.")
+
+    import pytest
+
+    with pytest.raises(DashboardSourcesUnavailableError):
+        build_snowflake_dashboard_data(Settings(), execute=failing_execute)
+
+
 def _source_rows(dataset_key: str) -> list[dict[str, object]]:
     rows: dict[str, list[dict[str, object]]] = {
         "service_spend_daily": [
