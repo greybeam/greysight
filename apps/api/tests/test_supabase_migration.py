@@ -127,9 +127,10 @@ def test_connection_table_defined_with_rls_and_no_authenticated_writes() -> None
         in sql
     )
     # members may read only via the summary function; no authenticated DML policies
-    assert "organization_snowflake_connections_insert" not in sql
-    assert "organization_snowflake_connections_update" not in sql
-    assert "organization_snowflake_connections_delete" not in sql
+    # policy-prefix form avoids colliding with the legitimate _delete_secret trigger (Task 2)
+    assert "create policy organization_snowflake_connections_insert" not in sql
+    assert "create policy organization_snowflake_connections_update" not in sql
+    assert "create policy organization_snowflake_connections_delete" not in sql
     # members can read non-sensitive metadata through a SECURITY DEFINER function
     assert "create or replace function get_org_connection_summary" in sql
     assert "secret_id" not in sql.split("get_org_connection_summary", 1)[1].split("$$", 2)[1]
@@ -168,3 +169,17 @@ def test_vault_extension_enabled_and_teardown_trigger_present() -> None:
     grant = sql.split("grant execute on function disconnect_organization_snowflake", 1)[1].split(";", 1)[0]
     assert "to service_role" in grant
     assert "authenticated" not in grant
+
+
+def test_atomic_create_rpc_and_one_org_guard() -> None:
+    sql = read_migration_sql()
+    assert "create or replace function create_org_with_snowflake_connection" in sql
+    # race-safe: advisory lock keyed on the user id, inside the txn
+    assert "pg_advisory_xact_lock" in sql
+    # v1 one-org guard enforced in the DB, not the app
+    assert "create unique index one_owner_membership_per_user" in sql
+    assert "where role = 'owner'" in sql
+    # service-role only
+    block = sql.split("grant execute on function create_org_with_snowflake_connection", 1)[1].split(";", 1)[0]
+    assert "to service_role" in block
+    assert "authenticated" not in block

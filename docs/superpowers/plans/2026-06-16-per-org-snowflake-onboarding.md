@@ -17,7 +17,9 @@
 **API (`apps/api/app/`)**
 - `services/snowflake_client.py` — *modify*: add `private_key_pem`, `repr=False` on secret fields, optional `database`/`schema` defaults.
 - `services/snowflake_account.py` — *create*: `validate_account_identifier()` (SSRF guard).
-- `services/org_connection_resolver.py` — *create*: connection-row + Vault-secret lookup; `resolve_snowflake_config()` with fail-closed semantics.
+- `services/org_connection_resolver.py` — *create*: connection-row + Vault-secret lookup; `resolve_snowflake_config()` with fail-closed semantics (including `status != 'active'`).
+- `services/connect_rate_limit.py` — *create*: in-process per-user rate limit + single-flight guard for the connect endpoint.
+- `routes/snowflake.py` — *modify*: gate the legacy global `/api/snowflake/validate` route to self-host (`auth_required=false`) so it can't exercise deployment env creds under auth.
 - `services/membership_directory.py` — *modify*: select `role`; `Organization.role`.
 - `auth.py` — *modify*: carry roles in `AuthContext`; add `require_org_admin`.
 - `routes/onboarding.py` — *create*: `POST /api/onboarding/connect`.
@@ -26,7 +28,7 @@
 - `main.py` — *modify*: register the onboarding router.
 
 **DB (`supabase/migrations/`)**
-- `202606160001_org_snowflake_connections.sql` — *create*: table, member-summary function, secret RPCs, atomic create RPC, teardown RPC, one-org guard.
+- `202606160001_org_snowflake_connections.sql` — *create*: Vault extension enable, table, member-summary function, secret RPCs, atomic create RPC, `before delete` Vault-teardown trigger, atomic disconnect RPC, one-org (ownership) guard + data preflight.
 
 **Web (`apps/web/src/`)**
 - `lib/onboarding-api.ts` — *create*: `connectSnowflake()` client.
@@ -57,6 +59,10 @@
 
 All objects go in one new migration `supabase/migrations/202606160001_org_snowflake_connections.sql`. We build it incrementally and assert on its text (consistent with the existing migration-test style — these tests verify the SQL is present, not a live DB).
 
+> **Codex review (2026-06-16) — folded in below.** Verification strategy is a **documented manual smoke gate** (see Final verification + `Notes`): the migration tests assert SQL text only; the live Vault round-trip and RLS denials are exercised by hand against a real Supabase project. We are **not** adding an automated live-DB integration test now.
+> - **TODO (deferred):** add an automated live-Supabase integration test (apply migration → call secret RPCs as service role → assert `authenticated`/`anon` cannot execute them → assert RLS read boundary) if/when this becomes load-bearing enough to warrant the CI plumbing.
+> - This phase explicitly enables the Vault extension (Task 1), hardens `security definer` search paths, adds a `before delete` Vault-teardown trigger (Task 2), and a data preflight on the one-org index (Task 3).
+
 ### Task 1: Connection table + member-summary function
 
 **Files:**
@@ -82,9 +88,10 @@ def test_connection_table_defined_with_rls_and_no_authenticated_writes() -> None
         in sql
     )
     # members may read only via the summary function; no authenticated DML policies
-    assert "organization_snowflake_connections_insert" not in sql
-    assert "organization_snowflake_connections_update" not in sql
-    assert "organization_snowflake_connections_delete" not in sql
+    # policy-prefix form avoids colliding with the legitimate _delete_secret trigger (Task 2)
+    assert "create policy organization_snowflake_connections_insert" not in sql
+    assert "create policy organization_snowflake_connections_update" not in sql
+    assert "create policy organization_snowflake_connections_delete" not in sql
     # members can read non-sensitive metadata through a SECURITY DEFINER function
     assert "create or replace function get_org_connection_summary" in sql
     assert "secret_id" not in sql.split("get_org_connection_summary", 1)[1].split("$$", 2)[1]
@@ -103,6 +110,10 @@ Create `supabase/migrations/202606160001_org_snowflake_connections.sql`:
 -- Per-org Snowflake connection metadata. The RSA private key + passphrase are
 -- NOT stored here; they live in Supabase Vault and are referenced by secret_id.
 -- See docs/superpowers/specs/2026-06-16-per-org-snowflake-onboarding-design.md.
+
+-- Vault is required for the secret RPCs below; fail the migration loudly here
+-- rather than at first secret write if the target project hasn't enabled it.
+create extension if not exists supabase_vault with schema vault;
 
 create table organization_snowflake_connections (
   organization_id uuid primary key references organizations(id) on delete cascade,
@@ -153,6 +164,8 @@ revoke all on function get_org_connection_summary(uuid) from public;
 grant execute on function get_org_connection_summary(uuid) to authenticated;
 ```
 
+> **`security definer` search-path hardening (Codex LOW).** Every definer function below pins `set search_path` and references Vault objects fully-qualified (`vault.create_secret`, `vault.decrypted_secrets`, `vault.secrets`). Confirm the target project does not let untrusted roles create objects in `public` (Supabase default revokes `CREATE` on `public` from `PUBLIC`); if a deployment has loosened that, add `revoke create on schema public from public;` to this migration so a definer function can't resolve an attacker-planted `organization_snowflake_connections` or `is_organization_member`.
+
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `cd apps/api && uv run pytest tests/test_supabase_migration.py::test_connection_table_defined_with_rls_and_no_authenticated_writes -v`
@@ -193,6 +206,22 @@ def test_secret_rpcs_are_service_role_only() -> None:
     assert "vault.create_secret" in sql
     assert "vault.update_secret" in sql
     assert "vault.decrypted_secrets" in sql
+
+
+def test_vault_extension_enabled_and_teardown_trigger_present() -> None:
+    sql = read_migration_sql()
+    # Vault must be enabled by the migration, not assumed pre-installed.
+    assert "create extension if not exists supabase_vault" in sql
+    # Deleting/cascading a connection row must delete its Vault secret.
+    assert "before delete on organization_snowflake_connections" in sql
+    assert "delete from vault.secrets where id = old.secret_id" in sql
+    # Disconnect must atomically clear the secret AND invalidate the row.
+    assert "create or replace function disconnect_organization_snowflake" in sql
+    block = sql.split("create or replace function disconnect_organization_snowflake", 1)[1]
+    assert "set secret_id = null, status = 'invalid'" in block
+    grant = sql.split("grant execute on function disconnect_organization_snowflake", 1)[1].split(";", 1)[0]
+    assert "to service_role" in grant
+    assert "authenticated" not in grant
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
@@ -290,6 +319,63 @@ revoke all on function delete_organization_snowflake_secret(uuid) from public;
 grant execute on function set_organization_snowflake_secret(uuid, text, text) to service_role;
 grant execute on function get_organization_snowflake_secret(uuid) to service_role;
 grant execute on function delete_organization_snowflake_secret(uuid) to service_role;
+
+-- Teardown safety net (Codex CRITICAL): deleting an org cascades the connection
+-- row, and a future explicit disconnect deletes it too. In BOTH cases the Vault
+-- secret must die with the row, or it is orphaned with no surviving reference.
+-- A BEFORE DELETE trigger guarantees this regardless of how the row is removed.
+create or replace function delete_org_snowflake_secret_on_row_delete()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if old.secret_id is not null then
+    delete from vault.secrets where id = old.secret_id;
+  end if;
+  return old;
+end;
+$$;
+
+create trigger organization_snowflake_connections_delete_secret
+  before delete on organization_snowflake_connections
+  for each row execute function delete_org_snowflake_secret_on_row_delete();
+
+-- Atomic disconnect (Codex CRITICAL): a disconnect must leave the row TRUTHFUL.
+-- Deleting only the Vault secret (the old plan) left status='active' with a dead
+-- secret_id, so summaries reported "connected" while the resolver failed closed.
+-- Here we delete the secret, clear secret_id, and flip status to 'invalid' in one
+-- transaction. (Row deletion / org delete is handled by the trigger above.)
+-- Intentionally IDEMPOTENT: if the org has no connection row (or already
+-- disconnected), secret_id is null, the delete is skipped, and the update touches
+-- zero rows — the function is a no-op and returns normally (no error). Callers
+-- can safely disconnect twice; the route returns 204 either way.
+create or replace function disconnect_organization_snowflake(target_organization_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  target_secret_id uuid;
+begin
+  select secret_id into target_secret_id
+  from organization_snowflake_connections
+  where organization_id = target_organization_id;
+
+  if target_secret_id is not null then
+    delete from vault.secrets where id = target_secret_id;
+  end if;
+
+  update organization_snowflake_connections
+    set secret_id = null, status = 'invalid'
+    where organization_id = target_organization_id;
+end;
+$$;
+
+revoke all on function disconnect_organization_snowflake(uuid) from public;
+grant execute on function disconnect_organization_snowflake(uuid) to service_role;
 ```
 
 - [ ] **Step 4: Run the test to verify it passes**
@@ -337,8 +423,28 @@ Expected: FAIL.
 - [ ] **Step 3: Append the guard index and the atomic create RPC**
 
 ```sql
--- v1 one-org guard: at most one 'owner' membership per user. Removing this
--- single index (plus the API guard) is all that's needed to enable multi-org.
+-- v1 ownership guard: a user may OWN at most one org. Multi-org *membership*
+-- (being an admin/member of other orgs) is intentionally still allowed — this
+-- index only caps ownership, which is what onboarding grants. Routing picks the
+-- first membership today (org switcher deferred); see TODO in Notes.
+-- Removing this index (plus the API guard) is all that's needed to let a user
+-- own multiple orgs later.
+--
+-- Preflight (Codex MEDIUM): a live project with two pre-existing owner rows for
+-- one user would fail the unique-index build with an opaque error. Fail loudly
+-- with an actionable message instead.
+do $$
+begin
+  if exists (
+    select 1 from organization_memberships
+    where role = 'owner'
+    group by user_id
+    having count(*) > 1
+  ) then
+    raise exception 'Cannot create one_owner_membership_per_user: a user already owns >1 org. Resolve duplicate owner memberships before applying this migration.';
+  end if;
+end $$;
+
 create unique index one_owner_membership_per_user
   on organization_memberships(user_id)
   where role = 'owner';
@@ -728,6 +834,21 @@ def test_fails_closed_when_lookup_errors_and_auth_required() -> None:
 
     with pytest.raises(OrgConnectionNotConfiguredError):
         resolve_snowflake_config("org-1", settings, fetch_connection=_boom)
+
+
+def test_fails_closed_when_row_status_not_active() -> None:
+    settings = Settings(auth_required=True)
+
+    def _invalid(_org_id: str) -> OrgConnectionRow:
+        return OrgConnectionRow(
+            account="acct", snowflake_user="u", role="r", warehouse="w",
+            database=None, schema=None,
+            private_key_pem="-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----",
+            passphrase=None, status="invalid",
+        )
+
+    with pytest.raises(OrgConnectionNotConfiguredError):
+        resolve_snowflake_config("org-1", settings, fetch_connection=_invalid)
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -759,6 +880,7 @@ class OrgConnectionRow:
     schema: str | None
     private_key_pem: str
     passphrase: str | None
+    status: str = "active"
 
 
 class OrgConnectionNotConfiguredError(RuntimeError):
@@ -782,6 +904,11 @@ def resolve_snowflake_config(
         ) from exc
 
     if row is not None:
+        if row.status != "active":
+            # Fail closed: an invalidated connection must not run dashboards.
+            raise OrgConnectionNotConfiguredError(
+                "This organization's Snowflake connection is not active."
+            )
         return SnowflakeConnectionConfig(
             account=row.account,
             user=row.snowflake_user,
@@ -841,7 +968,8 @@ def test_fetcher_combines_row_metadata_and_secret() -> None:
         if request.url.path.endswith("/organization_snowflake_connections"):
             return httpx.Response(200, json=[{
                 "account": "acct", "snowflake_user": "u", "role": "r",
-                "warehouse": "w", "database": None, "schema": None, "secret_id": "sec-1",
+                "warehouse": "w", "database": None, "schema": None,
+                "status": "active", "secret_id": "sec-1",
             }])
         if request.url.path.endswith("/rpc/get_organization_snowflake_secret"):
             return httpx.Response(200, json=[{
@@ -858,6 +986,7 @@ def test_fetcher_combines_row_metadata_and_secret() -> None:
     assert row is not None
     assert row.account == "acct"
     assert row.private_key_pem == "PEMDATA"
+    assert row.status == "active"
 
 
 def test_fetcher_returns_none_when_no_row() -> None:
@@ -916,7 +1045,7 @@ class SupabaseConnectionFetcher:
                 self._table_url,
                 params={
                     "organization_id": f"eq.{organization_id}",
-                    "select": "account,snowflake_user,role,warehouse,database,schema,secret_id",
+                    "select": "account,snowflake_user,role,warehouse,database,schema,status,secret_id",
                     "limit": "1",
                 },
                 headers=self._headers(),
@@ -952,6 +1081,7 @@ class SupabaseConnectionFetcher:
             schema=meta.get("schema"),
             private_key_pem=str(pem),
             passphrase=secret.get("passphrase"),
+            status=str(meta.get("status") or "invalid"),
         )
 ```
 
@@ -1068,6 +1198,46 @@ git add apps/api/app/services/membership_directory.py apps/api/app/auth.py apps/
 git commit -m "feat(api): carry membership role and add require_org_admin guard"
 ```
 
+### Task 8b: Lock down the legacy global `/api/snowflake/validate` route
+
+> **Codex HIGH.** `POST /api/snowflake/validate` (`apps/api/app/routes/snowflake.py`) today requires only auth and calls `validate_snowflake_connection()` with no org config, which falls back to the deployment `.env` credentials. Under `auth_required=true` that lets any signed-in tenant user exercise deployment-level Snowflake creds — a fail-closed/tenancy violation. Spec A flagged this as "Spec B must add a guard here."
+>
+> **v1 fix:** the route is a self-host/dev convenience only. Gate it to `auth_required=false`; when auth is on, return 404 (per-org validation now happens inside `POST /api/onboarding/connect` against user-supplied creds, never env). This is simpler and safer than threading org+admin resolution into a route we don't otherwise need in multi-tenant mode.
+
+**Files:**
+- Modify: `apps/api/app/routes/snowflake.py`
+- Test: `apps/api/tests/test_snowflake_route.py` (or the file that currently covers this route)
+
+- [ ] **Step 1: Write the failing test**
+
+Add tests asserting that with `auth_required=true` (use the existing harness/override for `Settings` in that file), `POST /api/snowflake/validate` returns **404** in **both** the authenticated **and unauthenticated** cases (the 404 must not depend on auth succeeding first), and that with `auth_required=false` it still reaches `validate_snowflake_connection` (monkeypatched) and returns its normal success/422 shape.
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `cd apps/api && uv run pytest tests/test_snowflake_route.py -v`
+Expected: FAIL (route still served under auth).
+
+- [ ] **Step 3: Gate the route deterministically (Codex confirmation HIGH)**
+
+The 404 must fire **before** FastAPI resolves any auth dependency, so an unauthenticated caller under `auth_required=true` also gets 404 (not 401) and the deployment route is uniformly invisible. Do **not** rely on a 404 raised inside the handler body while `require_auth_context` is still declared on the route — that dependency runs first. Use one of:
+
+- **Preferred — gate at registration** in `apps/api/app/main.py`: only `app.include_router(snowflake.router)` when `not settings.auth_required`. (Confirm the router exposes *only* this validate route; if it carries other endpoints needed under auth, use the per-route option below instead.)
+- **Per-route** in `apps/api/app/routes/snowflake.py`: **remove** `require_auth_context` from this route's signature (it is self-host-only) and make the **first** statement `if settings.auth_required: raise HTTPException(status_code=404)`, reading `settings` via the same `Depends(get_settings)` pattern other routes use.
+
+Leave the existing self-host validation behavior intact when auth is off.
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `cd apps/api && uv run pytest tests/test_snowflake_route.py -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/api/app/routes/snowflake.py apps/api/tests/test_snowflake_route.py
+git commit -m "fix(api): gate legacy snowflake validate route to self-host (no env creds under auth)"
+```
+
 ---
 
 ## Phase 5 — Onboarding endpoint
@@ -1151,6 +1321,25 @@ def test_connect_returns_422_and_persists_nothing_on_validation_failure(monkeypa
 
     assert response.status_code == 422
     assert calls == []  # nothing persisted
+
+
+def test_connect_returns_422_on_malformed_key(monkeypatch) -> None:
+    from app.services.snowflake_client import SnowflakeConfigurationError
+
+    app.dependency_overrides[require_auth_context] = _auth_context
+
+    def _bad_key(config):
+        raise SnowflakeConfigurationError("Snowflake private key could not be loaded.")
+
+    monkeypatch.setattr(onboarding, "validate_snowflake_connection", _bad_key)
+    calls = []
+    monkeypatch.setattr(onboarding, "create_org_with_connection", lambda **k: calls.append(k))
+    client = TestClient(app)
+    response = client.post("/api/onboarding/connect", json=_payload())
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+    assert calls == []  # nothing persisted
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -1173,6 +1362,7 @@ from app.services.snowflake_account import (
     validate_account_identifier,
 )
 from app.services.snowflake_client import (
+    SnowflakeConfigurationError,
     SnowflakeConnectionConfig,
     SnowflakeValidationError,
     validate_snowflake_connection,
@@ -1241,6 +1431,14 @@ def connect_snowflake(
         validate_snowflake_connection(config)
     except SnowflakeValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
+    except SnowflakeConfigurationError:
+        # Most common onboarding error: a malformed PEM or wrong passphrase.
+        # Surface a neutral 422, never a 500 (the message is already generic and
+        # leaks no key material).
+        raise HTTPException(
+            status_code=422,
+            detail="Snowflake private key could not be loaded. Check the PEM and passphrase.",
+        ) from None
 
     organization_id = create_org_with_connection(
         p_user_id=auth_context.user_id,
@@ -1279,6 +1477,123 @@ Expected: PASS.
 ```bash
 git add apps/api/app/routes/onboarding.py apps/api/app/main.py apps/api/tests/test_onboarding_route.py
 git commit -m "feat(api): onboarding connect endpoint (validate then atomic create)"
+```
+
+### Task 9b: Rate-limit + single-flight guard on connect (abuse surface)
+
+> **Codex HIGH.** Each connect attempt opens a slow outbound Snowflake connection and runs four probe queries. Without a guard any authenticated user can spin this in a loop. v1 uses a **lightweight in-process limiter** (per-user fixed window) plus a **single-flight guard** (reject a second concurrent validation for the same user). This is sufficient for a single API instance; if we scale horizontally, swap the in-process store for a Postgres/Redis-backed limiter (noted in the module docstring).
+
+**Files:**
+- Create: `apps/api/app/services/connect_rate_limit.py`
+- Modify: `apps/api/app/routes/onboarding.py`
+- Test: `apps/api/tests/test_connect_rate_limit.py`
+
+- [ ] **Step 1: Write the failing test**
+
+Create `apps/api/tests/test_connect_rate_limit.py`:
+
+```python
+import pytest
+
+from app.services.connect_rate_limit import (
+    ConnectRateLimitedError,
+    ConnectInFlightError,
+    InMemoryConnectLimiter,
+)
+
+
+def test_allows_up_to_limit_then_blocks() -> None:
+    clock = {"t": 1000.0}
+    limiter = InMemoryConnectLimiter(max_attempts=3, window_seconds=60, now=lambda: clock["t"])
+    for _ in range(3):
+        with limiter.guard("user-1"):
+            pass
+    with pytest.raises(ConnectRateLimitedError):
+        with limiter.guard("user-1"):
+            pass
+
+
+def test_window_resets_after_expiry() -> None:
+    clock = {"t": 1000.0}
+    limiter = InMemoryConnectLimiter(max_attempts=1, window_seconds=60, now=lambda: clock["t"])
+    with limiter.guard("user-1"):
+        pass
+    clock["t"] += 61
+    with limiter.guard("user-1"):  # no raise — window rolled over
+        pass
+
+
+def test_rejects_concurrent_in_flight_for_same_user() -> None:
+    limiter = InMemoryConnectLimiter(max_attempts=10, window_seconds=60)
+    with limiter.guard("user-1"):
+        with pytest.raises(ConnectInFlightError):
+            with limiter.guard("user-1"):
+                pass
+
+
+def test_per_user_isolation() -> None:
+    limiter = InMemoryConnectLimiter(max_attempts=1, window_seconds=60)
+    with limiter.guard("user-1"):
+        pass
+    with limiter.guard("user-2"):  # different user unaffected
+        pass
+
+
+def test_in_flight_released_when_body_raises() -> None:
+    limiter = InMemoryConnectLimiter(max_attempts=10, window_seconds=60)
+    with pytest.raises(ValueError):
+        with limiter.guard("user-1"):
+            raise ValueError("boom")
+    # The failed attempt must NOT leave the user permanently in-flight.
+    with limiter.guard("user-1"):
+        pass
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `cd apps/api && uv run pytest tests/test_connect_rate_limit.py -v`
+Expected: FAIL (module missing).
+
+- [ ] **Step 3: Implement the limiter**
+
+Create `apps/api/app/services/connect_rate_limit.py`. A `contextmanager`-style `guard(user_id)` that (a) raises `ConnectInFlightError` if the user already has an in-flight attempt, (b) raises `ConnectRateLimitedError` if the user exceeded `max_attempts` in the rolling window, otherwise records the attempt and yields. **The in-flight key MUST be released in a `finally`** (Codex confirmation MEDIUM) so an exception in the guarded body — a failed Snowflake validation or provisioning error — never leaves the user permanently "in flight". Note the ordering: the rate-limit raise (b) happens on entry and must *not* register an in-flight key it then can't clear; only the path that actually `yield`s registers and later releases the in-flight key. Use a `threading.Lock` around the in-memory dicts so it's safe under the threaded test client. Inject `now` for deterministic tests (no `time.time()` in tests). Module docstring: "In-process only; swap for a Postgres/Redis store if running multiple API instances."
+
+- [ ] **Step 4: Apply the guard in the connect route**
+
+In `apps/api/app/routes/onboarding.py`, wrap the validation+create body in `with get_connect_limiter().guard(auth_context.user_id):` and map the two errors:
+
+```python
+    from app.services.connect_rate_limit import (
+        ConnectInFlightError,
+        ConnectRateLimitedError,
+        get_connect_limiter,
+    )
+
+    try:
+        with get_connect_limiter().guard(auth_context.user_id):
+            ...  # existing account-validate → snowflake-validate → create body
+    except ConnectInFlightError:
+        raise HTTPException(status_code=409, detail="A connection attempt is already in progress.") from None
+    except ConnectRateLimitedError:
+        raise HTTPException(status_code=429, detail="Too many connection attempts. Try again shortly.") from None
+```
+
+(`get_connect_limiter()` returns a module-level singleton `InMemoryConnectLimiter`; keep the limiter creation out of the hot path.)
+
+- [ ] **Step 5: Add route tests for 429 / 409**
+
+Append to `apps/api/tests/test_onboarding_route.py` tests that hammer `/api/onboarding/connect` past the limit (assert one `429`) and that a re-entrant call during an in-flight validation returns `409`. Reset the singleton between tests (e.g. monkeypatch a fresh `InMemoryConnectLimiter`).
+
+- [ ] **Step 6: Run the tests to verify they pass**
+
+Run: `cd apps/api && uv run pytest tests/test_connect_rate_limit.py tests/test_onboarding_route.py -v`
+Expected: PASS.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add apps/api/app/services/connect_rate_limit.py apps/api/app/routes/onboarding.py apps/api/tests/test_connect_rate_limit.py apps/api/tests/test_onboarding_route.py
+git commit -m "feat(api): rate-limit + single-flight guard on Snowflake connect"
 ```
 
 ### Task 10: Service-role org provisioning (the RPC call)
@@ -1480,41 +1795,44 @@ git commit -m "feat(api): service-role org provisioning via atomic create RPC"
 Append to `apps/api/tests/test_snowflake_dashboard_run.py` a test asserting the per-org config reaches the executor. Example:
 
 ```python
-def test_build_uses_supplied_connection_config() -> None:
+def test_build_forwards_connection_config_to_execute_source_query(monkeypatch) -> None:
     from app.config import Settings
+    from app.services import dashboard_datasets
     from app.services.dashboard_datasets import build_snowflake_dashboard_data
     from app.services.snowflake_client import SnowflakeConnectionConfig
 
     used = {}
 
-    def fake_execute(sql, bind_params, config=None):
+    # Monkeypatch the real default executor so we prove the per-org config is
+    # bound by build_snowflake_dashboard_data's default closure — not by a
+    # custom `execute` that would bypass the binding entirely.
+    def fake_execute_source_query(sql, bind_params, config=None):
         used["config"] = config
         return []
 
+    monkeypatch.setattr(dashboard_datasets, "execute_source_query", fake_execute_source_query)
+
     config = SnowflakeConnectionConfig(account="per-org", user="u", role="r", warehouse="w")
     try:
-        build_snowflake_dashboard_data(
-            Settings(), execute=lambda sql, params: fake_execute(sql, params, config),
-            connection_config=config,
-        )
+        build_snowflake_dashboard_data(Settings(), connection_config=config)
     except Exception:
         pass
     assert used["config"].account == "per-org"
 ```
 
-(Adjust to the file's existing fixtures/imports; the key assertion is that `build_snowflake_dashboard_data` accepts and forwards `connection_config`.)
+(Adjust to the file's existing fixtures/imports. The key point — per Codex — is that `connection_config` is bound inside the **default** executor and reaches `execute_source_query`; `ExecuteFn` stays two-arg.)
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `cd apps/api && uv run pytest tests/test_snowflake_dashboard_run.py -k supplied_connection_config -v`
+Run: `cd apps/api && uv run pytest tests/test_snowflake_dashboard_run.py -k forwards_connection_config -v`
 Expected: FAIL (`connection_config` kwarg unknown).
 
 - [ ] **Step 3: Thread the config through the executor**
 
 In `apps/api/app/services/dashboard_datasets.py`:
-- Change `ExecuteFn` to `Callable[[str, dict[str, Any], SnowflakeConnectionConfig | None], list[dict[str, Any]]]` and import `SnowflakeConnectionConfig`.
+- **Keep `ExecuteFn` two-arg** (`Callable[[str, dict[str, Any]], list[dict[str, Any]]]`) — do **not** add a third positional param. Internal call sites stay `execute_source(source.sql, bind_params)` unchanged, and any test/override that supplies its own two-arg `execute` keeps working. Import `SnowflakeConnectionConfig` for the new kwarg only.
 - Add `connection_config: SnowflakeConnectionConfig | None = None` to `build_snowflake_dashboard_data`'s signature.
-- Replace `execute_source = execute or execute_source_query` with a partial that binds the config:
+- The per-org config is bound **only inside the default executor** (the closure below), so it reaches `execute_source_query` without changing `ExecuteFn`. Replace `execute_source = execute or execute_source_query` with:
 
 ```python
     if execute is not None:
@@ -2088,7 +2406,7 @@ git commit -m "feat(web): replace coming-soon screen with the Snowflake connect 
 
 ## Phase 8 — Teardown wiring + docs
 
-### Task 16: Disconnect endpoint that deletes the Vault secret (admin-only)
+### Task 16: Disconnect endpoint — atomic invalidate + Vault secret delete (admin-only)
 
 **Files:**
 - Modify: `apps/api/app/routes/onboarding.py`
@@ -2124,13 +2442,13 @@ def test_disconnect_deletes_secret_for_admin(monkeypatch) -> None:
         organizations=(Organization(id="org-1", name="Acme", role="owner"),),
     )
     app.dependency_overrides[require_auth_context] = lambda: admin_ctx
-    deleted = []
-    monkeypatch.setattr(onboarding, "delete_org_secret", lambda org_id: deleted.append(org_id))
+    disconnected = []
+    monkeypatch.setattr(onboarding, "disconnect_org_connection", lambda org_id: disconnected.append(org_id))
     client = TestClient(app)
     response = client.post("/api/onboarding/org-1/disconnect")
     app.dependency_overrides.clear()
     assert response.status_code == 204
-    assert deleted == ["org-1"]
+    assert disconnected == ["org-1"]
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
@@ -2146,9 +2464,9 @@ In `apps/api/app/routes/onboarding.py` add:
 from app.auth import require_org_admin
 
 
-def delete_org_secret(organization_id: str) -> None:
-    """Seam over the service-role delete RPC; configured at startup."""
-    from app.services.org_provisioning import delete_org_secret as impl
+def disconnect_org_connection(organization_id: str) -> None:
+    """Seam over the service-role disconnect RPC; configured at startup."""
+    from app.services.org_provisioning import disconnect_org_connection as impl
 
     impl(organization_id)
 
@@ -2159,10 +2477,12 @@ def disconnect_snowflake(
     auth_context: AuthContext = Depends(require_auth_context),
 ) -> None:
     require_org_admin(auth_context, organization_id)
-    delete_org_secret(organization_id)
+    disconnect_org_connection(organization_id)
 ```
 
-In `apps/api/app/services/org_provisioning.py`, add a `delete_org_secret` that POSTs to `/rest/v1/rpc/delete_organization_snowflake_secret` using the same configured service-role client pattern as `create_org_with_connection` (add a module-level configured caller mirroring `_provisioner`).
+In `apps/api/app/services/org_provisioning.py`, add a `disconnect_org_connection` that POSTs to `/rest/v1/rpc/disconnect_organization_snowflake` using the same configured service-role client pattern as `create_org_with_connection` (add a module-level configured caller mirroring `_provisioner`). This RPC atomically deletes the Vault secret, clears `secret_id`, and sets `status='invalid'` — so the summary immediately reflects "disconnected" and the resolver fails closed. **Do not** call the secret-only delete here; that would leave a lying `active` row.
+
+**No-row idempotency (Codex confirmation MEDIUM).** The RPC is intentionally a no-op when the org has no connection row (returns normally, no error — see the SQL comment), so a double-disconnect is safe and the route returns 204 either way. Add a route-level test that a second `POST /{org}/disconnect` (seam stubbed) still returns 204; the DB-level no-row idempotency itself is a live-only behavior and is added to the manual-smoke checklist (Final verification), consistent with the Vault-is-integration-tested stance.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
@@ -2185,7 +2505,7 @@ git commit -m "feat(api): admin-only disconnect that deletes the org Vault secre
 
 - In `docs/auth-and-deployment.md`, replace the "First-user bootstrap" section's "self-serve is Spec B" note with the new self-service flow (sign in → connect wizard → validated → org created), and note `.env` Snowflake vars are only used in `auth_required=false` self-host.
 - In `docs/snowflake-setup.md`, add the customer-facing dedicated-user setup SQL (from spec §4.3) and the `USAGE_VIEWER` grant.
-- In `docs/security-model.md`, document that per-org Snowflake keys are stored in Supabase Vault (encrypted at rest, key outside the DB), read only via a service-role RPC, and that the resolver fails closed under auth.
+- In `docs/security-model.md`, document that per-org Snowflake keys are stored in Supabase Vault (encrypted at rest, key outside the DB), read only via a service-role RPC, and that the resolver fails closed under auth (including when `status != 'active'`). Note the Vault-teardown guarantees: a `before delete` trigger removes the secret on row delete / org-delete cascade, and disconnect atomically deletes the secret + invalidates the row. Note that credential lifecycle events (connect/disconnect/secret write) are audit-logged without key material, and correct the stale "membership comes from Supabase claims" line to reflect the live membership lookup in `auth.py`.
 
 - [ ] **Step 2: Verify no broken references**
 
@@ -2206,11 +2526,15 @@ git commit -m "docs: document self-service Snowflake onboarding and per-org secr
 - [ ] **Web suite:** `cd apps/web && npm test` → all pass.
 - [ ] **Lint/format:** run the repo's configured formatters/linters (ruff/black for API per repo config; eslint/prettier for web).
 - [ ] **Manual smoke (Kyle verifies visually):** with a real Supabase + Vault project and `AUTH_REQUIRED=true`, sign in as a brand-new user → the connect wizard appears in dashboard styling → enter real Snowflake keypair creds → "Test connection & save" → dashboard loads against those creds. Confirm `USAGE_VIEWER` covers all four probe views (esp. `QUERY_ATTRIBUTION_HISTORY`) against dev account `TU24199`; if a probe is denied, document the broad-grant fallback (spec §4.3).
+- [ ] **Manual smoke — teardown/disconnect (live Vault):** as an org admin, disconnect → confirm (a) the Vault secret is gone, (b) `secret_id` is null and `status='invalid'`, (c) the summary shows "disconnected" and a subsequent dashboard run fails closed, (d) a **second** disconnect is a no-op 204 (RPC idempotency). Then delete the org → confirm the `before delete` trigger removed the Vault secret (no orphan).
 
 ---
 
 ## Notes for the implementer
 
-- **Vault is integration-tested, not unit-tested.** The migration tests assert the SQL text; the real Vault round-trip (`create_secret` → `decrypted_secrets`) must be exercised against a live Supabase project during the manual smoke. Treat any Vault/RPC error as fail-closed (the resolver already does).
+- **Vault is integration-tested, not unit-tested.** The migration tests assert the SQL text; the real Vault round-trip (`create_secret` → `decrypted_secrets`) must be exercised against a live Supabase project during the manual smoke. Treat any Vault/RPC error as fail-closed (the resolver already does). **TODO (deferred):** add an automated live-Supabase integration test for the secret RPCs + RLS denials if this becomes load-bearing (see Phase 1 callout).
 - **Never log PEM or passphrase.** `SnowflakeConnectionConfig` marks them `repr=False`; keep them out of new log lines and audit payloads.
-- **The one-org guard** lives in the DB (`one_owner_membership_per_user` + advisory lock). To enable multi-org later, drop that index and the `OrgAlreadyExistsError` mapping, then add the org switcher.
+- **Ownership vs membership (one-org guard).** v1 caps a user at **one owned org** via `one_owner_membership_per_user` + the advisory lock in the create RPC. Multi-org *membership* (admin/member of other orgs) is intentionally allowed. Routing currently picks the first membership (`org-shell.tsx`); the org switcher is deferred. **TODO (multi-org owner):** drop that index, remove the create-RPC owner check + `OrgAlreadyExistsError` mapping, and add the org switcher.
+- **Rotate / reconnect is deferred (Codex MEDIUM).** v1 ships **connect** (initial, coupled to org creation) and **disconnect** (admin-only; invalidates the row + deletes the Vault secret). There is intentionally **no in-place key-rotation or reconnect path** yet. Interim workaround for a broken connection: an org admin disconnects, but note that re-onboarding the *same* org is not yet possible (connect is coupled to org creation and the one-org guard blocks a second owned org). **TODO (fast-follow):** an admin-only `POST /api/orgs/{id}/snowflake/connection` that re-validates and re-sets the secret on an existing org (reuses `set_organization_snowflake_secret` + flips `status` back to `active`).
+- **Audit hooks are in scope; the durable table is deferred.** Emit a structured log line on connect success/failure, disconnect, and secret write/rotate (org id, user id, account, outcome — **never** PEM/passphrase). A test should assert no key material appears in the emitted payload. **TODO (deferred):** a durable `audit_events` table as a fast-follow.
+- **Docs drift (Codex LOW).** `docs/security-model.md` currently says membership comes from Supabase claims, but `auth.py` already uses a live membership lookup. Phase 8 (Task 17) updates the docs; if an implementer reads them mid-build, treat the live-lookup code as source of truth.
