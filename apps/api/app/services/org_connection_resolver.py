@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
+import httpx
+
 from app.config import Settings
 from app.services.snowflake_client import SnowflakeConnectionConfig
 
@@ -68,9 +70,6 @@ def resolve_snowflake_config(
     return SnowflakeConnectionConfig.from_environment()
 
 
-import httpx
-
-
 class SupabaseConnectionFetcher:
     """Reads a per-org connection row + decrypted Vault secret via service role."""
 
@@ -97,7 +96,9 @@ class SupabaseConnectionFetcher:
         }
 
     def __call__(self, organization_id: str) -> OrgConnectionRow | None:
-        with httpx.Client(timeout=self._timeout_seconds, transport=self._transport) as client:
+        with httpx.Client(
+            timeout=self._timeout_seconds, transport=self._transport
+        ) as client:
             meta_response = client.get(
                 self._table_url,
                 params={
@@ -131,11 +132,15 @@ class SupabaseConnectionFetcher:
             secret_response.raise_for_status()
             secret_rows = secret_response.json()
             if not isinstance(secret_rows, list) or len(secret_rows) != 1:
-                raise OrgConnectionNotConfiguredError("Snowflake secret missing for org.")
+                raise OrgConnectionNotConfiguredError(
+                    "Snowflake secret missing for org."
+                )
             secret = secret_rows[0]
             pem = secret.get("private_key_pem")
             if not pem:
-                raise OrgConnectionNotConfiguredError("Snowflake secret missing for org.")
+                raise OrgConnectionNotConfiguredError(
+                    "Snowflake secret missing for org."
+                )
 
         return OrgConnectionRow(
             account=str(meta["account"]),

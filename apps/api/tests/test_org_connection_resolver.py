@@ -1,17 +1,23 @@
+import httpx
 import pytest
 
 from app.config import Settings
 from app.services.org_connection_resolver import (
     OrgConnectionNotConfiguredError,
     OrgConnectionRow,
+    SupabaseConnectionFetcher,
     resolve_snowflake_config,
 )
 
 
 def _row() -> OrgConnectionRow:
     return OrgConnectionRow(
-        account="acct", snowflake_user="u", role="r", warehouse="w",
-        database=None, schema=None,
+        account="acct",
+        snowflake_user="u",
+        role="r",
+        warehouse="w",
+        database=None,
+        schema=None,
         private_key_pem="-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----",
         passphrase=None,
     )
@@ -29,13 +35,19 @@ def test_uses_per_org_row_when_present() -> None:
 def test_fails_closed_when_no_row_and_auth_required() -> None:
     settings = Settings(auth_required=True)
     with pytest.raises(OrgConnectionNotConfiguredError):
-        resolve_snowflake_config("org-1", settings, fetch_connection=lambda _org_id: None)
+        resolve_snowflake_config(
+            "org-1", settings, fetch_connection=lambda _org_id: None
+        )
 
 
-def test_falls_back_to_env_when_auth_not_required(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_falls_back_to_env_when_auth_not_required(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("SNOWFLAKE_ACCOUNT", "env-acct")
     settings = Settings(auth_required=False)
-    config = resolve_snowflake_config("org-1", settings, fetch_connection=lambda _org_id: None)
+    config = resolve_snowflake_config(
+        "org-1", settings, fetch_connection=lambda _org_id: None
+    )
     assert config.account == "env-acct"
 
 
@@ -54,19 +66,19 @@ def test_fails_closed_when_row_status_not_active() -> None:
 
     def _invalid(_org_id: str) -> OrgConnectionRow:
         return OrgConnectionRow(
-            account="acct", snowflake_user="u", role="r", warehouse="w",
-            database=None, schema=None,
+            account="acct",
+            snowflake_user="u",
+            role="r",
+            warehouse="w",
+            database=None,
+            schema=None,
             private_key_pem="-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----",
-            passphrase=None, status="invalid",
+            passphrase=None,
+            status="invalid",
         )
 
     with pytest.raises(OrgConnectionNotConfiguredError):
         resolve_snowflake_config("org-1", settings, fetch_connection=_invalid)
-
-
-import httpx
-
-from app.services.org_connection_resolver import SupabaseConnectionFetcher
 
 
 def _transport(handler):
@@ -76,15 +88,31 @@ def _transport(handler):
 def test_fetcher_combines_row_metadata_and_secret() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/organization_snowflake_connections"):
-            return httpx.Response(200, json=[{
-                "account": "acct", "snowflake_user": "u", "role": "r",
-                "warehouse": "w", "database": None, "schema": None,
-                "status": "active", "secret_id": "sec-1",
-            }])
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "account": "acct",
+                        "snowflake_user": "u",
+                        "role": "r",
+                        "warehouse": "w",
+                        "database": None,
+                        "schema": None,
+                        "status": "active",
+                        "secret_id": "sec-1",
+                    }
+                ],
+            )
         if request.url.path.endswith("/rpc/get_organization_snowflake_secret"):
-            return httpx.Response(200, json=[{
-                "private_key_pem": "PEMDATA", "passphrase": None,
-            }])
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "private_key_pem": "PEMDATA",
+                        "passphrase": None,
+                    }
+                ],
+            )
         return httpx.Response(404)
 
     fetcher = SupabaseConnectionFetcher(
@@ -113,8 +141,12 @@ def test_fetcher_returns_none_when_no_row() -> None:
 
 def test_org_connection_row_repr_redacts_secrets() -> None:
     row = OrgConnectionRow(
-        account="acct", snowflake_user="u", role="r", warehouse="w",
-        database=None, schema=None,
+        account="acct",
+        snowflake_user="u",
+        role="r",
+        warehouse="w",
+        database=None,
+        schema=None,
         private_key_pem="-----BEGIN PRIVATE KEY-----\nSECRETKEYBODY\n-----END PRIVATE KEY-----",
         passphrase="hunter2",
     )
@@ -126,18 +158,31 @@ def test_org_connection_row_repr_redacts_secrets() -> None:
 def test_fetcher_raises_on_multiple_metadata_rows() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/organization_snowflake_connections"):
-            return httpx.Response(200, json=[
-                {
-                    "account": "acct", "snowflake_user": "u", "role": "r",
-                    "warehouse": "w", "database": None, "schema": None,
-                    "status": "active", "secret_id": "sec-1",
-                },
-                {
-                    "account": "acct2", "snowflake_user": "u2", "role": "r2",
-                    "warehouse": "w2", "database": None, "schema": None,
-                    "status": "active", "secret_id": "sec-2",
-                },
-            ])
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "account": "acct",
+                        "snowflake_user": "u",
+                        "role": "r",
+                        "warehouse": "w",
+                        "database": None,
+                        "schema": None,
+                        "status": "active",
+                        "secret_id": "sec-1",
+                    },
+                    {
+                        "account": "acct2",
+                        "snowflake_user": "u2",
+                        "role": "r2",
+                        "warehouse": "w2",
+                        "database": None,
+                        "schema": None,
+                        "status": "active",
+                        "secret_id": "sec-2",
+                    },
+                ],
+            )
         return httpx.Response(404)
 
     fetcher = SupabaseConnectionFetcher(
@@ -167,16 +212,29 @@ def test_fetcher_raises_on_malformed_metadata() -> None:
 def test_fetcher_raises_on_multiple_secret_rows() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/organization_snowflake_connections"):
-            return httpx.Response(200, json=[{
-                "account": "acct", "snowflake_user": "u", "role": "r",
-                "warehouse": "w", "database": None, "schema": None,
-                "status": "active", "secret_id": "sec-1",
-            }])
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "account": "acct",
+                        "snowflake_user": "u",
+                        "role": "r",
+                        "warehouse": "w",
+                        "database": None,
+                        "schema": None,
+                        "status": "active",
+                        "secret_id": "sec-1",
+                    }
+                ],
+            )
         if request.url.path.endswith("/rpc/get_organization_snowflake_secret"):
-            return httpx.Response(200, json=[
-                {"private_key_pem": "PEMDATA", "passphrase": None},
-                {"private_key_pem": "PEMDATA2", "passphrase": None},
-            ])
+            return httpx.Response(
+                200,
+                json=[
+                    {"private_key_pem": "PEMDATA", "passphrase": None},
+                    {"private_key_pem": "PEMDATA2", "passphrase": None},
+                ],
+            )
         return httpx.Response(404)
 
     fetcher = SupabaseConnectionFetcher(

@@ -366,7 +366,8 @@ def test_require_org_admin_allows_admin() -> None:
     from app.services.membership_directory import Organization
 
     context = AuthContext(
-        user_id="u", auth_required=True,
+        user_id="u",
+        auth_required=True,
         memberships=frozenset({"org-1"}),
         organizations=(Organization(id="org-1", name="Acme", role="admin"),),
     )
@@ -378,7 +379,8 @@ def test_require_org_admin_rejects_member() -> None:
     from app.services.membership_directory import Organization
 
     context = AuthContext(
-        user_id="u", auth_required=True,
+        user_id="u",
+        auth_required=True,
         memberships=frozenset({"org-1"}),
         organizations=(Organization(id="org-1", name="Acme", role="member"),),
     )
