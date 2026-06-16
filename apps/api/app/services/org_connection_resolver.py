@@ -66,3 +66,77 @@ def resolve_snowflake_config(
         )
 
     return SnowflakeConnectionConfig.from_environment()
+
+
+import httpx
+
+
+class SupabaseConnectionFetcher:
+    """Reads a per-org connection row + decrypted Vault secret via service role."""
+
+    def __init__(
+        self,
+        *,
+        supabase_url: str,
+        service_role_key: str,
+        timeout_seconds: float = 10.0,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        base = supabase_url.rstrip("/")
+        self._table_url = f"{base}/rest/v1/organization_snowflake_connections"
+        self._secret_rpc_url = f"{base}/rest/v1/rpc/get_organization_snowflake_secret"
+        self._service_role_key = service_role_key
+        self._timeout_seconds = timeout_seconds
+        self._transport = transport
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "apikey": self._service_role_key,
+            "authorization": f"Bearer {self._service_role_key}",
+            "content-type": "application/json",
+        }
+
+    def __call__(self, organization_id: str) -> OrgConnectionRow | None:
+        with httpx.Client(timeout=self._timeout_seconds, transport=self._transport) as client:
+            meta_response = client.get(
+                self._table_url,
+                params={
+                    "organization_id": f"eq.{organization_id}",
+                    "select": "account,snowflake_user,role,warehouse,database,schema,status,secret_id",
+                    "limit": "1",
+                },
+                headers=self._headers(),
+            )
+            meta_response.raise_for_status()
+            rows = meta_response.json()
+            if not isinstance(rows, list) or not rows:
+                return None
+            meta = rows[0]
+            if not meta.get("secret_id"):
+                return None
+
+            secret_response = client.post(
+                self._secret_rpc_url,
+                json={"target_organization_id": organization_id},
+                headers=self._headers(),
+            )
+            secret_response.raise_for_status()
+            secret_rows = secret_response.json()
+            if not isinstance(secret_rows, list) or not secret_rows:
+                raise OrgConnectionNotConfiguredError("Snowflake secret missing for org.")
+            secret = secret_rows[0]
+            pem = secret.get("private_key_pem")
+            if not pem:
+                raise OrgConnectionNotConfiguredError("Snowflake secret missing for org.")
+
+        return OrgConnectionRow(
+            account=str(meta["account"]),
+            snowflake_user=str(meta["snowflake_user"]),
+            role=str(meta["role"]),
+            warehouse=str(meta["warehouse"]),
+            database=meta.get("database"),
+            schema=meta.get("schema"),
+            private_key_pem=str(pem),
+            passphrase=secret.get("passphrase"),
+            status=str(meta.get("status") or "invalid"),
+        )
