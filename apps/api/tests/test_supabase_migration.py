@@ -121,7 +121,10 @@ def test_connection_table_defined_with_rls_and_no_authenticated_writes() -> None
         in sql
     )
     assert "secret_id uuid" in sql
-    assert "status text not null default 'invalid' check (status in ('active', 'invalid'))" in sql
+    assert (
+        "status text not null default 'invalid' check (status in ('active', 'invalid'))"
+        in sql
+    )
     assert (
         "alter table organization_snowflake_connections enable row level security"
         in sql
@@ -133,7 +136,10 @@ def test_connection_table_defined_with_rls_and_no_authenticated_writes() -> None
     assert "create policy organization_snowflake_connections_delete" not in sql
     # members can read non-sensitive metadata through a SECURITY DEFINER function
     assert "create or replace function get_org_connection_summary" in sql
-    assert "secret_id" not in sql.split("get_org_connection_summary", 1)[1].split("$$", 2)[1]
+    assert (
+        "secret_id"
+        not in sql.split("get_org_connection_summary", 1)[1].split("$$", 2)[1]
+    )
 
 
 def test_secret_rpcs_are_service_role_only() -> None:
@@ -164,9 +170,13 @@ def test_vault_extension_enabled_and_teardown_trigger_present() -> None:
     assert "delete from vault.secrets where id = old.secret_id" in sql
     # Disconnect must atomically clear the secret AND invalidate the row.
     assert "create or replace function disconnect_organization_snowflake" in sql
-    block = sql.split("create or replace function disconnect_organization_snowflake", 1)[1]
+    block = sql.split(
+        "create or replace function disconnect_organization_snowflake", 1
+    )[1]
     assert "set secret_id = null, status = 'invalid'" in block
-    grant = sql.split("grant execute on function disconnect_organization_snowflake", 1)[1].split(";", 1)[0]
+    grant = sql.split("grant execute on function disconnect_organization_snowflake", 1)[
+        1
+    ].split(";", 1)[0]
     assert "to service_role" in grant
     assert "authenticated" not in grant
 
@@ -177,7 +187,10 @@ def test_secret_lifecycle_hardening() -> None:
     delete_block = sql.split(
         "create or replace function delete_organization_snowflake_secret", 1
     )[1].split("$$", 2)[1]
-    assert "perform disconnect_organization_snowflake(target_organization_id)" in delete_block
+    assert (
+        "perform disconnect_organization_snowflake(target_organization_id)"
+        in delete_block
+    )
     # disconnect's UPDATE is guarded so repeated no-op disconnects don't churn updated_at
     assert "and (secret_id is not null or status <> 'invalid')" in sql
 
@@ -191,6 +204,8 @@ def test_atomic_create_rpc_and_one_org_guard() -> None:
     assert "create unique index one_owner_membership_per_user" in sql
     assert "where role = 'owner'" in sql
     # service-role only
-    block = sql.split("grant execute on function create_org_with_snowflake_connection", 1)[1].split(";", 1)[0]
+    block = sql.split(
+        "grant execute on function create_org_with_snowflake_connection", 1
+    )[1].split(";", 1)[0]
     assert "to service_role" in block
     assert "authenticated" not in block

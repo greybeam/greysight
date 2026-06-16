@@ -6,7 +6,9 @@ from app.services.snowflake_account import (
 )
 
 
-@pytest.mark.parametrize("value", ["GOPGUKF-JO19546", "abc12345.us-east-1", "org-account_1"])
+@pytest.mark.parametrize(
+    "value", ["GOPGUKF-JO19546", "abc12345.us-east-1", "org-account_1"]
+)
 def test_accepts_valid_account_identifiers(value: str) -> None:
     assert validate_account_identifier(value) == value
 
