@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 from app.config import Settings
@@ -15,8 +15,8 @@ class OrgConnectionRow:
     warehouse: str
     database: str | None
     schema: str | None
-    private_key_pem: str
-    passphrase: str | None
+    private_key_pem: str = field(repr=False)
+    passphrase: str | None = field(repr=False)
     status: str = "active"
 
 
@@ -109,8 +109,16 @@ class SupabaseConnectionFetcher:
             )
             meta_response.raise_for_status()
             rows = meta_response.json()
-            if not isinstance(rows, list) or not rows:
+            if not isinstance(rows, list):
+                raise OrgConnectionNotConfiguredError(
+                    "Malformed Snowflake connection metadata for org."
+                )
+            if not rows:
                 return None
+            if len(rows) > 1:
+                raise OrgConnectionNotConfiguredError(
+                    "Multiple Snowflake connection rows for org."
+                )
             meta = rows[0]
             if not meta.get("secret_id"):
                 return None
@@ -122,7 +130,7 @@ class SupabaseConnectionFetcher:
             )
             secret_response.raise_for_status()
             secret_rows = secret_response.json()
-            if not isinstance(secret_rows, list) or not secret_rows:
+            if not isinstance(secret_rows, list) or len(secret_rows) != 1:
                 raise OrgConnectionNotConfiguredError("Snowflake secret missing for org.")
             secret = secret_rows[0]
             pem = secret.get("private_key_pem")
