@@ -7,6 +7,7 @@ from app import auth
 from app.config import Settings
 from app.routes.dashboard_runs import router as dashboard_runs_router
 from app.routes.health import router as health_router
+from app.routes.onboarding import router as onboarding_router
 from app.routes.session import router as session_router
 from app.routes.snowflake import router as snowflake_router
 
@@ -46,3 +47,4 @@ app.include_router(health_router)
 app.include_router(snowflake_router)
 app.include_router(dashboard_runs_router)
 app.include_router(session_router)
+app.include_router(onboarding_router)

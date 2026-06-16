@@ -1,0 +1,96 @@
+from fastapi.testclient import TestClient
+
+from app.auth import AuthContext, require_auth_context
+from app.main import app
+from app.routes import onboarding
+
+
+def _auth_context() -> AuthContext:
+    return AuthContext(user_id="user-1", auth_required=True, memberships=frozenset())
+
+
+def _payload() -> dict:
+    return {
+        "org_name": "Acme",
+        "account": "GOPGUKF-JO19546",
+        "user": "GREYBEAM_USER",
+        "role": "GREYBEAM_ROLE",
+        "warehouse": "GREYBEAM_WH",
+        "private_key_pem": "-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----",
+    }
+
+
+def test_connect_validates_then_creates(monkeypatch) -> None:
+    app.dependency_overrides[require_auth_context] = _auth_context
+    monkeypatch.setattr(
+        onboarding, "validate_snowflake_connection", lambda config: None
+    )
+    created = {}
+    monkeypatch.setattr(
+        onboarding,
+        "create_org_with_connection",
+        lambda **kwargs: created.update(kwargs) or "org-123",
+    )
+    client = TestClient(app)
+    response = client.post("/api/onboarding/connect", json=_payload())
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 201
+    assert response.json()["id"] == "org-123"
+    assert created["p_user_id"] == "user-1"  # identity from token, not body
+    assert created["p_account"] == "GOPGUKF-JO19546"
+
+
+def test_connect_rejects_invalid_account(monkeypatch) -> None:
+    app.dependency_overrides[require_auth_context] = _auth_context
+    client = TestClient(app)
+    bad = _payload() | {"account": "http://evil.example.com"}
+    response = client.post("/api/onboarding/connect", json=bad)
+    app.dependency_overrides.clear()
+    assert response.status_code == 422
+
+
+def test_connect_returns_422_and_persists_nothing_on_validation_failure(
+    monkeypatch,
+) -> None:
+    from app.services.snowflake_client import SnowflakeValidationError
+
+    app.dependency_overrides[require_auth_context] = _auth_context
+
+    def _fail(config):
+        raise SnowflakeValidationError(
+            "Could not access required Snowflake Account Usage views."
+        )
+
+    monkeypatch.setattr(onboarding, "validate_snowflake_connection", _fail)
+    calls = []
+    monkeypatch.setattr(
+        onboarding, "create_org_with_connection", lambda **k: calls.append(k)
+    )
+    client = TestClient(app)
+    response = client.post("/api/onboarding/connect", json=_payload())
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+    assert calls == []  # nothing persisted
+
+
+def test_connect_returns_422_on_malformed_key(monkeypatch) -> None:
+    from app.services.snowflake_client import SnowflakeConfigurationError
+
+    app.dependency_overrides[require_auth_context] = _auth_context
+
+    def _bad_key(config):
+        raise SnowflakeConfigurationError("Snowflake private key could not be loaded.")
+
+    monkeypatch.setattr(onboarding, "validate_snowflake_connection", _bad_key)
+    calls = []
+    monkeypatch.setattr(
+        onboarding, "create_org_with_connection", lambda **k: calls.append(k)
+    )
+    client = TestClient(app)
+    response = client.post("/api/onboarding/connect", json=_payload())
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+    assert calls == []  # nothing persisted
