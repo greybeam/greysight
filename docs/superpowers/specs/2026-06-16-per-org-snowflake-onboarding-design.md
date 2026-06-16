@@ -1,6 +1,6 @@
 # Per-Org Snowflake Onboarding — Design
 
-**Status:** Approved (design); embedded setup SQL pending Codex verification (see §4.3).
+**Status:** Approved (design); setup SQL Codex-reviewed (see §4.3).
 **Date:** 2026-06-16
 
 ## Goal
@@ -178,6 +178,12 @@ Replaces the interim "no organization" / "connecting Snowflake coming soon"
 screen whenever an authenticated user has zero memberships. Card/wizard, two
 columns: **left = inputs, right = guidance aligned to the active field.**
 
+**Visual consistency.** The wizard reuses the existing dashboard's design
+language — the same background color, surface/card styling, typography, spacing,
+and shared assets/components. It should read as part of the product, not a
+bolted-on form. Pull from the dashboard's existing Tailwind theme tokens /
+components rather than introducing new colors or one-off styles.
+
 ### §4.1 Inputs (left) & validation
 - Org name; Snowflake `account`*, `user`*, `role`*, `warehouse`*, PEM private
   key*, optional passphrase. `database` and `schema` are **optional** (blank →
@@ -200,49 +206,66 @@ columns: **left = inputs, right = guidance aligned to the active field.**
 - Optional note: granting `SNOWFLAKE.ORGANIZATION_BILLING_VIEWER` unlocks billed
   dollars; without it Greysight shows estimated dollars.
 
-### §4.3 Recommended setup SQL (PENDING CODEX VERIFICATION)
+### §4.3 Recommended setup SQL (Codex-reviewed)
 
-> ⚠️ This block is awaiting Codex's correctness/least-privilege review. Known
-> change already agreed: **`MUST_CHANGE_PASSWORD` is removed** (a keypair-only
-> user has no password). Open items under review: whether a `DEFAULT_ROLE` /
-> `DEFAULT_WAREHOUSE` is needed for login to use the role; whether
-> `GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE` is correct and minimal for
-> the four probe views; whether DDL inside `BEGIN…COMMIT` is meaningful in
-> Snowflake; and the minimal warehouse privilege set. Patch in final SQL after
-> Codex returns.
+Corrected per Codex review (2026-06-16). Key fixes: `MUST_CHANGE_PASSWORD`
+removed; the RSA key is set via `ALTER USER` (not a 256-byte-capped session
+variable) with the PEM header/footer stripped and the base64 body on one line;
+`CREATE USER IF NOT EXISTS` + `TYPE = SERVICE` for a programmatic keypair-only
+user; `AUTO_RESUME = TRUE` on the warehouse; least-privilege grants
+(`SNOWFLAKE.USAGE_VIEWER` database role + `USAGE` on the warehouse); no
+`BEGIN…COMMIT` wrapper (Snowflake DDL auto-commits).
+
+> Implementation checkpoint: confirm `SNOWFLAKE.USAGE_VIEWER` actually covers all
+> four probe views — including `QUERY_ATTRIBUTION_HISTORY` — against the Greybeam
+> dev account (locator `TU24199`) during the test-on-save build. If a probe is
+> denied, fall back to documenting `GRANT IMPORTED PRIVILEGES ON DATABASE
+> SNOWFLAKE` (broad) for that view.
 
 ```sql
+-- Replace object names if needed.
 SET user_name = 'GREYBEAM_USER';
 SET role_name = 'GREYBEAM_ROLE';
-SET rsa_public_key = '<insert public key here>';
 SET warehouse_name = 'GREYBEAM_WH';
 
-BEGIN;
 USE ROLE USERADMIN;
-CREATE USER identifier($user_name)
-    RSA_PUBLIC_KEY = $rsa_public_key;
 
-CREATE ROLE IF NOT EXISTS identifier($role_name)
+CREATE ROLE IF NOT EXISTS IDENTIFIER($role_name)
   COMMENT = 'Used by Greybeam';
-GRANT ROLE identifier($role_name) TO ROLE SYSADMIN;
 
-USE ROLE SECURITYADMIN;
-GRANT ROLE identifier($role_name) TO USER identifier($user_name);
+CREATE USER IF NOT EXISTS IDENTIFIER($user_name)
+  TYPE = SERVICE
+  COMMENT = 'Used by Greybeam';
+
+-- Paste the single-line public key body only: no BEGIN/END PUBLIC KEY lines.
+ALTER USER IDENTIFIER($user_name)
+  SET RSA_PUBLIC_KEY = 'PASTE_BASE64_PUBLIC_KEY_BODY_HERE';
 
 USE ROLE SYSADMIN;
-CREATE WAREHOUSE IF NOT EXISTS
-  identifier($warehouse_name) WAREHOUSE_SIZE=XSMALL
-  AUTO_SUSPEND=60 INITIALLY_SUSPENDED=TRUE
+
+CREATE WAREHOUSE IF NOT EXISTS IDENTIFIER($warehouse_name)
+  WAREHOUSE_SIZE = XSMALL
+  AUTO_SUSPEND = 60
+  AUTO_RESUME = TRUE
+  INITIALLY_SUSPENDED = TRUE
   COMMENT = 'Used by Greybeam';
 
 USE ROLE SECURITYADMIN;
-GRANT MONITOR, OPERATE, USAGE, MODIFY
-  ON WAREHOUSE identifier($warehouse_name)
-  TO ROLE identifier($role_name);
+
+GRANT ROLE IDENTIFIER($role_name) TO ROLE SYSADMIN;
+GRANT ROLE IDENTIFIER($role_name) TO USER IDENTIFIER($user_name);
+GRANT USAGE ON WAREHOUSE IDENTIFIER($warehouse_name) TO ROLE IDENTIFIER($role_name);
+
+ALTER USER IDENTIFIER($user_name)
+  SET DEFAULT_ROLE = $role_name
+      DEFAULT_WAREHOUSE = $warehouse_name;
 
 USE ROLE ACCOUNTADMIN;
-GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE identifier($role_name);
-COMMIT;
+
+GRANT DATABASE ROLE SNOWFLAKE.USAGE_VIEWER TO ROLE IDENTIFIER($role_name);
+
+-- Optional billed-dollar views (requires ACCOUNTADMIN):
+-- GRANT DATABASE ROLE SNOWFLAKE.ORGANIZATION_BILLING_VIEWER TO ROLE IDENTIFIER($role_name);
 ```
 
 ### §4.4 Action
@@ -294,6 +317,8 @@ No org switcher in v1 (one-org guard), but wizard + API are written so
 
 ## Open items
 
-1. Final setup SQL pending Codex (§4.3).
+1. Confirm `SNOWFLAKE.USAGE_VIEWER` covers all four probe views (esp.
+   `QUERY_ATTRIBUTION_HISTORY`) against the dev account during the test-on-save
+   build; broad-grant fallback documented in §4.3.
 2. Durable `audit_events` table — fast-follow spec.
 3. Org switcher / multi-org UI — fast-follow.
