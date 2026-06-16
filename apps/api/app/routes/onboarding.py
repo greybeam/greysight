@@ -107,16 +107,30 @@ def _validate_and_create(
             detail="Snowflake private key could not be loaded. Check the PEM and passphrase.",
         ) from None
 
-    organization_id = create_org_with_connection(
-        p_user_id=auth_context.user_id,
-        p_org_name=request.org_name,
-        p_account=account,
-        p_user=request.user,
-        p_role=request.role,
-        p_warehouse=request.warehouse,
-        p_database=request.database or "",
-        p_schema=request.schema or "",
-        p_private_key_pem=request.private_key_pem,
-        p_passphrase=request.passphrase or "",
+    from app.services.org_provisioning import (
+        OrgAlreadyExistsError,
+        OrgProvisioningError,
     )
+
+    try:
+        organization_id = create_org_with_connection(
+            p_user_id=auth_context.user_id,
+            p_org_name=request.org_name,
+            p_account=account,
+            p_user=request.user,
+            p_role=request.role,
+            p_warehouse=request.warehouse,
+            p_database=request.database or "",
+            p_schema=request.schema or "",
+            p_private_key_pem=request.private_key_pem,
+            p_passphrase=request.passphrase or "",
+        )
+    except OrgAlreadyExistsError:
+        raise HTTPException(
+            status_code=409, detail="You already have an organization."
+        ) from None
+    except OrgProvisioningError:
+        raise HTTPException(
+            status_code=502, detail="Could not create the organization."
+        ) from None
     return ConnectResponse(id=str(organization_id))
