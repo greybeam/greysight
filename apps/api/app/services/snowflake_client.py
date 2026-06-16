@@ -8,6 +8,8 @@ from typing import Any, Callable
 
 from cryptography.hazmat.primitives import serialization
 
+from app.services.snowflake_account import validate_account_identifier
+
 
 class SnowflakeConfigurationError(RuntimeError):
     """Raised when Snowflake backend configuration is missing or invalid."""
@@ -82,6 +84,8 @@ class SnowflakeConnectionConfig:
             raise SnowflakeConfigurationError(
                 "Snowflake connection is not configured. Missing: " + ", ".join(missing)
             )
+
+        validate_account_identifier(self.account)
 
         return {
             "account": self.account,

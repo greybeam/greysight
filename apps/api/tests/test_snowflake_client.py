@@ -341,3 +341,15 @@ def test_repr_does_not_leak_key_material() -> None:
     text = repr(config)
     assert "BEGIN PRIVATE KEY" not in text
     assert "hunter2" not in text
+
+
+def test_connector_kwargs_rejects_malformed_account() -> None:
+    from app.services.snowflake_account import InvalidSnowflakeAccountError
+
+    pem = _generate_pem()
+    config = SnowflakeConnectionConfig(
+        account="http://evil.example.com", user="u", role="r", warehouse="w",
+        private_key_pem=pem,
+    )
+    with pytest.raises(InvalidSnowflakeAccountError):
+        config.connector_kwargs()
