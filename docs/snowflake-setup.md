@@ -18,6 +18,75 @@ SQL files live in `sql/snowflake/` and are registered by
 `sql/dashboard_sources.yml`. The API executes only approved, bounded, read-only
 source queries from that registry.
 
+## Dedicated User Setup (recommended)
+
+When you connect Snowflake to Greysight through the in-app connect wizard, create
+a dedicated, least-privilege service user and key-pair credential rather than
+reusing a human login. The block below provisions a keypair-only `TYPE = SERVICE`
+user, a role, and an XSMALL warehouse, then grants the role read access to the
+Account Usage views through the `SNOWFLAKE.USAGE_VIEWER` database role.
+
+The `GRANT DATABASE ROLE SNOWFLAKE.USAGE_VIEWER` grant gives the role read access
+to the `SNOWFLAKE.ACCOUNT_USAGE` views the dashboard probes (the four views
+listed under [Required Access](#required-access) above) — without granting any
+account-administration or data-access privileges.
+
+Generate the key pair first using Snowflake's
+[key-pair authentication guide](https://docs.snowflake.com/en/user-guide/key-pair-auth#generate-the-private-keys),
+then run:
+
+```sql
+-- Replace object names if needed.
+SET user_name = 'GREYBEAM_USER';
+SET role_name = 'GREYBEAM_ROLE';
+SET warehouse_name = 'GREYBEAM_WH';
+
+USE ROLE USERADMIN;
+
+CREATE ROLE IF NOT EXISTS IDENTIFIER($role_name)
+  COMMENT = 'Used by Greybeam';
+
+CREATE USER IF NOT EXISTS IDENTIFIER($user_name)
+  TYPE = SERVICE
+  COMMENT = 'Used by Greybeam';
+
+-- Paste the single-line public key body only: no BEGIN/END PUBLIC KEY lines.
+ALTER USER IDENTIFIER($user_name)
+  SET RSA_PUBLIC_KEY = 'PASTE_BASE64_PUBLIC_KEY_BODY_HERE';
+
+USE ROLE SYSADMIN;
+
+CREATE WAREHOUSE IF NOT EXISTS IDENTIFIER($warehouse_name)
+  WAREHOUSE_SIZE = XSMALL
+  AUTO_SUSPEND = 60
+  AUTO_RESUME = TRUE
+  INITIALLY_SUSPENDED = TRUE
+  COMMENT = 'Used by Greybeam';
+
+USE ROLE SECURITYADMIN;
+
+GRANT ROLE IDENTIFIER($role_name) TO ROLE SYSADMIN;
+GRANT ROLE IDENTIFIER($role_name) TO USER IDENTIFIER($user_name);
+GRANT USAGE ON WAREHOUSE IDENTIFIER($warehouse_name) TO ROLE IDENTIFIER($role_name);
+
+ALTER USER IDENTIFIER($user_name)
+  SET DEFAULT_ROLE = $role_name
+      DEFAULT_WAREHOUSE = $warehouse_name;
+
+USE ROLE ACCOUNTADMIN;
+
+GRANT DATABASE ROLE SNOWFLAKE.USAGE_VIEWER TO ROLE IDENTIFIER($role_name);
+
+-- Optional billed-dollar views (requires ACCOUNTADMIN):
+-- GRANT DATABASE ROLE SNOWFLAKE.ORGANIZATION_BILLING_VIEWER TO ROLE IDENTIFIER($role_name);
+```
+
+Paste the **private** key (PEM contents) into the connect wizard; the public key
+goes to Snowflake via the `ALTER USER … SET RSA_PUBLIC_KEY` statement above. The
+optional `SNOWFLAKE.ORGANIZATION_BILLING_VIEWER` grant unlocks billed dollars;
+without it Greysight shows estimated dollars (see
+[Organization Usage Access](#organization-usage-access-billed-dollars) below).
+
 ## Organization Usage Access (Billed Dollars)
 
 Greysight V0 reads billed spend from `SNOWFLAKE.ORGANIZATION_USAGE.USAGE_IN_CURRENCY_DAILY`
