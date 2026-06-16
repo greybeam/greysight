@@ -17,6 +17,7 @@ from app.services.dashboard_registry import DashboardSource, load_dashboard_regi
 from app.services.dataset_bounds import bound_user_compute_rows
 from app.services.snowflake_client import (
     SnowflakeConfigurationError,
+    SnowflakeConnectionConfig,
     SnowflakeQueryError,
     execute_source_query,
 )
@@ -42,8 +43,17 @@ def build_snowflake_dashboard_data(
     settings: Settings,
     execute: ExecuteFn | None = None,
     summary_window_days: int = FETCH_WINDOW_DAYS,
+    connection_config: SnowflakeConnectionConfig | None = None,
 ) -> SnowflakeDashboardData:
-    execute_source = execute or execute_source_query
+    if execute is not None:
+        execute_source = execute
+    else:
+
+        def execute_source(
+            sql: str, bind_params: dict[str, Any]
+        ) -> list[dict[str, Any]]:
+            return execute_source_query(sql, bind_params, connection_config)
+
     registry = load_dashboard_registry()
     account_sources = _sources_by_kind(registry.sources, "snowflake_account_usage")
     all_org_sources = _sources_by_kind(registry.sources, "snowflake_organization_usage")
