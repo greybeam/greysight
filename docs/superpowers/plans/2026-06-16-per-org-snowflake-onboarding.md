@@ -38,55 +38,18 @@
 
 ---
 
-## Phase 0 — Unbreak the migration test
+## Phase 0 — Migration test + consolidation (ALREADY DONE on this branch)
 
-`apps/api/tests/test_supabase_migration.py` currently hard-asserts a **single** migration file, but the repo already has two (`202606080001_*`, `202606150001_*`), so the whole suite is RED. This phase makes the test read the concatenation of all migrations before we add a third.
-
-### Task 0: Make the migration test read all migration files
-
-**Files:**
-- Modify: `apps/api/tests/test_supabase_migration.py`
-
-- [ ] **Step 1: Run the suite to confirm it is currently RED**
-
-Run: `cd apps/api && uv run pytest tests/test_supabase_migration.py -q`
-Expected: FAIL — `AssertionError: expected a single migration file, found: [...]`.
-
-- [ ] **Step 2: Replace `_migration_path()`/`read_migration_sql()` with an all-files reader**
-
-Replace lines 6–31 (`_migration_path` through `read_migration_sql`) with:
-
-```python
-def _migration_paths() -> list[Path]:
-    migrations = sorted(MIGRATIONS_DIR.glob("*.sql"))
-    assert migrations, f"no migration files found in {MIGRATIONS_DIR}"
-    return migrations
-
-
-def read_migration_sql() -> str:
-    return "\n".join(path.read_text() for path in _migration_paths()).lower()
-```
-
-- [ ] **Step 3: Update the org-INSERT assertion for the current (locked-down) state**
-
-`202606150001_restrict_org_insert.sql` drops `organizations_insert_for_authenticated`. In `test_organization_policies_gate_on_membership`, replace the line
-`assert "organizations_insert_for_authenticated" in sql` with:
-
-```python
-    assert "drop policy if exists organizations_insert_for_authenticated" in sql
-```
-
-- [ ] **Step 4: Run the suite to verify it passes**
-
-Run: `cd apps/api && uv run pytest tests/test_supabase_migration.py -q`
-Expected: PASS (8 passed).
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add apps/api/tests/test_supabase_migration.py
-git commit -m "test(db): read all migration files so the suite survives multiple migrations"
-```
+> **Status: complete (commit `f6454a1`).** No action needed; documented for context.
+> The two existing migrations were consolidated into one: the authenticated
+> org-INSERT policy was removed from `202606080001_initial_org_membership.sql`
+> (org creation is service-role/RPC-only) and `202606150001_restrict_org_insert.sql`
+> was deleted. `test_supabase_migration.py` was updated to (a) read **all**
+> migration files via `_migration_paths()`/`read_migration_sql()`, (b) assert the
+> authenticated insert policy is **absent**, and (c) drop the stale
+> `created_by_user_id = auth.uid()` assertion. Suite is green (8 passed).
+> The new onboarding migration in Phase 1 is the second file; the all-files
+> reader already handles it.
 
 ---
 
