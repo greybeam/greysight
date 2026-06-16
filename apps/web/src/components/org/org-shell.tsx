@@ -12,6 +12,7 @@ import {
   type MembershipOrganization,
 } from "../../lib/session-memberships";
 import LoginForm from "../auth/login-form";
+import ConnectWizard from "./connect-wizard";
 
 export type SelectedOrganization = {
   id: string;
@@ -280,12 +281,13 @@ export default function OrgShell({
   if (membership.organizations.length === 0) {
     return (
       <main className="min-h-screen bg-slate-50 p-6">
-        <section className="space-y-4 rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+        <section className="mb-6 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
           {signedInHeader}
-          <p className="text-sm text-slate-700">
-            You’re signed in. Connecting your Snowflake account is coming soon.
-          </p>
         </section>
+        <ConnectWizard
+          accessToken={accessToken}
+          onConnected={() => accessToken && void loadMemberships(accessToken)}
+        />
       </main>
     );
   }

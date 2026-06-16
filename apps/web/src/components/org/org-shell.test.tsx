@@ -116,7 +116,7 @@ describe("OrgShell", () => {
     expect(screen.queryByText("dashboard")).not.toBeInTheDocument();
   });
 
-  it("shows the interim screen when the user has no organization", async () => {
+  it("shows the connect wizard (not the dashboard) when the user has no organization", async () => {
     render(
       <OrgShell
         authRequired
@@ -127,9 +127,25 @@ describe("OrgShell", () => {
       </OrgShell>,
     );
     expect(
-      await screen.findByText(/Connecting your Snowflake account is coming soon/i),
+      await screen.findByText(/connect your snowflake account/i),
     ).toBeInTheDocument();
     expect(screen.queryByText("dashboard")).not.toBeInTheDocument();
+  });
+
+  it("shows the connect wizard when the user has no organizations", async () => {
+    render(
+      <OrgShell
+        authRequired
+        authClient={authClient(session)}
+        fetchMemberships={vi.fn().mockResolvedValue([])}
+      >
+        <p>dashboard</p>
+      </OrgShell>,
+    );
+    expect(
+      await screen.findByText(/connect your snowflake account/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
   });
 
   it("renders the dashboard and selects the org when membership resolves", async () => {
