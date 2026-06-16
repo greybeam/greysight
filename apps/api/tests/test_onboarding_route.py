@@ -87,6 +87,28 @@ def test_connect_returns_422_and_persists_nothing_on_validation_failure(
     assert calls == []  # nothing persisted
 
 
+def test_422_redacts_secret_input(monkeypatch) -> None:
+    app.dependency_overrides[require_auth_context] = _auth_context
+    client = TestClient(app)
+    bad = _payload() | {"private_key_pem": {"leak": "PEMSECRETMARKER"}}
+    response = client.post("/api/onboarding/connect", json=bad)
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+    assert "PEMSECRETMARKER" not in response.text
+
+
+def test_passphrase_too_long_rejected(monkeypatch) -> None:
+    app.dependency_overrides[require_auth_context] = _auth_context
+    client = TestClient(app)
+    bad = _payload() | {"passphrase": "PASSSECRETMARKER" + "x" * 2048}
+    response = client.post("/api/onboarding/connect", json=bad)
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+    assert "PASSSECRETMARKER" not in response.text
+
+
 def test_connect_rate_limited_returns_429(monkeypatch) -> None:
     # Override the autouse fixture with a small limit for this test.
     monkeypatch.setattr(

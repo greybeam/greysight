@@ -28,7 +28,7 @@ class ConnectRequest(BaseModel):
     database: str | None = Field(default=None, max_length=255)
     schema: str | None = Field(default=None, max_length=255)
     private_key_pem: str = Field(min_length=1)
-    passphrase: str | None = None
+    passphrase: str | None = Field(default=None, max_length=1024)
 
 
 class ConnectResponse(BaseModel):

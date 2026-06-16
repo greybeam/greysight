@@ -1,6 +1,26 @@
 import httpx
+import pytest
 
-from app.services.org_provisioning import SupabaseOrgProvisioner
+from app.services.org_provisioning import (
+    OrgAlreadyExistsError,
+    OrgProvisioningError,
+    SupabaseOrgProvisioner,
+)
+
+
+def _provision(provisioner: SupabaseOrgProvisioner) -> str:
+    return provisioner(
+        p_user_id="user-1",
+        p_org_name="Acme",
+        p_account="acct",
+        p_user="u",
+        p_role="r",
+        p_warehouse="w",
+        p_database="",
+        p_schema="",
+        p_private_key_pem="PEMSECRET",
+        p_passphrase="PASSSECRET",
+    )
 
 
 def test_calls_create_rpc_and_returns_org_id() -> None:
@@ -34,10 +54,6 @@ def test_calls_create_rpc_and_returns_org_id() -> None:
 
 
 def test_raises_on_one_org_guard_conflict() -> None:
-    import pytest
-
-    from app.services.org_provisioning import OrgAlreadyExistsError
-
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             409, json={"code": "23505", "message": "unique_violation"}
@@ -61,3 +77,62 @@ def test_raises_on_one_org_guard_conflict() -> None:
             p_private_key_pem="PEM",
             p_passphrase="",
         )
+
+
+def test_raises_provisioning_error_on_transport_failure() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    provisioner = SupabaseOrgProvisioner(
+        supabase_url="https://example.supabase.co",
+        service_role_key="svc",
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(OrgProvisioningError) as excinfo:
+        _provision(provisioner)
+
+    # Must surface a neutral OrgProvisioningError, never a raw httpx error.
+    assert not isinstance(excinfo.value, OrgAlreadyExistsError)
+    message = str(excinfo.value)
+    assert "PEMSECRET" not in message
+    assert "PASSSECRET" not in message
+
+
+def test_raises_provisioning_error_on_non_json_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"not json at all")
+
+    provisioner = SupabaseOrgProvisioner(
+        supabase_url="https://example.supabase.co",
+        service_role_key="svc",
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(OrgProvisioningError):
+        _provision(provisioner)
+
+
+def test_one_org_conflict_detected_by_json_code() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400, json={"code": "23505", "message": "unique_violation"}
+        )
+
+    provisioner = SupabaseOrgProvisioner(
+        supabase_url="https://example.supabase.co",
+        service_role_key="svc",
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(OrgAlreadyExistsError):
+        _provision(provisioner)
+
+
+def test_success_body_not_misread_as_conflict() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json="org-123")
+
+    provisioner = SupabaseOrgProvisioner(
+        supabase_url="https://example.supabase.co",
+        service_role_key="svc",
+        transport=httpx.MockTransport(handler),
+    )
+    assert _provision(provisioner) == "org-123"

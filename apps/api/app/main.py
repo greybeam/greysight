@@ -1,7 +1,11 @@
 import logging
 
 from fastapi import FastAPI
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.requests import Request
 
 from app import auth
 from app.config import Settings
@@ -56,6 +60,32 @@ warn_when_auth_required_without_verifier(settings)
 require_membership_lookup_when_auth_required(settings)
 
 app = FastAPI(title="Greysight API")
+
+_SENSITIVE_FIELDS = {"private_key_pem", "passphrase"}
+
+
+@app.exception_handler(RequestValidationError)
+async def _redact_validation_errors(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """Redact submitted secrets from 422 validation responses.
+
+    FastAPI's default handler echoes the offending `input` in `exc.errors()`,
+    which would leak a submitted `private_key_pem`/`passphrase` back to the
+    client. Preserve the normal `{"detail": [...]}` shape for all other fields.
+    """
+    redacted = []
+    for err in exc.errors():
+        e = dict(err)
+        loc = e.get("loc", ())
+        if any(part in _SENSITIVE_FIELDS for part in loc):
+            if "input" in e:
+                e["input"] = "[redacted]"
+            e.pop("ctx", None)
+        redacted.append(e)
+    return JSONResponse(status_code=422, content=jsonable_encoder({"detail": redacted}))
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings.cors_allowed_origins),
