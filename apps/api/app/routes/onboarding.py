@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.auth import AuthContext, require_auth_context
+from app.auth import AuthContext, require_auth_context, require_org_admin
 from app.services.snowflake_account import (
     InvalidSnowflakeAccountError,
     validate_account_identifier,
@@ -40,6 +40,22 @@ def create_org_with_connection(**kwargs: object) -> str:
     from app.services.org_provisioning import create_org_with_connection as impl
 
     return impl(**kwargs)
+
+
+def disconnect_org_connection(organization_id: str) -> None:
+    """Seam over the service-role disconnect RPC; configured at startup."""
+    from app.services.org_provisioning import disconnect_org_connection as impl
+
+    impl(organization_id)
+
+
+@router.post("/{organization_id}/disconnect", status_code=status.HTTP_204_NO_CONTENT)
+def disconnect_snowflake(
+    organization_id: str,
+    auth_context: AuthContext = Depends(require_auth_context),
+) -> None:
+    require_org_admin(auth_context, organization_id)
+    disconnect_org_connection(organization_id)
 
 
 @router.post(

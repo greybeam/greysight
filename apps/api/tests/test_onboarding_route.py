@@ -177,3 +177,64 @@ def test_connect_returns_422_on_malformed_key(monkeypatch) -> None:
 
     assert response.status_code == 422
     assert calls == []  # nothing persisted
+
+
+def test_disconnect_requires_admin(monkeypatch) -> None:
+    from app.auth import AuthContext, require_auth_context
+    from app.services.membership_directory import Organization
+
+    member_ctx = AuthContext(
+        user_id="u",
+        auth_required=True,
+        memberships=frozenset({"org-1"}),
+        organizations=(Organization(id="org-1", name="Acme", role="member"),),
+    )
+    app.dependency_overrides[require_auth_context] = lambda: member_ctx
+    client = TestClient(app)
+    response = client.post("/api/onboarding/org-1/disconnect")
+    app.dependency_overrides.clear()
+    assert response.status_code == 403
+
+
+def test_disconnect_deletes_secret_for_admin(monkeypatch) -> None:
+    from app.auth import AuthContext, require_auth_context
+    from app.services.membership_directory import Organization
+
+    admin_ctx = AuthContext(
+        user_id="u",
+        auth_required=True,
+        memberships=frozenset({"org-1"}),
+        organizations=(Organization(id="org-1", name="Acme", role="owner"),),
+    )
+    app.dependency_overrides[require_auth_context] = lambda: admin_ctx
+    disconnected = []
+    monkeypatch.setattr(
+        onboarding,
+        "disconnect_org_connection",
+        lambda org_id: disconnected.append(org_id),
+    )
+    client = TestClient(app)
+    response = client.post("/api/onboarding/org-1/disconnect")
+    app.dependency_overrides.clear()
+    assert response.status_code == 204
+    assert disconnected == ["org-1"]
+
+
+def test_disconnect_is_idempotent(monkeypatch) -> None:
+    from app.auth import AuthContext, require_auth_context
+    from app.services.membership_directory import Organization
+
+    admin_ctx = AuthContext(
+        user_id="u",
+        auth_required=True,
+        memberships=frozenset({"org-1"}),
+        organizations=(Organization(id="org-1", name="Acme", role="owner"),),
+    )
+    app.dependency_overrides[require_auth_context] = lambda: admin_ctx
+    monkeypatch.setattr(onboarding, "disconnect_org_connection", lambda org_id: None)
+    client = TestClient(app)
+    first = client.post("/api/onboarding/org-1/disconnect")
+    second = client.post("/api/onboarding/org-1/disconnect")
+    app.dependency_overrides.clear()
+    assert first.status_code == 204
+    assert second.status_code == 204

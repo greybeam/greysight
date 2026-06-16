@@ -15,7 +15,9 @@ from app.routes.onboarding import router as onboarding_router
 from app.routes.session import router as session_router
 from app.routes.snowflake import router as snowflake_router
 from app.services.org_provisioning import (
+    SupabaseOrgDisconnector,
     SupabaseOrgProvisioner,
+    configure_org_disconnector,
     configure_org_provisioner,
 )
 
@@ -34,10 +36,23 @@ def _configure_org_provisioner(settings: Settings) -> None:
         configure_org_provisioner(None)
 
 
+def _configure_org_disconnector(settings: Settings) -> None:
+    if settings.supabase_url.strip() and settings.supabase_service_role_key.strip():
+        configure_org_disconnector(
+            SupabaseOrgDisconnector(
+                supabase_url=settings.supabase_url,
+                service_role_key=settings.supabase_service_role_key,
+            )
+        )
+    else:
+        configure_org_disconnector(None)
+
+
 settings = Settings()
 auth.configure_supabase_session_verifier(settings)
 auth.configure_membership_lookup(settings)
 _configure_org_provisioner(settings)
+_configure_org_disconnector(settings)
 
 
 def warn_when_auth_required_without_verifier(settings: Settings) -> None:
