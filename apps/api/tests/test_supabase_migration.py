@@ -3,13 +3,10 @@ from pathlib import Path
 MIGRATIONS_DIR = Path(__file__).resolve().parents[3] / "supabase/migrations"
 
 
-def _migration_path() -> Path:
+def _migration_paths() -> list[Path]:
     migrations = sorted(MIGRATIONS_DIR.glob("*.sql"))
     assert migrations, f"no migration files found in {MIGRATIONS_DIR}"
-    assert len(migrations) == 1, (
-        f"expected a single migration file, found: {[m.name for m in migrations]}"
-    )
-    return migrations[0]
+    return migrations
 
 
 REQUIRED_TABLES = [
@@ -28,7 +25,7 @@ DROPPED_TABLES = [
 
 
 def read_migration_sql() -> str:
-    return _migration_path().read_text().lower()
+    return "\n".join(path.read_text() for path in _migration_paths()).lower()
 
 
 def test_migration_defines_only_org_and_membership_tables() -> None:
@@ -89,7 +86,8 @@ def test_organization_policies_gate_on_membership() -> None:
     sql = read_migration_sql()
 
     assert "organizations_select_for_members" in sql
-    assert "organizations_insert_for_authenticated" in sql
+    # Org creation is service-role/RPC-only: no authenticated INSERT policy.
+    assert "organizations_insert_for_authenticated" not in sql
     assert "organizations_update_for_admins" in sql
 
 
@@ -100,7 +98,6 @@ def test_organization_insert_creates_owner_membership() -> None:
     assert "create or replace function create_organization_owner_membership" in sql
     assert "create trigger organizations_create_owner_membership" in sql
     assert "values (new.id, new.created_by_user_id, 'owner')" in sql
-    assert "created_by_user_id = auth.uid()" in sql
 
 
 def test_migration_drops_legacy_cost_dashboard_schema() -> None:
