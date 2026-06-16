@@ -133,3 +133,38 @@ def test_connection_table_defined_with_rls_and_no_authenticated_writes() -> None
     # members can read non-sensitive metadata through a SECURITY DEFINER function
     assert "create or replace function get_org_connection_summary" in sql
     assert "secret_id" not in sql.split("get_org_connection_summary", 1)[1].split("$$", 2)[1]
+
+
+def test_secret_rpcs_are_service_role_only() -> None:
+    sql = read_migration_sql()
+    for fn in (
+        "set_organization_snowflake_secret",
+        "get_organization_snowflake_secret",
+        "delete_organization_snowflake_secret",
+    ):
+        assert f"create or replace function {fn}" in sql
+        assert f"revoke all on function {fn}" in sql
+        assert f"grant execute on function {fn}" in sql
+        # never granted to authenticated/anon — service_role only
+        block = sql.split(f"grant execute on function {fn}", 1)[1].split(";", 1)[0]
+        assert "to service_role" in block
+        assert "authenticated" not in block
+    assert "vault.create_secret" in sql
+    assert "vault.update_secret" in sql
+    assert "vault.decrypted_secrets" in sql
+
+
+def test_vault_extension_enabled_and_teardown_trigger_present() -> None:
+    sql = read_migration_sql()
+    # Vault must be enabled by the migration, not assumed pre-installed.
+    assert "create extension if not exists supabase_vault" in sql
+    # Deleting/cascading a connection row must delete its Vault secret.
+    assert "before delete on organization_snowflake_connections" in sql
+    assert "delete from vault.secrets where id = old.secret_id" in sql
+    # Disconnect must atomically clear the secret AND invalidate the row.
+    assert "create or replace function disconnect_organization_snowflake" in sql
+    block = sql.split("create or replace function disconnect_organization_snowflake", 1)[1]
+    assert "set secret_id = null, status = 'invalid'" in block
+    grant = sql.split("grant execute on function disconnect_organization_snowflake", 1)[1].split(";", 1)[0]
+    assert "to service_role" in grant
+    assert "authenticated" not in grant

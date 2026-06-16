@@ -53,3 +53,148 @@ $$;
 
 revoke all on function get_org_connection_summary(uuid) from public;
 grant execute on function get_org_connection_summary(uuid) to authenticated;
+
+-- Vault secret helpers. service_role only; these read/write the vault schema,
+-- which is not exposed via PostgREST directly.
+
+create or replace function set_organization_snowflake_secret(
+  target_organization_id uuid,
+  private_key_pem text,
+  passphrase text
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  existing_secret_id uuid;
+  secret_payload text := json_build_object('pem', private_key_pem, 'passphrase', passphrase)::text;
+  secret_name text := 'snowflake_pk_' || target_organization_id::text;
+begin
+  select secret_id into existing_secret_id
+  from organization_snowflake_connections
+  where organization_id = target_organization_id;
+
+  if existing_secret_id is null then
+    return vault.create_secret(secret_payload, secret_name, 'Greysight Snowflake key');
+  else
+    perform vault.update_secret(existing_secret_id, secret_payload, secret_name, 'Greysight Snowflake key');
+    return existing_secret_id;
+  end if;
+end;
+$$;
+
+create or replace function get_organization_snowflake_secret(target_organization_id uuid)
+returns table (private_key_pem text, passphrase text)
+language plpgsql
+security definer
+set search_path = public, vault
+as $$
+declare
+  target_secret_id uuid;
+  decrypted text;
+begin
+  select secret_id into target_secret_id
+  from organization_snowflake_connections
+  where organization_id = target_organization_id;
+
+  if target_secret_id is null then
+    return;  -- no rows; caller treats as "no secret"
+  end if;
+
+  select decrypted_secret into decrypted
+  from vault.decrypted_secrets
+  where id = target_secret_id;
+
+  if decrypted is null then
+    return;
+  end if;
+
+  return query
+    select decrypted::json ->> 'pem', decrypted::json ->> 'passphrase';
+end;
+$$;
+
+create or replace function delete_organization_snowflake_secret(target_organization_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  target_secret_id uuid;
+begin
+  select secret_id into target_secret_id
+  from organization_snowflake_connections
+  where organization_id = target_organization_id;
+
+  if target_secret_id is not null then
+    delete from vault.secrets where id = target_secret_id;
+  end if;
+end;
+$$;
+
+revoke all on function set_organization_snowflake_secret(uuid, text, text) from public;
+revoke all on function get_organization_snowflake_secret(uuid) from public;
+revoke all on function delete_organization_snowflake_secret(uuid) from public;
+grant execute on function set_organization_snowflake_secret(uuid, text, text) to service_role;
+grant execute on function get_organization_snowflake_secret(uuid) to service_role;
+grant execute on function delete_organization_snowflake_secret(uuid) to service_role;
+
+-- Teardown safety net (Codex CRITICAL): deleting an org cascades the connection
+-- row, and a future explicit disconnect deletes it too. In BOTH cases the Vault
+-- secret must die with the row, or it is orphaned with no surviving reference.
+-- A BEFORE DELETE trigger guarantees this regardless of how the row is removed.
+create or replace function delete_org_snowflake_secret_on_row_delete()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if old.secret_id is not null then
+    delete from vault.secrets where id = old.secret_id;
+  end if;
+  return old;
+end;
+$$;
+
+create trigger organization_snowflake_connections_delete_secret
+  before delete on organization_snowflake_connections
+  for each row execute function delete_org_snowflake_secret_on_row_delete();
+
+-- Atomic disconnect (Codex CRITICAL): a disconnect must leave the row TRUTHFUL.
+-- Deleting only the Vault secret (the old plan) left status='active' with a dead
+-- secret_id, so summaries reported "connected" while the resolver failed closed.
+-- Here we delete the secret, clear secret_id, and flip status to 'invalid' in one
+-- transaction. (Row deletion / org delete is handled by the trigger above.)
+-- Intentionally IDEMPOTENT: if the org has no connection row (or already
+-- disconnected), secret_id is null, the delete is skipped, and the update touches
+-- zero rows — the function is a no-op and returns normally (no error). Callers
+-- can safely disconnect twice; the route returns 204 either way.
+create or replace function disconnect_organization_snowflake(target_organization_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  target_secret_id uuid;
+begin
+  select secret_id into target_secret_id
+  from organization_snowflake_connections
+  where organization_id = target_organization_id;
+
+  if target_secret_id is not null then
+    delete from vault.secrets where id = target_secret_id;
+  end if;
+
+  update organization_snowflake_connections
+    set secret_id = null, status = 'invalid'
+    where organization_id = target_organization_id;
+end;
+$$;
+
+revoke all on function disconnect_organization_snowflake(uuid) from public;
+grant execute on function disconnect_organization_snowflake(uuid) to service_role;
