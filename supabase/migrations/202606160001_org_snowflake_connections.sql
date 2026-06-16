@@ -122,16 +122,9 @@ language plpgsql
 security definer
 set search_path = public
 as $$
-declare
-  target_secret_id uuid;
 begin
-  select secret_id into target_secret_id
-  from organization_snowflake_connections
-  where organization_id = target_organization_id;
-
-  if target_secret_id is not null then
-    delete from vault.secrets where id = target_secret_id;
-  end if;
+  -- Delegate to the atomic disconnect so the row never lies (dead secret + active status).
+  perform disconnect_organization_snowflake(target_organization_id);
 end;
 $$;
 
@@ -192,7 +185,8 @@ begin
 
   update organization_snowflake_connections
     set secret_id = null, status = 'invalid'
-    where organization_id = target_organization_id;
+    where organization_id = target_organization_id
+      and (secret_id is not null or status <> 'invalid');
 end;
 $$;
 

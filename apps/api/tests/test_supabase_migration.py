@@ -171,6 +171,17 @@ def test_vault_extension_enabled_and_teardown_trigger_present() -> None:
     assert "authenticated" not in grant
 
 
+def test_secret_lifecycle_hardening() -> None:
+    sql = read_migration_sql()
+    # delete RPC delegates to the atomic disconnect (no stale active+dead-secret row)
+    delete_block = sql.split(
+        "create or replace function delete_organization_snowflake_secret", 1
+    )[1].split("$$", 2)[1]
+    assert "perform disconnect_organization_snowflake(target_organization_id)" in delete_block
+    # disconnect's UPDATE is guarded so repeated no-op disconnects don't churn updated_at
+    assert "and (secret_id is not null or status <> 'invalid')" in sql
+
+
 def test_atomic_create_rpc_and_one_org_guard() -> None:
     sql = read_migration_sql()
     assert "create or replace function create_org_with_snowflake_connection" in sql
