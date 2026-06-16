@@ -120,6 +120,17 @@ def require_org_membership(
     raise HTTPException(status_code=403, detail="Organization access denied")
 
 
+def require_org_admin(context: AuthContext, organization_id: str) -> None:
+    normalized = _normalize_membership_id(organization_id)
+    for org in context.organizations:
+        if _normalize_membership_id(org.id) == normalized and org.role in (
+            "owner",
+            "admin",
+        ):
+            return None
+    raise HTTPException(status_code=403, detail="Organization admin access required")
+
+
 async def require_auth_context(
     credentials: Annotated[
         HTTPAuthorizationCredentials | None, Depends(_bearer_scheme)
