@@ -111,3 +111,25 @@ def test_migration_drops_legacy_cost_dashboard_schema() -> None:
     assert "analysis_run_datasets(run_id, dataset_key)" not in sql
     assert "credential_reference" not in sql
     assert "dashboard_filter_preferences_select_for_owner" not in sql
+
+
+def test_connection_table_defined_with_rls_and_no_authenticated_writes() -> None:
+    sql = read_migration_sql()
+    assert "create table organization_snowflake_connections (" in sql
+    assert (
+        "organization_id uuid primary key references organizations(id) on delete cascade"
+        in sql
+    )
+    assert "secret_id uuid" in sql
+    assert "status text not null default 'invalid' check (status in ('active', 'invalid'))" in sql
+    assert (
+        "alter table organization_snowflake_connections enable row level security"
+        in sql
+    )
+    # members may read only via the summary function; no authenticated DML policies
+    assert "organization_snowflake_connections_insert" not in sql
+    assert "organization_snowflake_connections_update" not in sql
+    assert "organization_snowflake_connections_delete" not in sql
+    # members can read non-sensitive metadata through a SECURITY DEFINER function
+    assert "create or replace function get_org_connection_summary" in sql
+    assert "secret_id" not in sql.split("get_org_connection_summary", 1)[1].split("$$", 2)[1]
