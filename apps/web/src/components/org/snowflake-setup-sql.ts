@@ -2,8 +2,10 @@
  * Codex-reviewed least-privilege setup SQL (spec §4.3, 2026-06-16).
  *
  * Creates a programmatic keypair-only service user, a least-privilege role, and
- * an auto-resuming warehouse, then grants the `SNOWFLAKE.USAGE_VIEWER` database
- * role. No `MUST_CHANGE_PASSWORD` and no `BEGIN…COMMIT` wrapper (Snowflake DDL
+ * an auto-resuming warehouse, then grants IMPORTED PRIVILEGES on the shared
+ * SNOWFLAKE database (covers both Account Usage and Organization Usage, so the
+ * dashboard reads billed dollars). No `MUST_CHANGE_PASSWORD` and no
+ * `BEGIN…COMMIT` wrapper (Snowflake DDL
  * auto-commits). The RSA public key is set via `ALTER USER` with the PEM
  * header/footer stripped and the base64 body on one line.
  */
@@ -46,8 +48,5 @@ ALTER USER IDENTIFIER($user_name)
 
 USE ROLE ACCOUNTADMIN;
 
-GRANT DATABASE ROLE SNOWFLAKE.USAGE_VIEWER TO ROLE IDENTIFIER($role_name);
-
--- Optional billed-dollar views (requires ACCOUNTADMIN):
--- GRANT DATABASE ROLE SNOWFLAKE.ORGANIZATION_BILLING_VIEWER TO ROLE IDENTIFIER($role_name);
+GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE IDENTIFIER($role_name);
 `;

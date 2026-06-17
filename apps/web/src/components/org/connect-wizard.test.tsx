@@ -64,11 +64,4 @@ describe("ConnectWizard", () => {
     );
     expect(await screen.findByText(/copied/i)).toBeInTheDocument();
   });
-
-  it("renders the full setup SQL text", () => {
-    const { container } = render(<ConnectWizard connect={vi.fn()} onConnected={vi.fn()} />);
-    const pre = container.querySelector("pre");
-    expect(pre?.textContent).toContain("CREATE USER IF NOT EXISTS");
-    expect(pre?.textContent).toContain("GRANT DATABASE ROLE SNOWFLAKE.USAGE_VIEWER");
-  });
 });

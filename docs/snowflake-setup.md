@@ -75,27 +75,30 @@ ALTER USER IDENTIFIER($user_name)
 
 USE ROLE ACCOUNTADMIN;
 
-GRANT DATABASE ROLE SNOWFLAKE.USAGE_VIEWER TO ROLE IDENTIFIER($role_name);
-
--- Optional billed-dollar views (requires ACCOUNTADMIN):
--- GRANT DATABASE ROLE SNOWFLAKE.ORGANIZATION_BILLING_VIEWER TO ROLE IDENTIFIER($role_name);
+GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE IDENTIFIER($role_name);
 ```
 
 Paste the **private** key (PEM contents) into the connect wizard; the public key
 goes to Snowflake via the `ALTER USER … SET RSA_PUBLIC_KEY` statement above. The
-optional `SNOWFLAKE.ORGANIZATION_BILLING_VIEWER` grant unlocks billed dollars;
-without it Greysight shows estimated dollars (see
+`IMPORTED PRIVILEGES` grant covers both Account Usage and Organization Usage, so
+the dashboard reads billed dollars (see
 [Organization Usage Access](#organization-usage-access-billed-dollars) below).
 
 ## Organization Usage Access (Billed Dollars)
 
 Greysight V0 reads billed spend from `SNOWFLAKE.ORGANIZATION_USAGE.USAGE_IN_CURRENCY_DAILY`
-and effective rates from `SNOWFLAKE.ORGANIZATION_USAGE.RATE_SHEET_DAILY`. These views
-require an Organization Usage grant on the Greysight role:
+and effective rates from `SNOWFLAKE.ORGANIZATION_USAGE.RATE_SHEET_DAILY`. Granting
+`IMPORTED PRIVILEGES` on the shared `SNOWFLAKE` database (as the setup SQL does)
+covers these views:
 
 ```sql
-grant database role SNOWFLAKE.ORGANIZATION_BILLING_VIEWER to role <GREYSIGHT_ROLE>;
+grant imported privileges on database SNOWFLAKE to role <GREYSIGHT_ROLE>;
 ```
+
+If an account topology leaves Organization Usage inaccessible (Snowflake's docs
+gate these views behind the `SNOWFLAKE.ORGANIZATION_BILLING_VIEWER` database role
+for some account types), additionally grant that role; without billed-dollar
+access Greysight degrades to estimated dollars.
 
 Notes:
 
