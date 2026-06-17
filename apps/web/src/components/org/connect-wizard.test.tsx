@@ -33,6 +33,16 @@ describe("ConnectWizard", () => {
     );
   });
 
+  it("shows a loading state while submitting", () => {
+    const connect = vi.fn().mockReturnValue(new Promise<string>(() => {}));
+    render(<ConnectWizard connect={connect} onConnected={vi.fn()} />);
+    fill();
+    fireEvent.click(screen.getByRole("button", { name: /test connection & save/i }));
+    const button = screen.getByRole("button", { name: /validating/i });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-busy", "true");
+  });
+
   it("shows the server validation message on failure", async () => {
     const { ConnectValidationError } = await import("../../lib/onboarding-api");
     const connect = vi.fn().mockRejectedValue(new ConnectValidationError("Bad Account Usage access"));

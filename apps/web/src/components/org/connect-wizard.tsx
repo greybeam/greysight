@@ -19,12 +19,6 @@ interface ConnectWizardProps {
 const KEY_PAIR_DOCS =
   "https://docs.snowflake.com/en/user-guide/key-pair-auth#generate-the-private-keys";
 
-const VALIDATION_STEPS = [
-  "Validating Snowflake connection…",
-  "Checking SNOWFLAKE.ACCOUNT_USAGE access…",
-  "Saving your connection…",
-] as const;
-
 const SQL_KEYWORDS = new Set([
   "SET", "USE", "ROLE", "CREATE", "USER", "ALTER", "WAREHOUSE", "GRANT", "IF",
   "NOT", "EXISTS", "IDENTIFIER", "TYPE", "SERVICE", "COMMENT", "DATABASE",
@@ -100,14 +94,11 @@ export default function ConnectWizard({
   });
   const [status, setStatus] = useState<"idle" | "submitting">("idle");
   const [error, setError] = useState<string | null>(null);
-  const [stepIndex, setStepIndex] = useState(0);
   const [copied, setCopied] = useState(false);
-  const stepIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     return () => {
-      if (stepIntervalRef.current) clearInterval(stepIntervalRef.current);
       if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
     };
   }, []);
@@ -127,11 +118,6 @@ export default function ConnectWizard({
     event.preventDefault();
     setError(null);
     setStatus("submitting");
-    setStepIndex(0);
-    stepIntervalRef.current = setInterval(
-      () => setStepIndex((i) => Math.min(i + 1, VALIDATION_STEPS.length - 1)),
-      1500,
-    );
     try {
       const organizationId = await connect(form, { accessToken });
       onConnected(organizationId);
@@ -142,8 +128,6 @@ export default function ConnectWizard({
         setError("Something went wrong. Please try again.");
       }
       setStatus("idle");
-    } finally {
-      if (stepIntervalRef.current) clearInterval(stepIntervalRef.current);
     }
   }
 
@@ -185,9 +169,20 @@ export default function ConnectWizard({
           <button
             className="rounded-md bg-slate-950 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-60"
             disabled={status === "submitting"}
+            aria-busy={status === "submitting"}
             type="submit"
           >
-            {status === "submitting" ? VALIDATION_STEPS[stepIndex] : "Test connection & save"}
+            {status === "submitting" ? (
+              <span className="inline-flex items-center gap-2">
+                <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Validating Snowflake connection…
+              </span>
+            ) : (
+              "Test connection & save"
+            )}
           </button>
         </form>
         <aside className="flex flex-col gap-3">
