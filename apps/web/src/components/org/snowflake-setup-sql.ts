@@ -8,18 +8,18 @@
  * header/footer stripped and the base64 body on one line.
  */
 export const SNOWFLAKE_SETUP_SQL = `-- Replace object names if needed.
-SET user_name = 'GREYBEAM_USER';
-SET role_name = 'GREYBEAM_ROLE';
-SET warehouse_name = 'GREYBEAM_WH';
+SET user_name = 'GREYSIGHT_USER';
+SET role_name = 'GREYSIGHT_ROLE';
+SET warehouse_name = 'GREYSIGHT_WH';
 
 USE ROLE USERADMIN;
 
 CREATE ROLE IF NOT EXISTS IDENTIFIER($role_name)
-  COMMENT = 'Used by Greybeam';
+  COMMENT = 'Used by Greysight';
 
 CREATE USER IF NOT EXISTS IDENTIFIER($user_name)
   TYPE = SERVICE
-  COMMENT = 'Used by Greybeam';
+  COMMENT = 'Used by Greysight';
 
 -- Paste the single-line public key body only: no BEGIN/END PUBLIC KEY lines.
 ALTER USER IDENTIFIER($user_name)
@@ -32,7 +32,7 @@ CREATE WAREHOUSE IF NOT EXISTS IDENTIFIER($warehouse_name)
   AUTO_SUSPEND = 60
   AUTO_RESUME = TRUE
   INITIALLY_SUSPENDED = TRUE
-  COMMENT = 'Used by Greybeam';
+  COMMENT = 'Used by Greysight';
 
 USE ROLE SECURITYADMIN;
 
