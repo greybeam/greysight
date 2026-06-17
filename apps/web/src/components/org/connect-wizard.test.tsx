@@ -3,7 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import ConnectWizard from "./connect-wizard";
 
-afterEach(() => cleanup());
+const originalClipboard = navigator.clipboard;
+
+afterEach(() => {
+  cleanup();
+  Object.assign(navigator, { clipboard: originalClipboard });
+});
 
 function fill() {
   fireEvent.change(screen.getByLabelText(/organization name/i), { target: { value: "Acme" } });
@@ -35,5 +40,25 @@ describe("ConnectWizard", () => {
     fill();
     fireEvent.click(screen.getByRole("button", { name: /test connection & save/i }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Bad Account Usage access");
+  });
+
+  it("copies the setup SQL", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    render(<ConnectWizard connect={vi.fn()} onConnected={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: /copy/i }));
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(
+        expect.stringContaining("CREATE USER IF NOT EXISTS"),
+      ),
+    );
+    expect(await screen.findByText(/copied/i)).toBeInTheDocument();
+  });
+
+  it("renders the full setup SQL text", () => {
+    const { container } = render(<ConnectWizard connect={vi.fn()} onConnected={vi.fn()} />);
+    const pre = container.querySelector("pre");
+    expect(pre?.textContent).toContain("CREATE USER IF NOT EXISTS");
+    expect(pre?.textContent).toContain("GRANT DATABASE ROLE SNOWFLAKE.USAGE_VIEWER");
   });
 });

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   connectSnowflake as defaultConnect,
@@ -19,6 +19,76 @@ interface ConnectWizardProps {
 const KEY_PAIR_DOCS =
   "https://docs.snowflake.com/en/user-guide/key-pair-auth#generate-the-private-keys";
 
+const VALIDATION_STEPS = [
+  "Validating Snowflake connection…",
+  "Checking SNOWFLAKE.ACCOUNT_USAGE access…",
+  "Saving your connection…",
+] as const;
+
+const SQL_KEYWORDS = new Set([
+  "SET", "USE", "ROLE", "CREATE", "USER", "ALTER", "WAREHOUSE", "GRANT", "IF",
+  "NOT", "EXISTS", "IDENTIFIER", "TYPE", "SERVICE", "COMMENT", "DATABASE",
+  "TO", "ON", "AND", "OR",
+]);
+
+// Captures single-quoted strings or word tokens; everything else is emitted as plain text.
+const TOKEN_REGEX = /('[^']*')|([A-Za-z_]+)/g;
+
+function highlightLine(line: string, lineKey: number) {
+  // A line that begins (after whitespace) with `--` is a comment in full.
+  if (line.trimStart().startsWith("--")) {
+    return (
+      <span key={lineKey} className="text-slate-500 italic">
+        {line}
+      </span>
+    );
+  }
+
+  const nodes: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  TOKEN_REGEX.lastIndex = 0;
+  let partKey = 0;
+
+  while ((match = TOKEN_REGEX.exec(line)) !== null) {
+    if (match.index > lastIndex) {
+      nodes.push(line.slice(lastIndex, match.index));
+    }
+    const [token, quoted, word] = match;
+    if (quoted) {
+      nodes.push(
+        <span key={`${lineKey}-${partKey++}`} className="text-emerald-300">
+          {token}
+        </span>,
+      );
+    } else if (word && SQL_KEYWORDS.has(word.toUpperCase())) {
+      nodes.push(
+        <span key={`${lineKey}-${partKey++}`} className="text-sky-300">
+          {token}
+        </span>,
+      );
+    } else {
+      nodes.push(token);
+    }
+    lastIndex = match.index + token.length;
+  }
+  if (lastIndex < line.length) {
+    nodes.push(line.slice(lastIndex));
+  }
+
+  return <span key={lineKey}>{nodes}</span>;
+}
+
+function highlightSql(sql: string) {
+  const lines = sql.split("\n");
+  return lines.map((line, index) => (
+    <span key={index}>
+      {highlightLine(line, index)}
+      {index < lines.length - 1 ? "\n" : null}
+    </span>
+  ));
+}
+
 export default function ConnectWizard({
   accessToken = null,
   connect = defaultConnect,
@@ -30,15 +100,38 @@ export default function ConnectWizard({
   });
   const [status, setStatus] = useState<"idle" | "submitting">("idle");
   const [error, setError] = useState<string | null>(null);
+  const [stepIndex, setStepIndex] = useState(0);
+  const [copied, setCopied] = useState(false);
+  const stepIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (stepIntervalRef.current) clearInterval(stepIntervalRef.current);
+      if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
+    };
+  }, []);
 
   const update = (key: keyof ConnectSnowflakeInput) =>
     (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
       setForm((prev) => ({ ...prev, [key]: event.target.value }));
 
+  async function handleCopy() {
+    await navigator.clipboard?.writeText(SNOWFLAKE_SETUP_SQL);
+    setCopied(true);
+    if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
+    copyTimeoutRef.current = setTimeout(() => setCopied(false), 2000);
+  }
+
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
     setStatus("submitting");
+    setStepIndex(0);
+    stepIntervalRef.current = setInterval(
+      () => setStepIndex((i) => Math.min(i + 1, VALIDATION_STEPS.length - 1)),
+      1500,
+    );
     try {
       const organizationId = await connect(form, { accessToken });
       onConnected(organizationId);
@@ -49,6 +142,8 @@ export default function ConnectWizard({
         setError("Something went wrong. Please try again.");
       }
       setStatus("idle");
+    } finally {
+      if (stepIntervalRef.current) clearInterval(stepIntervalRef.current);
     }
   }
 
@@ -92,16 +187,26 @@ export default function ConnectWizard({
             disabled={status === "submitting"}
             type="submit"
           >
-            {status === "submitting" ? "Validating Snowflake connection…" : "Test connection & save"}
+            {status === "submitting" ? VALIDATION_STEPS[stepIndex] : "Test connection & save"}
           </button>
         </form>
-        <aside className="space-y-3">
+        <aside className="flex flex-col gap-3">
           <p className="text-sm text-slate-700">
             Recommended: create a dedicated user + role for complete isolation. Replace the public key, then run:
           </p>
-          <pre className="max-h-96 overflow-auto rounded-md bg-slate-950 p-4 text-xs text-slate-100">
-            {SNOWFLAKE_SETUP_SQL}
-          </pre>
+          <div className="relative flex-1 min-h-0">
+            <button
+              type="button"
+              aria-label="Copy setup SQL"
+              onClick={handleCopy}
+              className="absolute right-2 top-2 rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-xs font-medium text-slate-200 hover:bg-slate-700"
+            >
+              {copied ? "Copied!" : "Copy"}
+            </button>
+            <pre className="h-full overflow-auto rounded-md bg-slate-950 p-4 text-xs text-slate-100">
+              <code>{highlightSql(SNOWFLAKE_SETUP_SQL)}</code>
+            </pre>
+          </div>
         </aside>
       </div>
     </section>
