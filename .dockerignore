@@ -1,0 +1,21 @@
+# Build context is the repo root; keep it small. The API image only needs
+# apps/api and sql/ (see apps/api/Dockerfile) — everything else is excluded.
+.git
+**/node_modules
+**/.venv
+**/.next
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+*.py[cod]
+
+# The web app ships separately (Vercel); docs/supabase are not runtime assets.
+apps/web
+docs
+supabase
+
+# Never ship secrets or local env files into the image.
+**/.env*
+*.p8
+*.pem
+*.key
