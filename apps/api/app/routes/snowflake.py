@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 
-from app.auth import AuthContext, require_auth_context
+from app.config import Settings
 from app.services.audit_events import audit_event_recorder
 from app.services.snowflake_client import (
     SnowflakeConfigurationError,
@@ -18,9 +18,14 @@ class SnowflakeValidationResponse(BaseModel):
 
 
 @router.post("/validate", response_model=SnowflakeValidationResponse)
-def validate_snowflake(
-    _auth_context: AuthContext = Depends(require_auth_context),
-) -> SnowflakeValidationResponse:
+def validate_snowflake() -> SnowflakeValidationResponse:
+    # Self-host/dev convenience only: this route validates against the
+    # deployment .env Snowflake credentials. Under multi-tenant auth, per-org
+    # validation happens inside POST /api/onboarding/connect against
+    # user-supplied creds. Gate the route to auth-off deployments and make it
+    # uniformly invisible (404) otherwise, before any auth dependency runs.
+    if Settings().auth_required:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     try:
         validate_snowflake_connection()
     except SnowflakeConfigurationError:

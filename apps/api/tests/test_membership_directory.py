@@ -82,3 +82,16 @@ def test_malformed_row_raises_lookup_error() -> None:
     rows = [{"organization_id": "org-1", "organizations": {"id": "", "name": "Acme"}}]
     with pytest.raises(MembershipLookupError):
         anyio.run(_lookup(lambda _r: httpx.Response(200, json=rows)), "user-123")
+
+
+def test_parses_membership_role() -> None:
+    from app.services.membership_directory import _parse_organization
+
+    org = _parse_organization(
+        {
+            "role": "admin",
+            "organizations": {"id": "org-1", "name": "Acme"},
+        }
+    )
+    assert org.id == "org-1"
+    assert org.role == "admin"

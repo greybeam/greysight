@@ -10,6 +10,7 @@ MAX_MEMBERSHIPS = 200
 class Organization:
     id: str
     name: str
+    role: str = "member"
 
 
 class MembershipLookupError(Exception):
@@ -47,7 +48,7 @@ class SupabaseServiceRoleMembershipLookup:
                     self._url,
                     params={
                         "user_id": f"eq.{user_id}",
-                        "select": "organization_id,organizations(id,name)",
+                        "select": "role,organization_id,organizations(id,name)",
                         "limit": str(self._max_memberships + 1),
                     },
                     headers={
@@ -87,4 +88,6 @@ def _parse_organization(row: object) -> Organization:
         raise MembershipLookupError()
     if not isinstance(org_name, str):
         raise MembershipLookupError()
-    return Organization(id=org_id.strip(), name=org_name)
+    role = row.get("role")
+    role_value = role if isinstance(role, str) and role else "member"
+    return Organization(id=org_id.strip(), name=org_name, role=role_value)

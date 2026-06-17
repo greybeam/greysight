@@ -57,31 +57,41 @@ Notes:
    API host to the web app's origin (e.g. `https://app.example.com`). Cross-origin
    bearer-token calls fail if the web origin is not allowed.
 
-## First-user bootstrap (v1 onboarding)
+## First-user bootstrap (self-service onboarding)
 
-Org creation is deferred to Spec B, so Spec A is **login for pre-provisioned
-members**. To avoid a dead-ended deployment, the operator seeds the first org +
-owner membership directly in Supabase (SQL editor or migration).
+Org creation is **self-service**. A brand-new user signs in, lands on the connect
+wizard, and provisions their own org by connecting Snowflake — no operator
+seeding required.
 
-The user must have **signed in at least once** first, so their row exists in
-`auth.users`. Then insert an `organizations` row attributed to that user. The
-`organizations_create_owner_membership` trigger (function
-`create_organization_owner_membership()`) fires `after insert on organizations`
-and grants the owner membership automatically. The API's live membership lookup
-picks it up on the user's next request.
+The flow:
 
-```sql
--- after the user has signed in once (so auth.users has their row):
-insert into organizations (name, created_by_user_id)
-values ('Greybeam', '<auth.users.id of the operator>');
--- the organizations_create_owner_membership trigger inserts the matching
--- organization_memberships row with role 'owner'; the API's live membership
--- lookup picks it up on the user's next request.
-```
+1. **Sign in** with the magic-link passcode. A signed-in user with zero
+   memberships is shown the connect wizard (not a dead-end "no organization"
+   screen).
+2. **Connect wizard.** The user enters their org name and Snowflake keypair
+   credentials (see [`snowflake-setup.md`](./snowflake-setup.md) for the
+   least-privilege setup SQL) and clicks **"Test connection & save"**.
+3. **Validation.** The API validates the Snowflake connection server-side before
+   persisting anything. A failed connection returns a user-safe error and
+   persists nothing.
+4. **Atomic org creation.** On a successful connection, a single
+   `security definer` RPC creates the organization, the owner membership, the
+   Snowflake connection row, and the Vault-stored secret **atomically** — all or
+   nothing. A one-org guard rejects a second org for the same user. The API's
+   live membership lookup picks up the new org on the user's next request and the
+   dashboard loads against the org's own credentials.
 
-A signed-in user who is *not* seeded sees the interim "no organization" screen —
-expected, not a bug. Self-serve org creation (via a validated Snowflake
-connection) is Spec B.
+### Where Snowflake credentials come from
+
+The deployment-level `SNOWFLAKE_*` env vars are used **only in self-host mode**
+(`AUTH_REQUIRED=false`) for a single-tenant local/self-hosted deployment. In
+multi-tenant mode (`AUTH_REQUIRED=true`), each org's Snowflake credentials come
+from **its own Vault-backed connection** provisioned through the wizard above;
+the connection resolver **fails closed** — there is no `.env` fallback. A
+request for an org with no active connection is rejected rather than silently
+falling back to the deployment's `SNOWFLAKE_*` vars. See
+[`security-model.md`](./security-model.md) for the Vault storage and
+fail-closed resolver details.
 
 ## Hosting the FastAPI backend
 

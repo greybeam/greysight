@@ -5,7 +5,14 @@ from app.services.audit_events import audit_event_recorder
 from app.services.snowflake_client import SnowflakeValidationError
 
 
-def test_snowflake_validation_requires_auth_when_enabled(monkeypatch) -> None:
+def test_snowflake_validation_hidden_when_auth_required_unauthenticated(
+    monkeypatch,
+) -> None:
+    """Under auth, the self-host route is invisible even to unauthenticated callers.
+
+    The 404 must fire before any auth dependency resolves, so an unauthenticated
+    caller gets 404 (route not available) rather than 401.
+    """
     calls: list[bool] = []
 
     def validate() -> None:
@@ -16,35 +23,18 @@ def test_snowflake_validation_requires_auth_when_enabled(monkeypatch) -> None:
 
     response = TestClient(app).post("/api/snowflake/validate")
 
-    assert response.status_code in {401, 403}
-    assert response.json()["detail"] == "Authentication required"
+    assert response.status_code == 404
+    assert response.json()["detail"] != "Authentication required"
     assert calls == []
 
 
-def test_snowflake_validation_rejects_bearer_without_verifier(monkeypatch) -> None:
-    calls: list[bool] = []
-
-    def validate() -> None:
-        calls.append(True)
-
-    monkeypatch.setenv("AUTH_REQUIRED", "true")
-    monkeypatch.setattr("app.auth.supabase_session_verifier", None)
-    monkeypatch.setattr("app.routes.snowflake.validate_snowflake_connection", validate)
-
-    response = TestClient(app).post(
-        "/api/snowflake/validate", headers={"Authorization": "Bearer x"}
-    )
-
-    assert response.status_code == 401
-    assert response.json()["detail"] == "Authentication required"
-    assert calls == []
-
-
-def test_snowflake_validation_accepts_verified_bearer(monkeypatch) -> None:
+def test_snowflake_validation_hidden_when_auth_required_authenticated(
+    monkeypatch,
+) -> None:
+    """Under auth, even a fully authenticated caller gets 404, never env creds."""
     calls: list[bool] = []
 
     async def verifier(token: str) -> dict[str, object]:
-        assert token == "x"
         return {"sub": "user_123"}
 
     def validate() -> None:
@@ -58,12 +48,8 @@ def test_snowflake_validation_accepts_verified_bearer(monkeypatch) -> None:
         "/api/snowflake/validate", headers={"Authorization": "Bearer x"}
     )
 
-    assert response.status_code == 200
-    assert response.json() == {
-        "status": "ok",
-        "message": "Snowflake access validated.",
-    }
-    assert calls == [True]
+    assert response.status_code == 404
+    assert calls == []
 
 
 def test_snowflake_validation_returns_success(monkeypatch) -> None:

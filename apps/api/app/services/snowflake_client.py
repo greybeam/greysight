@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
 from cryptography.hazmat.primitives import serialization
+
+from app.services.snowflake_account import validate_account_identifier
 
 
 class SnowflakeConfigurationError(RuntimeError):
@@ -44,7 +46,8 @@ class SnowflakeConnectionConfig:
     database: str | None = None
     schema: str | None = None
     private_key_path: Path | None = None
-    private_key_passphrase: str | None = None
+    private_key_pem: str | None = field(default=None, repr=False)
+    private_key_passphrase: str | None = field(default=None, repr=False)
     query_timeout_seconds: int = 60
 
     @classmethod
@@ -67,14 +70,14 @@ class SnowflakeConnectionConfig:
         )
 
     def connector_kwargs(self) -> dict[str, Any]:
+        database = self.database or "SNOWFLAKE"
+        schema = self.schema or "ACCOUNT_USAGE"
         required_values = {
             "SNOWFLAKE_ACCOUNT": self.account,
             "SNOWFLAKE_USER": self.user,
             "SNOWFLAKE_ROLE": self.role,
             "SNOWFLAKE_WAREHOUSE": self.warehouse,
-            "SNOWFLAKE_DATABASE": self.database,
-            "SNOWFLAKE_SCHEMA": self.schema,
-            "SNOWFLAKE_PRIVATE_KEY_PATH": self.private_key_path,
+            "SNOWFLAKE_PRIVATE_KEY": self.private_key_pem or self.private_key_path,
         }
         missing = [name for name, value in required_values.items() if not value]
         if missing:
@@ -82,13 +85,15 @@ class SnowflakeConnectionConfig:
                 "Snowflake connection is not configured. Missing: " + ", ".join(missing)
             )
 
+        validate_account_identifier(self.account)
+
         return {
             "account": self.account,
             "user": self.user,
             "role": self.role,
             "warehouse": self.warehouse,
-            "database": self.database,
-            "schema": self.schema,
+            "database": database,
+            "schema": schema,
             "private_key": self._load_private_key_der(),
             "login_timeout": self.query_timeout_seconds,
             "network_timeout": self.query_timeout_seconds,
@@ -96,7 +101,7 @@ class SnowflakeConnectionConfig:
         }
 
     def _load_private_key_der(self) -> bytes:
-        if self.private_key_path is None:
+        if self.private_key_pem is None and self.private_key_path is None:
             raise SnowflakeConfigurationError("Snowflake connection is not configured.")
 
         password = (
@@ -105,9 +110,13 @@ class SnowflakeConnectionConfig:
             else None
         )
         try:
+            pem_bytes = (
+                self.private_key_pem.encode("utf-8")
+                if self.private_key_pem is not None
+                else self.private_key_path.read_bytes()
+            )
             private_key = serialization.load_pem_private_key(
-                self.private_key_path.read_bytes(),
-                password=password,
+                pem_bytes, password=password
             )
             return private_key.private_bytes(
                 encoding=serialization.Encoding.DER,
@@ -128,7 +137,10 @@ def execute_source_query(
     connect: Callable[[SnowflakeConnectionConfig | None], Any] | None = None,
 ) -> list[dict[str, Any]]:
     _validate_window_params(bind_params)
-    connection = (connect or _connect)(config)
+    try:
+        connection = (connect or _connect)(config)
+    except Exception:
+        raise SnowflakeQueryError("Could not query Snowflake.") from None
     try:
         with connection.cursor() as cursor:
             cursor.execute(sql, bind_params)

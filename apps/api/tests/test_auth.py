@@ -359,3 +359,31 @@ def test_normalize_membership_id_canonicalizes_uuid_values() -> None:
         _normalize_membership_id("22222222-2222-4222-8222-ABCDEFABCDEF")
         == "22222222-2222-4222-8222-abcdefabcdef"
     )
+
+
+def test_require_org_admin_allows_admin() -> None:
+    from app.auth import require_org_admin
+    from app.services.membership_directory import Organization
+
+    context = AuthContext(
+        user_id="u",
+        auth_required=True,
+        memberships=frozenset({"org-1"}),
+        organizations=(Organization(id="org-1", name="Acme", role="admin"),),
+    )
+    require_org_admin(context, "org-1")  # no raise
+
+
+def test_require_org_admin_rejects_member() -> None:
+    from app.auth import require_org_admin
+    from app.services.membership_directory import Organization
+
+    context = AuthContext(
+        user_id="u",
+        auth_required=True,
+        memberships=frozenset({"org-1"}),
+        organizations=(Organization(id="org-1", name="Acme", role="member"),),
+    )
+    with pytest.raises(HTTPException) as exc:
+        require_org_admin(context, "org-1")
+    assert exc.value.status_code == 403

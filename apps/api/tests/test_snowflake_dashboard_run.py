@@ -17,7 +17,9 @@ def test_snowflake_dashboard_run_uses_v0_builder_and_persists_metadata(
     monkeypatch.setenv("DATA_SOURCE", "snowflake")
     executed_groups: list[str] = []
 
-    def execute(sql: str, bind_params: dict[str, Any]) -> list[dict[str, Any]]:
+    def execute(
+        sql: str, bind_params: dict[str, Any], config: Any = None
+    ) -> list[dict[str, Any]]:
         lowered = sql.lower()
         if "current_account()" in lowered:
             assert bind_params == {}
@@ -112,7 +114,9 @@ def test_snowflake_dashboard_run_returns_neutral_error_when_sources_fail(
     dashboard_run_repository.clear()
     monkeypatch.setenv("DATA_SOURCE", "snowflake")
 
-    def fail_query(sql: str, bind_params: dict[str, Any]) -> list[dict[str, Any]]:
+    def fail_query(
+        sql: str, bind_params: dict[str, Any], config: Any = None
+    ) -> list[dict[str, Any]]:
         if "current_account()" in sql.lower():
             return [{"account_locator": "TU24199"}]
         raise SnowflakeQueryError("raw private backend detail")
@@ -142,7 +146,9 @@ def test_snowflake_dashboard_run_does_not_expose_unexpected_backend_detail(
     dashboard_run_repository.clear()
     monkeypatch.setenv("DATA_SOURCE", "snowflake")
 
-    def execute(sql: str, bind_params: dict[str, Any]) -> list[dict[str, Any]]:
+    def execute(
+        sql: str, bind_params: dict[str, Any], config: Any = None
+    ) -> list[dict[str, Any]]:
         lowered = sql.lower()
         if "current_account()" in lowered:
             assert bind_params == {}
@@ -217,7 +223,9 @@ def test_snowflake_dashboard_run_falls_back_to_estimated_mode(
     dashboard_run_repository.clear()
     monkeypatch.setenv("DATA_SOURCE", "snowflake")
 
-    def execute(sql: str, bind_params: dict[str, Any]) -> list[dict[str, Any]]:
+    def execute(
+        sql: str, bind_params: dict[str, Any], config: Any = None
+    ) -> list[dict[str, Any]]:
         lowered = sql.lower()
         if "current_account()" in lowered:
             return [{"account_locator": "TU24199"}]
@@ -253,7 +261,9 @@ def test_snowflake_dashboard_run_view_route_returns_prepared_view(monkeypatch) -
     dashboard_run_repository.clear()
     monkeypatch.setenv("DATA_SOURCE", "snowflake")
 
-    def execute(sql: str, bind_params: dict[str, Any]) -> list[dict[str, Any]]:
+    def execute(
+        sql: str, bind_params: dict[str, Any], config: Any = None
+    ) -> list[dict[str, Any]]:
         lowered = sql.lower()
         if "current_account()" in lowered:
             return [{"account_locator": "TU24199"}]
@@ -316,7 +326,7 @@ def test_snowflake_dashboard_view_rejects_too_old_custom_range(monkeypatch) -> N
     monkeypatch.setenv("DATA_SOURCE", "snowflake")
     monkeypatch.setattr(
         "app.services.dashboard_datasets.execute_source_query",
-        lambda sql, bind_params: [{"account_locator": "TU24199"}]
+        lambda sql, bind_params, config=None: [{"account_locator": "TU24199"}]
         if "current_account()" in sql.lower()
         else _source_rows(_source_key_for_sql(sql.lower()))
         if "organization_usage" not in sql.lower()
@@ -351,7 +361,7 @@ def test_snowflake_dashboard_view_rejects_invalid_window_days(monkeypatch) -> No
     monkeypatch.setenv("DATA_SOURCE", "snowflake")
     monkeypatch.setattr(
         "app.services.dashboard_datasets.execute_source_query",
-        lambda sql, bind_params: [{"account_locator": "TU24199"}]
+        lambda sql, bind_params, config=None: [{"account_locator": "TU24199"}]
         if "current_account()" in sql.lower()
         else _source_rows(_source_key_for_sql(sql.lower()))
         if "organization_usage" not in sql.lower()
@@ -374,6 +384,57 @@ def test_snowflake_dashboard_view_rejects_invalid_window_days(monkeypatch) -> No
 
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "invalid_range"
+
+
+def test_build_forwards_connection_config_to_execute_source_query(monkeypatch) -> None:
+    from app.config import Settings
+    from app.services import dashboard_datasets
+    from app.services.dashboard_datasets import build_snowflake_dashboard_data
+    from app.services.snowflake_client import SnowflakeConnectionConfig
+
+    used: dict[str, Any] = {}
+
+    # Monkeypatch the real default executor so we prove the per-org config is
+    # bound by build_snowflake_dashboard_data's default closure — not by a
+    # custom `execute` that would bypass the binding entirely.
+    def fake_execute_source_query(
+        sql: str,
+        bind_params: dict[str, Any],
+        config: SnowflakeConnectionConfig | None = None,
+    ) -> list[dict[str, Any]]:
+        used["config"] = config
+        return []
+
+    monkeypatch.setattr(
+        dashboard_datasets, "execute_source_query", fake_execute_source_query
+    )
+
+    config = SnowflakeConnectionConfig(
+        account="per-org", user="u", role="r", warehouse="w"
+    )
+    try:
+        build_snowflake_dashboard_data(Settings(), connection_config=config)
+    except Exception:
+        pass
+    assert used["config"].account == "per-org"
+
+
+def test_build_treats_failing_connection_as_unavailable_not_500() -> None:
+    from app.config import Settings
+    from app.services.dashboard_datasets import (
+        DashboardSourcesUnavailableError,
+        build_snowflake_dashboard_data,
+    )
+
+    def failing_execute(
+        sql: str, bind_params: dict[str, Any], config: Any = None
+    ) -> list[dict[str, Any]]:
+        raise SnowflakeQueryError("Could not query Snowflake.")
+
+    import pytest
+
+    with pytest.raises(DashboardSourcesUnavailableError):
+        build_snowflake_dashboard_data(Settings(), execute=failing_execute)
 
 
 def _source_rows(dataset_key: str) -> list[dict[str, object]]:

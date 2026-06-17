@@ -586,10 +586,29 @@ def _prepared_view_or_http_error(
 def _create_snowflake_dashboard_run(
     request: DashboardRunCreateRequest, settings: Settings
 ) -> DashboardRun:
+    from app.services.org_connection_resolver import (
+        OrgConnectionNotConfiguredError,
+        resolve_snowflake_config,
+    )
+    from app.services.snowflake_runtime import get_connection_fetcher
+
+    try:
+        connection_config = resolve_snowflake_config(
+            str(request.organization_id),
+            settings,
+            fetch_connection=get_connection_fetcher(settings),
+        )
+    except OrgConnectionNotConfiguredError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This organization has no Snowflake connection configured.",
+        ) from None
+
     try:
         dashboard_data = build_snowflake_dashboard_data(
             settings,
             summary_window_days=request.window_days,
+            connection_config=connection_config,
         )
     except DashboardSourcesUnavailableError:
         raise HTTPException(

@@ -105,13 +105,10 @@ create policy organizations_select_for_members
   to authenticated
   using (is_organization_member(id));
 
-create policy organizations_insert_for_authenticated
-  on organizations for insert
-  to authenticated
-  with check (
-    auth.uid() is not null
-    and created_by_user_id = auth.uid()
-  );
+-- Org creation is service-role/RPC-only (no authenticated INSERT policy). Self-
+-- service org creation goes through a validated service-role path and operator
+-- seeding uses service-role inserts; both bypass RLS, so the owner-membership
+-- trigger still fires. See docs/auth-and-deployment.md, "First-user bootstrap".
 
 create policy organizations_update_for_admins
   on organizations for update
