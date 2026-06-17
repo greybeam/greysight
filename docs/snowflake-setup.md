@@ -24,12 +24,13 @@ When you connect Snowflake to Greysight through the in-app connect wizard, creat
 a dedicated, least-privilege service user and key-pair credential rather than
 reusing a human login. The block below provisions a keypair-only `TYPE = SERVICE`
 user, a role, and an XSMALL warehouse, then grants the role read access to the
-Account Usage views through the `SNOWFLAKE.USAGE_VIEWER` database role.
+shared `SNOWFLAKE` database via `IMPORTED PRIVILEGES`.
 
-The `GRANT DATABASE ROLE SNOWFLAKE.USAGE_VIEWER` grant gives the role read access
-to the `SNOWFLAKE.ACCOUNT_USAGE` views the dashboard probes (the four views
-listed under [Required Access](#required-access) above) — without granting any
-account-administration or data-access privileges.
+The `GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE` grant gives the role read
+access to both the `SNOWFLAKE.ACCOUNT_USAGE` views the dashboard probes (the four
+views listed under [Required Access](#required-access) above) and the
+`SNOWFLAKE.ORGANIZATION_USAGE` views that supply billed dollars — without
+granting any account-administration or data-access privileges.
 
 Generate the key pair first using Snowflake's
 [key-pair authentication guide](https://docs.snowflake.com/en/user-guide/key-pair-auth#generate-the-private-keys),

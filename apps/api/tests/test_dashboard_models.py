@@ -14,11 +14,28 @@ from app.models import (
 )
 
 
-def test_required_dataset_keys_match_safe_field_allowlist() -> None:
-    # REQUIRED_DATASET_KEYS and the per-dataset safe-field allowlist must stay in
-    # sync: a key in one but not the other would silently drop a dataset from a
-    # run or admit fields that are not on the allowlist.
-    assert REQUIRED_DATASET_KEYS == frozenset(SAFE_DATASET_ROW_FIELDS)
+def test_required_dataset_keys_match_dashboard_contract() -> None:
+    # Pin the dataset keys the run contract must expose as an independent literal
+    # (NOT re-derived from SAFE_DATASET_ROW_FIELDS, which would be tautological).
+    # Adding or dropping a dataset without updating this set fails the test.
+    assert REQUIRED_DATASET_KEYS == frozenset(
+        {
+            "account_spend_daily",
+            "warehouse_spend_daily",
+            "service_spend_daily",
+            "query_compute_by_user_daily",
+            "database_storage_daily",
+            "top_warehouses_table",
+            "org_spend_daily",
+            "rate_sheet_daily",
+            "capacity_balance_daily",
+            "current_account",
+        }
+    )
+    # The safe-field allowlist must cover exactly those keys: no dataset can be
+    # required without an allowlist entry, and none can be allow-listed without
+    # being required.
+    assert frozenset(SAFE_DATASET_ROW_FIELDS) == REQUIRED_DATASET_KEYS
 
 
 def test_dashboard_dataset_metadata_serializes_dates_and_validates_literals() -> None:
