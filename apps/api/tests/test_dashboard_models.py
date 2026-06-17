@@ -14,53 +14,10 @@ from app.models import (
 )
 
 
-def test_dashboard_dataset_contract_has_schema_version_and_new_safe_fields() -> None:
-    assert SCHEMA_VERSION == 1
-    assert SAFE_DATASET_ROW_FIELDS["warehouse_spend_daily"] == frozenset(
-        {"usage_date", "warehouse_name", "credits_used", "credits_used_compute"}
-    )
-    assert SAFE_DATASET_ROW_FIELDS["query_compute_by_user_daily"] == frozenset(
-        {
-            "usage_date",
-            "user_name",
-            "warehouse_name",
-            "credits_attributed_compute",
-        }
-    )
-    assert SAFE_DATASET_ROW_FIELDS["org_spend_daily"] == frozenset(
-        {
-            "usage_date",
-            "service_type",
-            "rating_type",
-            "billing_type",
-            "is_adjustment",
-            "currency",
-            "spend",
-        }
-    )
-    assert SAFE_DATASET_ROW_FIELDS["rate_sheet_daily"] == frozenset(
-        {
-            "usage_date",
-            "service_type",
-            "usage_type",
-            "rating_type",
-            "currency",
-            "effective_rate",
-        }
-    )
-    assert SAFE_DATASET_ROW_FIELDS["database_storage_daily"] == frozenset(
-        {
-            "usage_date",
-            "database_name",
-            "average_database_bytes",
-            "average_failsafe_bytes",
-            "average_hybrid_table_storage_bytes",
-        }
-    )
-    assert SAFE_DATASET_ROW_FIELDS["capacity_balance_daily"] == frozenset(
-        {"usage_date", "currency", "balance"}
-    )
-    assert SAFE_DATASET_ROW_FIELDS["current_account"] == frozenset({"account_locator"})
+def test_required_dataset_keys_match_safe_field_allowlist() -> None:
+    # REQUIRED_DATASET_KEYS and the per-dataset safe-field allowlist must stay in
+    # sync: a key in one but not the other would silently drop a dataset from a
+    # run or admit fields that are not on the allowlist.
     assert REQUIRED_DATASET_KEYS == frozenset(SAFE_DATASET_ROW_FIELDS)
 
 

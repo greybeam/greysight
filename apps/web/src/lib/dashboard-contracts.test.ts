@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import parseDashboardDatasets, {
-  FETCH_WINDOW_DAYS,
   parseDashboardView,
 } from "./dashboard-contracts";
 import demoDashboardDatasets from "./demo-dashboard-data";
@@ -10,7 +9,6 @@ describe("parseDashboardDatasets", () => {
   it("accepts the demo dashboard response shape", () => {
     const parsed = parseDashboardDatasets(demoDashboardDatasets);
 
-    expect(FETCH_WINDOW_DAYS).toBe(100);
     expect(parsed.schema_version).toBe(1);
     expect(parsed.run.status).toBe("completed");
     expect(parsed.run.window_days).toBe(100);

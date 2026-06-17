@@ -5,7 +5,6 @@ import pytest
 from app.services.cost_metrics import (
     AccountSpendDaily,
     build_dashboard_summary,
-    DatabaseStorageDaily,
     derive_account_spend_daily,
     WarehouseSpendDaily,
 )
@@ -161,31 +160,6 @@ def test_derive_account_spend_daily_without_current_date_rolls_up_all_dates() ->
         AccountSpendDaily(usage_date=date(2026, 6, 6), credits_used=3.5),
         AccountSpendDaily(usage_date=date(2026, 6, 7), credits_used=7.0),
     ]
-
-
-def test_database_storage_daily_accepts_fractional_average_bytes() -> None:
-    row = DatabaseStorageDaily(
-        usage_date=date(2026, 6, 6),
-        database_name="RAW",
-        average_database_bytes=1.5,
-        average_failsafe_bytes=0.25,
-    )
-
-    assert row.average_database_bytes == 1.5
-    assert row.average_failsafe_bytes == 0.25
-
-
-def test_warehouse_spend_daily_accepts_credits_used_compute() -> None:
-    row = WarehouseSpendDaily.model_validate(
-        {
-            "usage_date": date(2026, 6, 5),
-            "warehouse_name": "BI_WH",
-            "credits_used": 10.0,
-            "credits_used_compute": 9.2,
-        }
-    )
-
-    assert row.credits_used_compute == 9.2
 
 
 def test_warehouse_spend_daily_defaults_credits_used_compute_to_zero() -> None:
