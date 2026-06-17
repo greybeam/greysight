@@ -135,7 +135,7 @@ export default function ConnectWizard({
     <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
       <h1 className="text-lg font-semibold text-slate-950">Connect your Snowflake account</h1>
       <p className="mt-1 text-sm text-slate-600">
-        Greybeam reads only Snowflake metadata. No query results or usage data leave your account.
+        Greybeam only reads your Snowflake usage metadata — never your tables, query results, or data — and doesn’t store it. The key you grant is least-privilege and stored encrypted; disconnect anytime to delete it.
       </p>
       <div className="mt-6 grid gap-8 md:grid-cols-2">
         <form className="space-y-4" onSubmit={handleSubmit}>
