@@ -132,11 +132,11 @@ export default function ConnectWizard({
   }
 
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+    <section className="rounded-lg border border-hairline bg-surface p-6 shadow-sm">
       <div className="grid gap-8 md:grid-cols-2">
         <div className="min-w-0">
-          <h1 className="text-lg font-semibold text-slate-950">Connect your Snowflake account</h1>
-          <p className="mt-1 text-sm text-slate-600">
+          <h1 className="text-lg font-semibold text-slate-100">Connect your Snowflake account</h1>
+          <p className="mt-1 text-sm text-slate-400">
             Greysight only reads metadata. Greysight never stores data, never reads tables, query results, or data. The key you grant is least-privilege and stored encrypted; disconnect anytime to delete it.
           </p>
           <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
@@ -149,26 +149,26 @@ export default function ConnectWizard({
             <Field id="database" label="Database (optional)" value={form.database ?? ""} onChange={update("database")} />
             <Field id="schema" label="Schema (optional)" value={form.schema ?? ""} onChange={update("schema")} />
             <div>
-              <label className="block text-sm font-medium text-slate-700" htmlFor="privateKeyPem">
+              <label className="block text-sm font-medium text-slate-300" htmlFor="privateKeyPem">
                 Private key (PEM)
               </label>
               <textarea
                 id="privateKeyPem"
-                className="mt-1 h-32 w-full rounded-md border border-slate-300 p-2 font-mono text-xs"
+                className="mt-1 h-32 w-full rounded-md border border-hairline bg-canvas p-2 font-mono text-xs text-slate-100 placeholder:text-slate-500 focus:border-chart-purple focus:outline-none focus:ring-1 focus:ring-chart-purple"
                 value={form.privateKeyPem}
                 onChange={update("privateKeyPem")}
                 required
               />
-              <a className="text-xs text-slate-500 underline" href={KEY_PAIR_DOCS} target="_blank" rel="noreferrer">
+              <a className="text-xs text-slate-400 underline hover:text-slate-200" href={KEY_PAIR_DOCS} target="_blank" rel="noreferrer">
                 How to generate a key pair
               </a>
             </div>
             <Field id="passphrase" label="Key passphrase (optional)" value={form.passphrase ?? ""} onChange={update("passphrase")} type="password" />
             {error ? (
-              <p className="text-sm font-medium text-red-700" role="alert">{error}</p>
+              <p className="text-sm font-medium text-red-400" role="alert">{error}</p>
             ) : null}
             <button
-              className="rounded-md bg-slate-950 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-60"
+              className="rounded-md bg-chart-purple px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-60"
               disabled={status === "submitting"}
               aria-busy={status === "submitting"}
               type="submit"
@@ -188,7 +188,7 @@ export default function ConnectWizard({
           </form>
         </div>
         <aside className="flex flex-col gap-3">
-          <p className="text-sm text-slate-700">
+          <p className="text-sm text-slate-400">
             Recommended: create a dedicated user + role for complete isolation. Replace the public key, then run:
           </p>
           <div className="relative flex-1 min-h-0">
@@ -196,11 +196,11 @@ export default function ConnectWizard({
               type="button"
               aria-label="Copy setup SQL"
               onClick={handleCopy}
-              className="absolute right-2 top-2 rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-xs font-medium text-slate-200 hover:bg-slate-700"
+              className="absolute right-2 top-2 rounded-md border border-hairline bg-surface px-2 py-1 text-xs font-medium text-slate-200 hover:bg-hairline"
             >
               {copied ? "Copied!" : "Copy"}
             </button>
-            <pre className="h-full overflow-auto rounded-md bg-slate-950 p-4 text-xs text-slate-100">
+            <pre className="h-full overflow-auto rounded-md border border-hairline bg-canvas p-4 text-xs text-slate-100">
               <code>{highlightSql(SNOWFLAKE_SETUP_SQL)}</code>
             </pre>
           </div>
@@ -223,11 +223,11 @@ interface FieldProps {
 function Field({ id, label, value, onChange, required, type = "text", hint }: FieldProps) {
   return (
     <div>
-      <label className="block text-sm font-medium text-slate-700" htmlFor={id}>{label}</label>
+      <label className="block text-sm font-medium text-slate-300" htmlFor={id}>{label}</label>
       <input
         id={id}
         type={type}
-        className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm"
+        className="mt-1 w-full rounded-md border border-hairline bg-canvas p-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-chart-purple focus:outline-none focus:ring-1 focus:ring-chart-purple"
         value={value}
         onChange={onChange}
         required={required}
