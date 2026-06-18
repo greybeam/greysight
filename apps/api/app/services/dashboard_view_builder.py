@@ -7,7 +7,9 @@ import math
 from typing import Any, Callable
 
 from app.models import DashboardDatasetMetadata, DashboardRun
+from app.services.ai_consumption import AI_KPI_SERVICE_TYPES
 from app.services.dashboard_view_models import (
+    AISpendSummaryViewModel,
     BalancePoint,
     CapacityBalanceViewModel,
     DashboardProjectionRange,
@@ -301,6 +303,31 @@ def build_dashboard_view(
     )
 
 
+def _build_ai_spend_summary(
+    *,
+    rows: list[DatasetRow],
+    currency: str,
+    convert: ConvertCredits,
+) -> AISpendSummaryViewModel:
+    """KPI: dollars across AI service types from service_spend_daily.
+
+    Priced with the AI_COMPUTE rate (falling back to the estimated credit price
+    via convert()). Independent of the heavy detail query.
+    """
+    total = 0.0
+    for row in rows:
+        service_type = _string_field(row, "service_type", "Unknown service")
+        if service_type not in AI_KPI_SERVICE_TYPES:
+            continue
+        credits = _required_float_field(row, "service_spend_daily", "credits_used")
+        total += convert(credits, _as_date(row["usage_date"]), service_type, "AI_COMPUTE")
+    return AISpendSummaryViewModel(
+        total=total,
+        total_label=_format_currency(total, currency),
+        is_empty=total <= 0.0,
+    )
+
+
 def _build_dashboard_view_for_ranges(
     *,
     run: DashboardRun,
@@ -430,6 +457,11 @@ def _build_dashboard_view_for_ranges(
         rows=capacity_balance_rows,
         currency=currency,
     )
+    ai_spend_summary = _build_ai_spend_summary(
+        rows=service_rows,
+        currency=currency,
+        convert=convert,
+    )
 
     return DashboardViewResponse(
         run=run,
@@ -458,6 +490,7 @@ def _build_dashboard_view_for_ranges(
             ),
             storage=_cap_detail_rows(storage_spend.databases),
         ),
+        ai_spend_summary=ai_spend_summary,
     )
 
 
@@ -647,6 +680,11 @@ def _empty_dashboard_view(
             warehouses=[],
             users=[],
             storage=[],
+        ),
+        ai_spend_summary=AISpendSummaryViewModel(
+            total=0.0,
+            total_label=_format_currency(0.0, currency),
+            is_empty=True,
         ),
     )
 
