@@ -426,9 +426,13 @@ def _build_dashboard_view_for_ranges(
         currency=currency,
         day_count=len(dates),
     )
+    forecast_daily_spend = (
+        _trailing_average_spend(projection_daily) if is_billed else 0.0
+    )
     capacity_balance = _build_capacity_balance(
         rows=capacity_balance_rows,
         currency=currency,
+        forecast_daily_spend=forecast_daily_spend,
     )
 
     return DashboardViewResponse(
@@ -972,6 +976,15 @@ def _build_total_spend(
 
 
 MAX_FORECAST_DAYS = 1825  # ~5 years; bounds the payload if the runway is implausibly long
+FORECAST_AVERAGE_WINDOW_DAYS = 7
+
+
+def _trailing_average_spend(daily: list[DollarPoint]) -> float:
+    """Mean spend over the trailing FORECAST_AVERAGE_WINDOW_DAYS of a daily series."""
+    window = daily[-FORECAST_AVERAGE_WINDOW_DAYS:]
+    if not window:
+        return 0.0
+    return sum(point.spend for point in window) / len(window)
 
 
 def _build_forecast_series(
@@ -1013,6 +1026,7 @@ def _build_capacity_balance(
     *,
     rows: list[DatasetRow],
     currency: str,
+    forecast_daily_spend: float = 0.0,
 ) -> CapacityBalanceViewModel:
     balance_by_date: dict[date, float] = {}
     for row in rows:
@@ -1026,21 +1040,30 @@ def _build_capacity_balance(
     if not balance_by_date:
         return _empty_capacity_balance(currency)
 
+    sorted_dates = sorted(balance_by_date)
     daily_series = [
         BalancePoint(
             date=usage_date.isoformat(),
             balance=balance_by_date[usage_date],
             balance_label=_format_currency(balance_by_date[usage_date], currency),
         )
-        for usage_date in sorted(balance_by_date)
+        for usage_date in sorted_dates
     ]
+    current_date = sorted_dates[-1]
     current_point = daily_series[-1]
+    forecast_series = _build_forecast_series(
+        current_balance=current_point.balance,
+        current_date=current_date,
+        forecast_daily_spend=forecast_daily_spend,
+        currency=currency,
+    )
 
     return CapacityBalanceViewModel(
         current_balance=current_point.balance,
         current_balance_label=current_point.balance_label,
         current_balance_date=current_point.date,
         daily_series=daily_series,
+        forecast_series=forecast_series,
         is_empty=False,
     )
 

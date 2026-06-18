@@ -11,7 +11,9 @@ from app.services.dashboard_view_builder import (
     OTHER_STACKED_SERIES_LABEL,
     DashboardInvalidRangeError,
     DashboardRangeOutOfBoundsError,
+    _build_capacity_balance,
     _build_forecast_series,
+    _trailing_average_spend,
     _bucket_stacked_series,
     _build_rate_index,
     _build_storage_rate_index,
@@ -28,6 +30,7 @@ from app.services.dashboard_view_models import (
     CapacityBalanceViewModel,
     DashboardViewRange,
     DashboardViewResponse,
+    DollarPoint,
 )
 
 
@@ -2054,3 +2057,98 @@ def test_build_forecast_series_empty_when_runway_exceeds_cap() -> None:
     )
 
     assert series == []
+
+
+def test_trailing_average_spend_uses_last_seven_points() -> None:
+    daily = [
+        DollarPoint(
+            date=f"2026-06-{day:02d}", spend=float(day), spend_label=f"${day}.00"
+        )
+        for day in range(1, 11)  # spends 1..10
+    ]
+
+    # mean of the last 7 (spends 4..10) = 49 / 7 = 7.0
+    assert _trailing_average_spend(daily) == 7.0
+    assert _trailing_average_spend([]) == 0.0
+
+
+def test_build_capacity_balance_includes_forecast_when_spend_positive() -> None:
+    rows = [
+        {"usage_date": "2026-06-07", "currency": "USD", "balance": 150.0},
+        {"usage_date": "2026-06-08", "currency": "USD", "balance": 100.0},
+    ]
+
+    vm = _build_capacity_balance(rows=rows, currency="USD", forecast_daily_spend=25.0)
+
+    assert vm.forecast_series[0].date == "2026-06-08"  # joins the latest balance date
+    assert vm.forecast_series[0].balance == 100.0
+    assert vm.forecast_series[-1].balance == 0.0
+
+
+def test_build_capacity_balance_omits_forecast_by_default() -> None:
+    rows = [{"usage_date": "2026-06-08", "currency": "USD", "balance": 100.0}]
+
+    vm = _build_capacity_balance(rows=rows, currency="USD")
+
+    assert vm.forecast_series == []
+
+
+def test_demo_view_includes_capacity_forecast() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    datasets["capacity_balance_daily"] = [
+        {"usage_date": "2026-06-07", "currency": "USD", "balance": 12_000.0},
+        {"usage_date": "2026-06-08", "currency": "USD", "balance": 11_875.25},
+    ]
+
+    view = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=_demo_metadata(),
+        source_start_date=source_start,
+        source_end_date=source_end,
+        start_date=date(2026, 6, 6),
+        end_date=date(2026, 6, 8),
+    )
+
+    forecast = view.capacity_balance.forecast_series
+    assert forecast, "demo (billed) view should include a forecast line"
+    assert forecast[0].date == "2026-06-08"
+    assert forecast[0].balance == pytest.approx(11_875.25, abs=0.01)
+    assert forecast[-1].balance == 0.0
+    assert all(
+        forecast[i].balance >= forecast[i + 1].balance
+        for i in range(len(forecast) - 1)
+    )
+
+
+def test_estimated_mode_has_no_capacity_forecast() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    datasets["capacity_balance_daily"] = [
+        {"usage_date": "2026-06-07", "currency": "USD", "balance": 150.0},
+        {"usage_date": "2026-06-08", "currency": "USD", "balance": 100.0},
+    ]
+    # model_copy(update=...) does not re-validate; pass a real SourceAvailability.
+    metadata = _demo_metadata().model_copy(
+        update={
+            "data_mode": "estimated",
+            "billing_through_date": None,
+            "organization_usage": SourceAvailability(
+                available=False, detail="org unavailable"
+            ),
+        }
+    )
+
+    view = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=metadata,
+        source_start_date=source_start,
+        source_end_date=source_end,
+        start_date=date(2026, 6, 6),
+        end_date=date(2026, 6, 8),
+    )
+
+    assert view.capacity_balance.daily_series  # balance line still present
+    assert view.capacity_balance.forecast_series == []  # gated off in estimated mode
