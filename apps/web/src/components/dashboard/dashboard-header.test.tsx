@@ -28,6 +28,7 @@ describe("DashboardHeader", () => {
   });
 
   it("shows the product and the account locator", () => {
+    delete process.env.NEXT_PUBLIC_BRAND;
     render(
       <DashboardHeader
         header={headerViewModel}
@@ -90,7 +91,7 @@ describe("DashboardHeader", () => {
     ).toBeInTheDocument();
   });
 
-  it("omits the Greybeam logo by default (OSS self-host build)", () => {
+  it("omits the Greybeam logo image when NEXT_PUBLIC_BRAND is unset", () => {
     delete process.env.NEXT_PUBLIC_BRAND;
     render(
       <DashboardHeader
@@ -100,11 +101,12 @@ describe("DashboardHeader", () => {
       />,
     );
 
+    // No logo image, but the Greybeam wordmark text still renders in every build.
     expect(screen.queryByAltText("Greybeam")).not.toBeInTheDocument();
     expect(screen.getByText("Greybeam")).toBeInTheDocument();
   });
 
-  it("shows the Greybeam logo when NEXT_PUBLIC_BRAND=greybeam (SaaS build)", () => {
+  it("shows the Greybeam logo image when NEXT_PUBLIC_BRAND=greybeam", () => {
     process.env.NEXT_PUBLIC_BRAND = "greybeam";
     render(
       <DashboardHeader
@@ -117,6 +119,7 @@ describe("DashboardHeader", () => {
     const logo = screen.getByAltText("Greybeam");
     expect(logo).toBeInTheDocument();
     expect(logo).toHaveAttribute("src", "/greybeam_assets/greybeam_logo.svg");
+    expect(screen.getByText("Greybeam")).toBeInTheDocument();
   });
 
   it("shows a running spinner on the run button while a run is in flight", () => {

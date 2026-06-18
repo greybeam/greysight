@@ -31,6 +31,8 @@ export default function DashboardHeader({
 }: DashboardHeaderProps) {
   const account = useAccountChrome();
   const locator = accountLocator ?? header?.accountLocator ?? null;
+  // The "Greybeam" wordmark renders in every build; the env flag only gates the
+  // logo image (see brand.ts), not the brand name.
   const brandLogo = showBrandLogo();
   return (
     <header className="border-b border-hairline bg-surface">

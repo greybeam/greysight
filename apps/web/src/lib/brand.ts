@@ -1,7 +1,7 @@
-// Branding is build-time configuration. The hosted SaaS build sets
-// NEXT_PUBLIC_BRAND=greybeam to surface the Greybeam company mark alongside the
-// product wordmark; OSS self-host leaves it unset and renders the neutral
-// "Greysight" wordmark only, so self-hosters are never branded as Greybeam.
+// Branding is build-time configuration. This flag gates only the Greybeam logo
+// *image* in the header: the hosted build sets NEXT_PUBLIC_BRAND=greybeam to
+// render the company mark, while other builds omit the image. The "Greybeam"
+// wordmark text itself renders in every build regardless of this flag.
 const GREYBEAM_BRAND = "greybeam";
 
 export function showBrandLogo(
