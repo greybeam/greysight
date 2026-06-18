@@ -16,25 +16,58 @@ const headerViewModel: HeaderViewModel = {
 };
 
 describe("DashboardHeader", () => {
+  const originalBrand = process.env.NEXT_PUBLIC_BRAND;
+
   afterEach(() => {
     cleanup();
+    if (originalBrand === undefined) {
+      delete process.env.NEXT_PUBLIC_BRAND;
+    } else {
+      process.env.NEXT_PUBLIC_BRAND = originalBrand;
+    }
   });
 
-  it("shows product, mode, data mode, account, and freshness", () => {
+  it("shows the product and the account locator", () => {
+    delete process.env.NEXT_PUBLIC_BRAND;
     render(
       <DashboardHeader
         header={headerViewModel}
-        modeLabel="Local Snowflake"
         runDisabled={false}
         onRun={vi.fn()}
       />,
     );
 
-    expect(screen.getByText("Greysight")).toBeInTheDocument();
-    expect(screen.getByText("Local Snowflake")).toBeInTheDocument();
-    expect(screen.getByText("Billed")).toBeInTheDocument();
+    expect(screen.getByText("Greybeam")).toBeInTheDocument();
     expect(screen.getByText("TU24199")).toBeInTheDocument();
-    expect(screen.getByText("Billing data through Jun 8, 2026")).toBeInTheDocument();
+    expect(screen.getByText(/Account:/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run analysis" })).toBeInTheDocument();
+  });
+
+  it("prefers the connection account locator over the run's view model", () => {
+    render(
+      <DashboardHeader
+        header={headerViewModel}
+        accountLocator="IJ42635"
+        runDisabled={false}
+        onRun={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("IJ42635")).toBeInTheDocument();
+    expect(screen.queryByText("TU24199")).not.toBeInTheDocument();
+  });
+
+  it("shows the account locator before any run, without a view model", () => {
+    render(
+      <DashboardHeader
+        header={null}
+        accountLocator="IJ42635"
+        runDisabled={false}
+        onRun={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("IJ42635")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Run analysis" })).toBeInTheDocument();
   });
 
@@ -48,33 +81,85 @@ describe("DashboardHeader", () => {
           throughDateLabel: "Jun 9, 2026",
           freshnessLabel: "Account Usage data through Jun 9, 2026",
         }}
-        modeLabel="Local Snowflake"
         runDisabled={false}
         onRun={vi.fn()}
       />,
     );
 
-    expect(screen.getByText("Account Usage data through Jun 9, 2026")).toBeInTheDocument();
     expect(
       screen.getByText("Estimated spend at $3.00/credit - billed data unavailable"),
     ).toBeInTheDocument();
   });
 
-  it("labels demo freshness as demo data instead of billing data", () => {
+  it("omits the Greybeam logo image when NEXT_PUBLIC_BRAND is unset", () => {
+    delete process.env.NEXT_PUBLIC_BRAND;
     render(
       <DashboardHeader
-        header={{
-          ...headerViewModel,
-          dataModeLabel: "Demo",
-          freshnessLabel: "Demo data through Jun 8, 2026",
-        }}
-        modeLabel="Demo"
+        header={headerViewModel}
         runDisabled={false}
         onRun={vi.fn()}
       />,
     );
 
-    expect(screen.getByText("Demo data through Jun 8, 2026")).toBeInTheDocument();
+    // No logo image, but the Greybeam wordmark text still renders in every build.
+    expect(screen.queryByAltText("Greybeam")).not.toBeInTheDocument();
+    expect(screen.getByText("Greybeam")).toBeInTheDocument();
+  });
+
+  it("shows the Greybeam logo image when NEXT_PUBLIC_BRAND=greybeam", () => {
+    process.env.NEXT_PUBLIC_BRAND = "greybeam";
+    render(
+      <DashboardHeader
+        header={headerViewModel}
+        runDisabled={false}
+        onRun={vi.fn()}
+      />,
+    );
+
+    const logo = screen.getByAltText("Greybeam");
+    expect(logo).toBeInTheDocument();
+    expect(logo).toHaveAttribute("src", "/greybeam_assets/greybeam_logo.svg");
+    expect(screen.getByText("Greybeam")).toBeInTheDocument();
+  });
+
+  it("shows a running spinner on the run button while a run is in flight", () => {
+    render(
+      <DashboardHeader
+        header={headerViewModel}
+        runDisabled={true}
+        running={true}
+        onRun={vi.fn()}
+      />,
+    );
+
+    const runButton = screen.getByRole("button", { name: /Running/ });
+    expect(runButton).toBeDisabled();
+    expect(runButton).toHaveAttribute("aria-busy", "true");
+    expect(screen.queryByRole("button", { name: "Run analysis" })).not.toBeInTheDocument();
+  });
+
+  it("shows the idle run label when no run is in flight", () => {
+    render(
+      <DashboardHeader
+        header={headerViewModel}
+        runDisabled={false}
+        onRun={vi.fn()}
+      />,
+    );
+
+    const runButton = screen.getByRole("button", { name: "Run analysis" });
+    expect(runButton).toHaveAttribute("aria-busy", "false");
+  });
+
+  it("no longer renders the freshness / billing-through label", () => {
+    render(
+      <DashboardHeader
+        header={headerViewModel}
+        runDisabled={false}
+        onRun={vi.fn()}
+      />,
+    );
+
     expect(
       screen.queryByText("Billing data through Jun 8, 2026"),
     ).not.toBeInTheDocument();

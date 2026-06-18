@@ -11,6 +11,9 @@ class Organization:
     id: str
     name: str
     role: str = "member"
+    # Snowflake account locator from the org's persisted connection, if any.
+    # Lets callers surface the account before any analysis run.
+    account_locator: str | None = None
 
 
 class MembershipLookupError(Exception):
@@ -48,7 +51,10 @@ class SupabaseServiceRoleMembershipLookup:
                     self._url,
                     params={
                         "user_id": f"eq.{user_id}",
-                        "select": "role,organization_id,organizations(id,name)",
+                        "select": (
+                            "role,organization_id,organizations"
+                            "(id,name,organization_snowflake_connections(account))"
+                        ),
                         "limit": str(self._max_memberships + 1),
                     },
                     headers={
@@ -90,4 +96,35 @@ def _parse_organization(row: object) -> Organization:
         raise MembershipLookupError()
     role = row.get("role")
     role_value = role if isinstance(role, str) and role else "member"
-    return Organization(id=org_id.strip(), name=org_name, role=role_value)
+    account_locator = _extract_account_locator(
+        embedded.get("organization_snowflake_connections")
+    )
+    return Organization(
+        id=org_id.strip(),
+        name=org_name,
+        role=role_value,
+        account_locator=account_locator,
+    )
+
+
+def _extract_account_locator(connection: object) -> str | None:
+    # PostgREST returns an embedded one-to-one relation as an object (or null),
+    # but can return a single-element list depending on relationship detection;
+    # handle both so the locator survives either shape.
+    if isinstance(connection, Mapping):
+        return _account_from_row(connection)
+    if isinstance(connection, list):
+        for entry in connection:
+            account = _account_from_row(entry)
+            if account is not None:
+                return account
+    return None
+
+
+def _account_from_row(row: object) -> str | None:
+    if not isinstance(row, Mapping):
+        return None
+    account = row.get("account")
+    if isinstance(account, str) and account.strip():
+        return account.strip()
+    return None

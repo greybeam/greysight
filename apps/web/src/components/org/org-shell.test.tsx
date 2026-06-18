@@ -4,11 +4,33 @@ import { useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import OrgShell from "./org-shell";
+import { useAccountChrome } from "../../lib/account-context";
+import type { MembershipOrganization } from "../../lib/session-memberships";
 import type {
   AuthSession,
   BrowserAuthClient,
   SessionChangeCallback,
 } from "../../lib/supabase-client";
+
+// Stand-in for the dashboard: the signed-in identity and Sign out button now
+// live in the dashboard's app bar, fed by OrgShell through account context.
+// This probe consumes that context so the sign-out tests exercise the same
+// wiring the real header uses.
+function AccountChromeProbe() {
+  const account = useAccountChrome();
+  if (!account) return <p>dashboard</p>;
+  return (
+    <div>
+      <p>dashboard</p>
+      <p>Signed in</p>
+      <p>{account.email}</p>
+      <button onClick={account.onSignOut} type="button">
+        Sign out
+      </button>
+      {account.signOutError ? <p role="alert">{account.signOutError}</p> : null}
+    </div>
+  );
+}
 
 function authClient(
   session: AuthSession | null,
@@ -156,7 +178,7 @@ describe("OrgShell", () => {
         authClient={authClient(session)}
         fetchMemberships={vi
           .fn()
-          .mockResolvedValue([{ id: "org-1", name: "Acme" }])}
+          .mockResolvedValue([{ id: "org-1", name: "Acme", accountLocator: null }])}
         onOrganizationChange={onOrganizationChange}
       >
         <p>dashboard</p>
@@ -167,6 +189,7 @@ describe("OrgShell", () => {
       expect(onOrganizationChange).toHaveBeenCalledWith({
         id: "org-1",
         name: "Acme",
+        accountLocator: null,
       }),
     );
   });
@@ -198,14 +221,16 @@ describe("OrgShell", () => {
       }),
     });
 
-    let resolveTokenA: ((orgs: { id: string; name: string }[]) => void) | undefined;
+    let resolveTokenA: ((orgs: MembershipOrganization[]) => void) | undefined;
     const fetchMemberships = vi.fn((token: string) => {
       if (token === "access-token") {
-        return new Promise<{ id: string; name: string }[]>((resolve) => {
+        return new Promise<MembershipOrganization[]>((resolve) => {
           resolveTokenA = resolve;
         });
       }
-      return Promise.resolve([{ id: "org-b", name: "Bravo" }]);
+      return Promise.resolve([
+        { id: "org-b", name: "Bravo", accountLocator: null },
+      ]);
     });
 
     const onOrganizationChange = vi.fn();
@@ -233,24 +258,26 @@ describe("OrgShell", () => {
       expect(onOrganizationChange).toHaveBeenCalledWith({
         id: "org-b",
         name: "Bravo",
+        accountLocator: null,
       }),
     );
 
     // Now let the stale token-A request resolve last.
-    resolveTokenA?.([{ id: "org-a", name: "Alpha" }]);
+    resolveTokenA?.([{ id: "org-a", name: "Alpha", accountLocator: null }]);
 
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(onOrganizationChange).not.toHaveBeenCalledWith({
       id: "org-a",
       name: "Alpha",
+      accountLocator: null,
     });
   });
 
   it("does not refetch when an inline onOrganizationChange changes identity", async () => {
     const fetchMemberships = vi
       .fn()
-      .mockResolvedValue([{ id: "org-1", name: "Acme" }]);
+      .mockResolvedValue([{ id: "org-1", name: "Acme", accountLocator: null }]);
     const client = authClient(session);
 
     function Parent() {
@@ -287,10 +314,10 @@ describe("OrgShell", () => {
         authClient={authClient(session, { signOut })}
         fetchMemberships={vi
           .fn()
-          .mockResolvedValue([{ id: "org-1", name: "Acme" }])}
+          .mockResolvedValue([{ id: "org-1", name: "Acme", accountLocator: null }])}
         onOrganizationChange={onOrganizationChange}
       >
-        <p>dashboard</p>
+        <AccountChromeProbe />
       </OrgShell>,
     );
     await screen.findByText("dashboard");
@@ -318,11 +345,11 @@ describe("OrgShell", () => {
         authClient={authClient(session, { signOut })}
         fetchMemberships={vi
           .fn()
-          .mockResolvedValue([{ id: "org-1", name: "Acme" }])}
+          .mockResolvedValue([{ id: "org-1", name: "Acme", accountLocator: null }])}
         onAccessTokenChange={onAccessTokenChange}
         onOrganizationChange={onOrganizationChange}
       >
-        <p>dashboard</p>
+        <AccountChromeProbe />
       </OrgShell>,
     );
     await screen.findByText("dashboard");
@@ -355,10 +382,10 @@ describe("OrgShell", () => {
         authClient={authClient(session, { signOut })}
         fetchMemberships={vi
           .fn()
-          .mockResolvedValue([{ id: "org-1", name: "Acme" }])}
+          .mockResolvedValue([{ id: "org-1", name: "Acme", accountLocator: null }])}
         onOrganizationChange={onOrganizationChange}
       >
-        <p>dashboard</p>
+        <AccountChromeProbe />
       </OrgShell>,
     );
     await screen.findByText("dashboard");

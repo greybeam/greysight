@@ -9,6 +9,7 @@ router = APIRouter(prefix="/api/session", tags=["session"])
 class SessionOrganization(BaseModel):
     id: str
     name: str
+    account_locator: str | None = None
 
 
 class SessionMembershipsResponse(BaseModel):
@@ -21,7 +22,11 @@ def get_session_memberships(
 ) -> SessionMembershipsResponse:
     return SessionMembershipsResponse(
         organizations=[
-            SessionOrganization(id=org.id, name=org.name)
+            SessionOrganization(
+                id=org.id,
+                name=org.name,
+                account_locator=org.account_locator,
+            )
             for org in context.organizations
         ]
     )

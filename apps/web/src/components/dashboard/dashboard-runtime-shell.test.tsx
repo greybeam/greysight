@@ -16,7 +16,11 @@ vi.mock("../org/org-shell", () => ({
     children: React.ReactNode;
     onAccessTokenChange?: (accessToken: string | null) => void;
     onOrganizationChange?: (
-      organization: { id: string; name: string } | null,
+      organization: {
+        id: string;
+        name: string;
+        accountLocator: string | null;
+      } | null,
     ) => void;
   }) => (
     <section>
@@ -26,7 +30,11 @@ vi.mock("../org/org-shell", () => ({
         type="button"
         onClick={() => {
           onAccessTokenChange?.("test-access-token");
-          onOrganizationChange?.({ id: "org-123", name: "Acme Analytics" });
+          onOrganizationChange?.({
+            id: "org-123",
+            name: "Acme Analytics",
+            accountLocator: null,
+          });
         }}
       >
         Select organization
@@ -89,6 +97,7 @@ describe("DashboardRuntimeShell", () => {
             accessToken: "test-access-token",
             organizationId: "org-123",
             organizationName: "Acme Analytics",
+            accountLocator: null,
           },
         }),
       ),
@@ -109,6 +118,7 @@ describe("DashboardRuntimeShell", () => {
             accessToken: "test-access-token",
             organizationId: "org-123",
             organizationName: "Acme Analytics",
+            accountLocator: null,
           },
         }),
       ),

@@ -24,7 +24,6 @@ import FilterBar, {
   canApplyDateRange,
   type WindowDays,
 } from "./filter-bar";
-import RunStatus from "./run-status";
 import SectionEmptyState from "./section-empty-state";
 import {
   OverviewSection,
@@ -37,6 +36,9 @@ export type CostDashboardRuntime = {
   accessToken: string | null;
   organizationId: string;
   organizationName: string;
+  // Account locator from the org's persisted Snowflake connection, shown in the
+  // header before an analysis run has produced a view model.
+  accountLocator?: string | null;
 };
 
 export type { DashboardModeLabel };
@@ -88,7 +90,6 @@ function requestFromViewRange(
 export default function CostDashboard({
   data,
   demoMode,
-  modeLabel,
   runtime,
 }: CostDashboardProps) {
   const shouldUseDemo = demoMode ?? !runtime;
@@ -101,7 +102,6 @@ export default function CostDashboard({
       key={contextKey}
       data={data}
       demoMode={demoMode}
-      modeLabel={modeLabel}
       runtime={runtime}
       shouldUseDemo={shouldUseDemo}
     />
@@ -110,7 +110,6 @@ export default function CostDashboard({
 
 function CostDashboardContent({
   data,
-  modeLabel,
   runtime,
   shouldUseDemo,
 }: CostDashboardProps & { shouldUseDemo: boolean }) {
@@ -418,20 +417,28 @@ function CostDashboardContent({
     (!viewModel && loadState.status === "loading") ||
     loadState.status === "running" ||
     (!shouldUseDemo && !runtime);
-  const resolvedModeLabel =
-    modeLabel ?? (shouldUseDemo ? "Demo" : "Local Snowflake");
+  // A failure that still has a view to fall back on (e.g. a date-range refetch
+  // that errored) used to surface only in the now-removed status band. Surface
+  // it as a slim inline alert above the content so the error isn't swallowed.
+  const transientLoadError =
+    viewModel &&
+    (loadState.status === "failed" ||
+      loadState.status === "expired" ||
+      loadState.status === "deleted")
+      ? loadState.message ?? "Could not load dashboard data."
+      : null;
 
   return (
     <main className="dark min-h-screen bg-canvas [color-scheme:dark]">
       <DashboardHeader
         header={viewModel?.header ?? null}
-        modeLabel={resolvedModeLabel}
+        accountLocator={runtime?.accountLocator ?? null}
         runDisabled={runDisabled}
+        running={runInFlight || loadState.status === "running"}
         onRun={() => {
           void startRun();
         }}
       />
-      <RunStatus status={loadState.status} message={loadState.message} />
       <div
         aria-label="Dashboard content"
         className="mx-auto grid w-full max-w-[1200px] gap-6 px-6 py-6"
@@ -446,6 +453,14 @@ function CostDashboardContent({
           />
         ) : (
           <>
+            {transientLoadError ? (
+              <p
+                className="rounded-md border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-sm font-medium text-rose-300"
+                role="alert"
+              >
+                {transientLoadError}
+              </p>
+            ) : null}
             {viewModel ? (
               <FilterBar
                 range={activeRange ?? viewModel.range}

@@ -3,6 +3,9 @@ import resolveApiUrl from "./api-client";
 export type MembershipOrganization = {
   id: string;
   name: string;
+  // Snowflake account locator from the org's persisted connection, when one
+  // exists. Lets the dashboard show the account before any analysis run.
+  accountLocator: string | null;
 };
 
 function parseOrganizations(payload: unknown): MembershipOrganization[] {
@@ -22,12 +25,22 @@ function parseOrganizations(payload: unknown): MembershipOrganization[] {
     ) {
       throw new Error("Malformed membership entry");
     }
-    const entry = item as { id: string; name: string };
+    const entry = item as {
+      id: string;
+      name: string;
+      account_locator?: unknown;
+      accountLocator?: unknown;
+    };
     const id = entry.id.trim();
     if (id.length === 0) {
       throw new Error("Malformed membership entry");
     }
-    return { id, name: entry.name };
+    const rawLocator = entry.account_locator ?? entry.accountLocator;
+    const accountLocator =
+      typeof rawLocator === "string" && rawLocator.trim().length > 0
+        ? rawLocator
+        : null;
+    return { id, name: entry.name, accountLocator };
   });
 }
 

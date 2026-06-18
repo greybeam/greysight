@@ -43,7 +43,10 @@ def test_returns_organizations_for_user() -> None:
         Organization(id="org-2", name="Beta"),
     )
     assert requests[0].url.params["user_id"] == "eq.user-123"
-    assert "organizations(id,name)" in requests[0].url.params["select"]
+    assert (
+        "organizations(id,name,organization_snowflake_connections(account))"
+        in requests[0].url.params["select"]
+    )
     assert requests[0].headers["apikey"] == "service-role-key"
     assert requests[0].headers["authorization"] == "Bearer service-role-key"
 
@@ -95,3 +98,49 @@ def test_parses_membership_role() -> None:
     )
     assert org.id == "org-1"
     assert org.role == "admin"
+    assert org.account_locator is None
+
+
+def test_parses_account_locator_from_embedded_object() -> None:
+    from app.services.membership_directory import _parse_organization
+
+    org = _parse_organization(
+        {
+            "organizations": {
+                "id": "org-1",
+                "name": "Acme",
+                "organization_snowflake_connections": {"account": "IJ42635"},
+            },
+        }
+    )
+    assert org.account_locator == "IJ42635"
+
+
+def test_parses_account_locator_from_embedded_list() -> None:
+    from app.services.membership_directory import _parse_organization
+
+    org = _parse_organization(
+        {
+            "organizations": {
+                "id": "org-1",
+                "name": "Acme",
+                "organization_snowflake_connections": [{"account": "TU24199"}],
+            },
+        }
+    )
+    assert org.account_locator == "TU24199"
+
+
+def test_missing_connection_yields_null_account_locator() -> None:
+    from app.services.membership_directory import _parse_organization
+
+    org = _parse_organization(
+        {
+            "organizations": {
+                "id": "org-1",
+                "name": "Acme",
+                "organization_snowflake_connections": None,
+            },
+        }
+    )
+    assert org.account_locator is None
