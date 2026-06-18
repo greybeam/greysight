@@ -23,7 +23,11 @@ from app.services.dashboard_view_builder import (
     build_dashboard_view,
     resolve_dashboard_view_range,
 )
-from app.services.dashboard_view_models import DashboardViewRange, DashboardViewResponse
+from app.services.dashboard_view_models import (
+    CapacityBalanceViewModel,
+    DashboardViewRange,
+    DashboardViewResponse,
+)
 
 
 def test_resolves_default_relative_range_from_through_date() -> None:
@@ -1982,3 +1986,15 @@ def test_demo_storage_rows_carry_hybrid_bytes() -> None:
 
     assert storage_rows
     assert all("average_hybrid_table_storage_bytes" in row for row in storage_rows)
+
+
+def test_capacity_balance_view_model_defaults_forecast_series_to_empty() -> None:
+    model = CapacityBalanceViewModel(
+        current_balance=100.0,
+        current_balance_label="$100.00",
+        current_balance_date="2026-06-08",
+        daily_series=[],
+        is_empty=False,
+    )
+
+    assert model.forecast_series == []
