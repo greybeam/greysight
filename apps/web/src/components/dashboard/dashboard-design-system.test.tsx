@@ -16,6 +16,10 @@ import {
 } from "./dashboard-design-system";
 import type { DashboardViewRange } from "../../lib/dashboard-contracts";
 import { getSeriesColors, orderCategoriesByTotal } from "../../lib/chart-colors";
+import {
+  ROLLING_AVERAGE_KEY,
+  ROLLING_AVERAGE_LABEL,
+} from "../../lib/rolling-average";
 
 afterEach(() => {
   cleanup();
@@ -419,6 +423,35 @@ describe("createChartTooltip", () => {
     render(<Tooltip {...sampleProps} />);
 
     expect(screen.queryByText("Total")).not.toBeInTheDocument();
+  });
+
+  it("splits a rolling-average overlay out of the rows and Total into its own row", () => {
+    const Tooltip = createChartTooltip(usdFormatter, {
+      averageKey: ROLLING_AVERAGE_KEY,
+      averageLabel: ROLLING_AVERAGE_LABEL,
+    });
+    const props: CustomTooltipProps = {
+      active: true,
+      label: "Jun 09",
+      payload: [
+        { color: "chart-1", dataKey: "WAREHOUSE_METERING", name: "WAREHOUSE_METERING", value: 10 },
+        { color: "chart-2", dataKey: "CLOUD_SERVICES", name: "CLOUD_SERVICES", value: 5 },
+        // The trendline overlay rides along in the payload as a derived series.
+        { color: "chart-purple", dataKey: ROLLING_AVERAGE_KEY, name: ROLLING_AVERAGE_LABEL, value: 7 },
+      ],
+    };
+
+    render(<Tooltip {...props} />);
+
+    // The average renders under its own label, not as a stacked series row.
+    expect(screen.getByText(ROLLING_AVERAGE_LABEL)).toBeInTheDocument();
+    expect(screen.getByText(usdFormatter(7))).toBeInTheDocument();
+    // The Total sums only the two real series (10 + 5), excluding the average.
+    const totalRow = screen.getByText("Total").parentElement;
+    expect(totalRow).not.toBeNull();
+    expect(
+      within(totalRow as HTMLElement).getByText(usdFormatter(15)),
+    ).toBeInTheDocument();
   });
 });
 

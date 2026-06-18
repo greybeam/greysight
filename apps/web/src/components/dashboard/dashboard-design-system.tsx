@@ -1,9 +1,8 @@
 "use client";
 
-import type React from "react";
 import type { ReactNode } from "react";
 import { AreaChart, BarChart, Card, LineChart, Text } from "@tremor/react";
-import type { CustomTooltipProps, IntervalType } from "@tremor/react";
+import type { IntervalType } from "@tremor/react";
 
 import type {
   BalancePoint,
@@ -15,8 +14,10 @@ import {
   getSeriesColors,
   orderCategoriesByTotal,
   PRIMARY_CHART_COLOR,
-  resolveChartColor,
 } from "../../lib/chart-colors";
+import { withRollingAverage } from "../../lib/rolling-average";
+import { createChartTooltip } from "./chart-tooltip";
+import { StackedSpendBarChart } from "./stacked-bar-chart";
 
 type DashboardGridColumns = 2 | 3 | 4;
 
@@ -537,20 +538,33 @@ export function SpendBarChart({
     date: formatChartDateLabel(String(point.date)),
   }));
   // Stacked charts order series by descending total so the largest sits at the
-  // bottom of the stack and takes the first palette color. Tremor's BarChart
-  // emits categories[0] as the first (bottom/base) stacked Recharts <Bar>.
+  // bottom of the stack and takes the first palette color. The first <Bar> in
+  // both Tremor's BarChart and the Recharts ComposedChart renders at the base.
   const orderedCategories = stack
     ? orderCategoriesByTotal(categories, chartData)
     : categories;
 
+  // Stacked charts carry a 7-day rolling-average trendline, which Tremor's
+  // sealed BarChart can't host — so the stacked path renders on Recharts. The
+  // single-series / non-stacked path stays on Tremor.
+  if (stack) {
+    return (
+      <StackedSpendBarChart
+        categories={orderedCategories}
+        colors={getSeriesColors(orderedCategories)}
+        data={withRollingAverage(chartData, orderedCategories)}
+        heightClass={heightClass}
+        segmentGap={segmentGap}
+        testId={testId}
+        valueFormatter={valueFormatter}
+      />
+    );
+  }
+
   return (
     <BarChart
       categories={orderedCategories}
-      className={cx(
-        "mt-4 w-full",
-        heightClass,
-        segmentGap ? "bar-segment-gap" : undefined,
-      )}
+      className={cx("mt-4 w-full", heightClass)}
       colors={getSeriesColors(orderedCategories)}
       customTooltip={createChartTooltip(valueFormatter)}
       data={chartData}
@@ -568,81 +582,9 @@ export function SpendBarChart({
   );
 }
 
-export function createChartTooltip(
-  valueFormatter: (value: number) => string,
-): React.ComponentType<CustomTooltipProps> {
-  // One shared coercion for both per-row display and the Total so they always
-  // agree: a non-numeric entry value reads as 0 everywhere rather than rendering
-  // NaN in the row while the total silently skips it.
-  function toNumericValue(value: unknown): number {
-    const numeric = Number(value);
-    return Number.isFinite(numeric) ? numeric : 0;
-  }
-
-  function ChartTooltip({ active, label, payload }: CustomTooltipProps) {
-    if (!active || !payload || payload.length === 0) {
-      return null;
-    }
-
-    // Sort an immutable copy by this point's value, descending, so the largest
-    // value at the hovered point is the top row. This is the point's own value
-    // order and can differ from the stacked-bar order, which is fixed by each
-    // series' total across the whole range. Single-series line charts are
-    // unaffected (a one-row sort is a no-op).
-    const rows = [...payload].sort(
-      (a, b) => toNumericValue(b.value) - toNumericValue(a.value),
-    );
-
-    // Multi-series points get a summary "Total" row so the hovered stack's
-    // combined value is legible at a glance. Single-series tooltips omit it
-    // (the lone row already is the total).
-    const showTotal = rows.length > 1;
-    const total = rows.reduce(
-      (sum, entry) => sum + toNumericValue(entry.value),
-      0,
-    );
-
-    return (
-      <div className="rounded-md border border-hairline bg-surface px-3 py-2 shadow-lg">
-        <p className="text-xs font-medium text-slate-100">{label}</p>
-        <div className="mt-1 grid gap-1">
-          {rows.map((entry, index) => {
-            const name = entry.dataKey ?? entry.name;
-            const key = String(name ?? index);
-
-            return (
-              <div
-                className="flex items-center justify-between gap-3 text-xs text-slate-400"
-                key={key}
-              >
-                <span className="flex items-center gap-1.5">
-                  <span
-                    className="h-2 w-2 rounded-full"
-                    style={{ backgroundColor: resolveChartColor(entry.color) }}
-                  />
-                  {String(name ?? "")}
-                </span>
-                <span className="tabular-nums text-slate-200">
-                  {valueFormatter(toNumericValue(entry.value))}
-                </span>
-              </div>
-            );
-          })}
-          {showTotal ? (
-            <div className="mt-1 flex items-center justify-between gap-3 border-t border-hairline pt-1 text-xs font-medium text-slate-100">
-              <span>Total</span>
-              <span className="tabular-nums text-slate-100">
-                {valueFormatter(total)}
-              </span>
-            </div>
-          ) : null}
-        </div>
-      </div>
-    );
-  }
-
-  return ChartTooltip;
-}
+// The shared chart tooltip lives in its own module; re-exported here so existing
+// importers (and tests) keep their `./dashboard-design-system` import path.
+export { createChartTooltip };
 
 // Maps relative window sizes to their human label. Falls back to a day count
 // for any window not in the canonical set so the label stays meaningful.
