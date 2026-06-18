@@ -52,6 +52,27 @@ class RankedBarRow(RankedSpendRow):
     bar_width_percent: float
 
 
+class AIConsumptionPoint(BaseModel):
+    date: str
+    values: dict[str, float]
+
+
+class AISpendSummaryViewModel(BaseModel):
+    total: float
+    total_label: str
+    is_empty: bool
+
+
+class AIDetailViewModel(BaseModel):
+    daily_series: list[AIConsumptionPoint]
+    consumption_type_names: list[str]
+    ranked_consumption_types: list[RankedSpendRow]
+    consumption_bars: list[RankedBarRow]
+    is_empty: bool
+    partial: bool
+    skipped_branches: list[str]
+
+
 class HeaderViewModel(BaseModel):
     data_mode_label: DashboardDataModeLabel
     account_locator: str | None
@@ -174,3 +195,6 @@ class DashboardViewResponse(BaseModel):
     storage_spend: StorageSpendViewModel
     service_spend: ServiceSpendViewModel
     detail_tables: DetailTablesViewModel
+    ai_spend_summary: AISpendSummaryViewModel = AISpendSummaryViewModel(
+        total=0.0, total_label="$0.00", is_empty=True
+    )
