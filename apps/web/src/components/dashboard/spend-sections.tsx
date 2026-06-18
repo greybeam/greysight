@@ -3,6 +3,8 @@
 import { Card, Text } from "@tremor/react";
 
 import type {
+  AIDetailViewModel,
+  AISpendSummaryViewModel,
   CapacityBalanceViewModel,
   DashboardViewRange,
   ServiceSpendViewModel,
@@ -12,6 +14,7 @@ import type {
 } from "../../lib/dashboard-contracts";
 import {
   buildEndingBalanceLabel,
+  buildSpendPeriodLabel,
   buildStorageSpendLabel,
   buildTotalSpendLabel,
   buildTotalWarehouseSpendLabel,
@@ -461,5 +464,110 @@ function StorageSpendBody({
         />
       </section>
     </DashboardGrid>
+  );
+}
+
+/**
+ * AI-section "Total AI Spend" KPI label, e.g. "Total AI Spend in Last 30 Days".
+ */
+function buildTotalAiSpendLabel(
+  range: DashboardViewRange | null | undefined,
+): string {
+  return buildSpendPeriodLabel("Total AI Spend", range);
+}
+
+export type AiSpendDetailState =
+  | { status: "loading" }
+  | { status: "error" }
+  | { status: "ready"; viewModel: AIDetailViewModel };
+
+type AiSpendSectionProps = {
+  currency: string;
+  range?: DashboardViewRange | null;
+  summary: AISpendSummaryViewModel;
+  detail: AiSpendDetailState;
+};
+
+export function AiSpendSection({
+  currency,
+  range,
+  summary,
+  detail,
+}: AiSpendSectionProps) {
+  const ready = detail.status === "ready" ? detail.viewModel : null;
+  const chartData = ready ? flattenServiceDailySeries(ready.dailySeries) : [];
+  const categories = ready ? ready.consumptionTypeNames : [];
+  const totalLabel = buildTotalAiSpendLabel(range);
+
+  return (
+    <DashboardSection
+      ariaLabel="AI spend"
+      testId="dashboard-section-ai-spend"
+      title="AI spend"
+    >
+      <DashboardGrid columns={3} testId="dashboard-grid-ai-spend">
+        <TotalSpendBarCard
+          ariaLabel="Total AI spend"
+          categories={categories}
+          chart={
+            ready ? (
+              <SpendBarChart
+                categories={categories}
+                currency={currency}
+                data={chartData}
+                heightClass="h-96"
+                segmentGap
+                showLegend={false}
+                stack
+                testId="ai-spend-tremor-bar-chart"
+              />
+            ) : (
+              <ChartSkeleton
+                variant="bar"
+                heightClass="h-96"
+                testId="ai-spend-skeleton-chart"
+              />
+            )
+          }
+          currency={currency}
+          label={totalLabel}
+          value={summary.totalLabel}
+          data={chartData}
+          span={2}
+          testId="total-ai-spend-card"
+          chartTestId="ai-spend-tremor-bar-chart"
+        />
+        {/* Third column: single ranked card for consumption types. Matches the
+            warehouse section's right-column structure (flex column, min-h-0). */}
+        <div className="flex h-full min-h-0 flex-col gap-4">
+          <section
+            aria-label="AI consumption ranking"
+            className="flex min-h-0 flex-1 flex-col"
+            data-dashboard-panel="true"
+          >
+            <Card className="flex h-full flex-col p-6">
+              <Text>Total AI spend by consumption type</Text>
+              {/* Data-consistency note: KPI = billed metering; chart = per-feature
+                  breakdown. Small differences between the two are expected. */}
+              <Text className="mb-2 text-xs opacity-60">
+                KPI reflects billed metering; chart shows per-feature breakdown
+              </Text>
+              <div className="flex min-h-0 flex-1 flex-col">
+                {ready ? (
+                  <RankedSpendBars rows={ready.consumptionBars} />
+                ) : (
+                  <RankedSpendBarsSkeleton rows={4} />
+                )}
+              </div>
+              {ready?.partial ? (
+                <Text className="mt-2 text-xs opacity-60">
+                  Some sources unavailable: {ready.skippedBranches.join(", ")}
+                </Text>
+              ) : null}
+            </Card>
+          </section>
+        </div>
+      </DashboardGrid>
+    </DashboardSection>
   );
 }
