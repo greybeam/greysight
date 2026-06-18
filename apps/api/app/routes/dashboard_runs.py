@@ -363,6 +363,39 @@ def read_demo_dashboard_view(
     return view.model_dump(mode="json")
 
 
+@router.get("/demo/sources/{source_id}")
+def read_demo_dashboard_source(
+    source_id: str,
+    window_days: int | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> dict[str, Any]:
+    if source_id not in DEFERRED_SOURCES:
+        raise HTTPException(status_code=404, detail="Unknown deferred source")
+    payload = build_demo_dashboard_dataset()
+    bounds = _source_bounds_for_dataset_rows(payload.datasets)
+    through_date = payload.metadata.account_usage_through_date or bounds.source_end_date
+    view_range = resolve_dashboard_view_range(
+        through_date=through_date,
+        source_start_date=bounds.source_start_date,
+        source_end_date=bounds.source_end_date,
+        window_days=window_days,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    view = build_ai_detail_view(
+        ai_rows=payload.datasets.get(source_id, []),
+        rate_rows=payload.datasets.get("rate_sheet_daily", []),
+        currency=payload.metadata.currency or "USD",
+        estimated_credit_price_usd=payload.metadata.estimated_credit_price_usd,
+        start_date=view_range.start_date,
+        end_date=view_range.end_date,
+        partial=False,
+        skipped_branches=[],
+    )
+    return {"status": "completed", "view": view.model_dump(mode="json")}
+
+
 @router.post("", response_model=DashboardRun, status_code=status.HTTP_201_CREATED)
 def create_dashboard_run(
     request: DashboardRunCreateRequest,

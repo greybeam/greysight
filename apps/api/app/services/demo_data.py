@@ -26,6 +26,15 @@ _DEMO_SERVICES = (
     ("WAREHOUSE_METERING", "COMPUTE", 38.0),
     ("CLOUD_SERVICES", "COMPUTE", 4.0),
     ("AUTO_CLUSTERING", "COMPUTE", 1.5),
+    ("AI_SERVICES", "AI_COMPUTE", 6.0),
+    ("CORTEX_AGENTS", "AI_COMPUTE", 2.0),
+)
+
+_DEMO_AI_CONSUMPTION_TYPES = (
+    ("AI_SERVICES", "CORTEX_ANALYST", 3.5),
+    ("AI_SERVICES", "CORTEX_DOCUMENT_PROCESSING", 1.5),
+    ("CORTEX_AGENTS", "CORTEX_AGENTS", 2.0),
+    ("CORTEX_SEARCH", "CORTEX_SEARCH", 1.0),
 )
 _DEMO_WAREHOUSES = (
     ("BI_WH", 0.50),
@@ -76,6 +85,7 @@ def build_demo_dashboard_dataset() -> DashboardDatasetPayload:
     capacity_balance_daily = _build_capacity_balance_daily(usage_dates, org_spend_daily)
     account_spend_daily = derive_account_spend_daily(service_spend_daily)
     top_warehouses_table = build_top_warehouses_table(warehouse_spend_daily)
+    ai_consumption_daily = _build_ai_consumption_daily(usage_dates)
     datasets = {
         "account_spend_daily": _json_ready_rows(account_spend_daily),
         "warehouse_spend_daily": _json_ready_rows(warehouse_spend_daily),
@@ -87,6 +97,7 @@ def build_demo_dashboard_dataset() -> DashboardDatasetPayload:
         "rate_sheet_daily": _json_ready_rows(rate_sheet_daily),
         "capacity_balance_daily": _json_ready_rows(capacity_balance_daily),
         "current_account": [{"account_locator": DEMO_ACCOUNT_LOCATOR}],
+        "ai_consumption_daily": _json_ready_rows(ai_consumption_daily),
     }
     summary = build_dashboard_summary(
         account_spend_daily=account_spend_daily,
@@ -268,6 +279,22 @@ def _build_capacity_balance_daily(
                 "balance": round(balance, 2),
             }
         )
+    return rows
+
+
+def _build_ai_consumption_daily(usage_dates: list[date]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for index, usage_date in enumerate(usage_dates):
+        multiplier = _daily_multiplier(index)
+        for service_type, consumption_type, base_credits in _DEMO_AI_CONSUMPTION_TYPES:
+            rows.append(
+                {
+                    "usage_date": usage_date,
+                    "service_type": service_type,
+                    "consumption_type": consumption_type,
+                    "credits_used": round(base_credits * multiplier, 3),
+                }
+            )
     return rows
 
 
