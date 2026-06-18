@@ -1,6 +1,7 @@
 "use client";
 
 import type React from "react";
+import { useMemo } from "react";
 import type { ReactNode } from "react";
 import { AreaChart, BarChart, Card, LineChart, Text } from "@tremor/react";
 import type { CustomTooltipProps, IntervalType } from "@tremor/react";
@@ -472,7 +473,14 @@ function CapacityForecastChart({
   heightClass?: string;
   testId: string;
 }) {
-  const valueFormatter = createCurrencyTickFormatter(currency);
+  const valueFormatter = useMemo(
+    () => createCurrencyTickFormatter(currency),
+    [currency],
+  );
+  const CapacityTooltip = useMemo(
+    () => createCapacityTooltip(valueFormatter),
+    [valueFormatter],
+  );
   const chartData = buildCapacityForecastData(balanceData, forecastData);
 
   return (
@@ -482,7 +490,7 @@ function CapacityForecastChart({
       className={cx("capacity-forecast-chart mt-4 w-full", heightClass)}
       colors={["chart-purple", "chart-lime"]}
       connectNulls={false}
-      customTooltip={createCapacityTooltip(valueFormatter)}
+      customTooltip={CapacityTooltip}
       data={chartData}
       data-chart-library="tremor"
       data-testid={testId}
