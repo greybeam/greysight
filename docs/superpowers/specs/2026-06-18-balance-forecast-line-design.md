@@ -53,6 +53,13 @@ This was reviewed cross-model (Codex) for simplicity. Two simplifications were a
   mode `projection_range` is the inclusive 30-day window ending at `billing_through_date`
   and `_daily_billed_totals` zero-fills every date, so `projection_daily[-7:]` is exactly
   the 7 complete days `through_date - 6 … through_date`, including true zero-spend days.
+- **Also gate on the view ending at `through_date`** (`view_range.end_date ==
+  projection_range.end_date`): the capacity balance endpoint is bounded by `view_range`,
+  but the projection window ends at `through_date`. For a **custom range ending before
+  `through_date`** the two diverge, so projecting the older balance forward at the trailing
+  rate would draw a runway over a period we already have actual data for. In that case
+  `forecast_daily_spend` is `0` → `forecast_series` is `[]` (history-only). Relative ranges
+  always end at `through_date`, so they are unaffected.
   In **estimated** mode `projection_daily` is built only from `service_spend_daily` while
   `account_usage_through_date` is the max across several sources, so a newer non-service
   source could make `[-7:]` include artificial zero days. Gating on `is_billed` avoids

@@ -426,8 +426,18 @@ def _build_dashboard_view_for_ranges(
         currency=currency,
         day_count=len(dates),
     )
+    # The forecast/runway only makes sense anchored at the latest known balance.
+    # `projection_range.end_date` is `through_date` by construction, while the
+    # capacity balance endpoint is bounded by `view_range`. For a custom range
+    # ending before `through_date` the two diverge, so projecting the (older)
+    # balance forward at the trailing spend rate would draw a "forecast" over a
+    # period we already have actual data for. Suppress it in that case; a zero
+    # spend rate yields an empty forecast series.
+    forecast_anchored_to_latest = view_range.end_date == projection_range.end_date
     forecast_daily_spend = (
-        _trailing_average_spend(projection_daily) if is_billed else 0.0
+        _trailing_average_spend(projection_daily)
+        if is_billed and forecast_anchored_to_latest
+        else 0.0
     )
     capacity_balance = _build_capacity_balance(
         rows=capacity_balance_rows,

@@ -478,8 +478,15 @@ def _build_capacity_balance(
 At the call site (~L429), replace the `_build_capacity_balance(...)` call with:
 
 ```python
+    # Only forecast when the view ends at the latest known balance. For a custom
+    # range ending before through_date, the balance endpoint (bounded by
+    # view_range) and the projection window (ending at through_date) diverge, so
+    # the runway would be drawn over a period we already have actual data for.
+    forecast_anchored_to_latest = view_range.end_date == projection_range.end_date
     forecast_daily_spend = (
-        _trailing_average_spend(projection_daily) if is_billed else 0.0
+        _trailing_average_spend(projection_daily)
+        if is_billed and forecast_anchored_to_latest
+        else 0.0
     )
     capacity_balance = _build_capacity_balance(
         rows=capacity_balance_rows,

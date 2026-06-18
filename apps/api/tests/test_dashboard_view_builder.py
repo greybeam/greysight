@@ -2163,3 +2163,32 @@ def test_estimated_mode_has_no_capacity_forecast() -> None:
 
     assert view.capacity_balance.daily_series  # balance line still present
     assert view.capacity_balance.forecast_series == []  # gated off in estimated mode
+
+
+def test_custom_range_ending_before_through_date_omits_forecast() -> None:
+    # through_date is DEMO_BILLING_THROUGH (2026-06-08). A custom range ending
+    # earlier anchors the capacity balance endpoint before the projection
+    # window's end, so the forecast is suppressed rather than projecting an
+    # older balance forward over a period we already have actual data for.
+    # (Positive balances ensure it is the range guard, not a non-positive
+    # balance, that empties the forecast.)
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    datasets["capacity_balance_daily"] = [
+        {"usage_date": "2026-06-06", "currency": "USD", "balance": 12_000.0},
+        {"usage_date": "2026-06-07", "currency": "USD", "balance": 11_875.25},
+    ]
+
+    view = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=_demo_metadata(),
+        source_start_date=source_start,
+        source_end_date=source_end,
+        start_date=date(2026, 6, 6),
+        end_date=date(2026, 6, 7),  # before through_date 2026-06-08
+    )
+
+    assert view.range.end_date == date(2026, 6, 7)
+    assert view.capacity_balance.daily_series  # balance history still present
+    assert view.capacity_balance.forecast_series == []  # suppressed: ends before through_date

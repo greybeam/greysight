@@ -383,6 +383,9 @@ const CAPACITY_FORECAST_CATEGORY = "Forecasted balance";
 // omit the balance, leaving recharts a gap (no bridge across the join).
 type CapacityForecastRow = {
   date: string;
+  // Year-inclusive variant of `date` (e.g. "Jun 11, 2026"), carried on the row
+  // so the tooltip can show the full date while the x-axis stays compact.
+  dateWithYear: string;
   Balance?: number;
   "Forecasted balance"?: number;
 };
@@ -408,6 +411,7 @@ function buildCapacityForecastData(
     const forecast = forecastByDate.get(date);
     return {
       date: formatChartDateLabel(date),
+      dateWithYear: formatChartDateLabelWithYear(date),
       ...(balance !== undefined ? { Balance: balance } : {}),
       ...(forecast !== undefined ? { "Forecasted balance": forecast } : {}),
     };
@@ -428,9 +432,13 @@ function createCapacityTooltip(
     if (rows.length === 0) {
       return null;
     }
+    // Prefer the year-inclusive label carried on the hovered row so far-future
+    // forecast points read unambiguously; fall back to the bare axis label.
+    const hoveredRow = rows[0]?.payload as CapacityForecastRow | undefined;
+    const headerLabel = hoveredRow?.dateWithYear ?? String(label ?? "");
     return (
       <div className="rounded-md border border-hairline bg-surface px-3 py-2 shadow-lg">
-        <p className="text-xs font-medium text-slate-100">{label}</p>
+        <p className="text-xs font-medium text-slate-100">{headerLabel}</p>
         <div className="mt-1 grid gap-1">
           {rows.map((entry, index) => {
             const name = entry.dataKey ?? entry.name;
@@ -875,10 +883,13 @@ export function buildEndingBalanceLabel(
 
 const ISO_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 
-export function formatChartDateLabel(value: string): string {
+// Parses a strict ISO `yyyy-mm-dd` string into a UTC Date, rejecting malformed
+// or out-of-range values (e.g. month 13, day 40) so callers can fall back to the
+// raw string. Shared by the day-only and year-inclusive label formatters.
+function parseIsoUtcDate(value: string): Date | null {
   const match = ISO_DATE_PATTERN.exec(value);
   if (!match) {
-    return value;
+    return null;
   }
 
   const year = Number(match[1]);
@@ -893,12 +904,39 @@ export function formatChartDateLabel(value: string): string {
     parsed.getUTCMonth() !== month - 1 ||
     parsed.getUTCDate() !== day
   ) {
+    return null;
+  }
+
+  return parsed;
+}
+
+export function formatChartDateLabel(value: string): string {
+  const parsed = parseIsoUtcDate(value);
+  if (!parsed) {
     return value;
   }
 
   return new Intl.DateTimeFormat("en-US", {
     day: "2-digit",
     month: "short",
+    timeZone: "UTC",
+  }).format(parsed);
+}
+
+// Like `formatChartDateLabel` but includes the year, e.g. "Jun 11, 2026". Used
+// for the capacity-forecast tooltip header, where forecasts can run far enough
+// into the future that the bare "Jun 11" is ambiguous across years. The x-axis
+// keeps the compact day-only label to stay uncluttered.
+function formatChartDateLabelWithYear(value: string): string {
+  const parsed = parseIsoUtcDate(value);
+  if (!parsed) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
     timeZone: "UTC",
   }).format(parsed);
 }
