@@ -13,7 +13,10 @@ from app.services.dashboard_datasets import (
     build_top_warehouses_table,
 )
 from app.services.dataset_bounds import TOP_USER_COUNT
-from app.services.snowflake_client import SnowflakeQueryError
+from app.services.snowflake_client import (
+    SnowflakeObjectUnavailableError,
+    SnowflakeQueryError,
+)
 
 
 def _account_rows() -> dict[str, list[dict[str, Any]]]:
@@ -244,6 +247,36 @@ def test_falls_back_to_estimated_mode_when_org_usage_is_unavailable() -> None:
     assert data.metadata.account_usage.available is True
     assert data.metadata.billing_through_date is None
     assert data.metadata.currency == "USD"
+    assert data.datasets["org_spend_daily"] == []
+    assert data.datasets["rate_sheet_daily"] == []
+
+
+def test_object_unavailable_in_main_run_group_falls_back_gracefully() -> None:
+    # Regression: an org-usage view that is missing/unauthorized raises
+    # SnowflakeObjectUnavailableError. Because it is a SnowflakeQueryError, the
+    # main-run source-group fallback must catch it and degrade to estimated data
+    # rather than failing the whole run with DashboardSourcesUnavailableError.
+    org_datasets = _org_rows()
+    account_datasets = _account_rows()
+
+    def execute(sql: str, bind_params: dict[str, Any]) -> list[dict[str, Any]]:
+        lowered = sql.lower()
+        if "current_account()" in lowered:
+            return [{"account_locator": "TU24199"}]
+        if "remaining_balance_daily" in lowered:
+            raise SnowflakeObjectUnavailableError("capacity view does not exist")
+        if "organization_usage" in lowered:
+            raise SnowflakeObjectUnavailableError("org usage view does not exist")
+        for dataset_key, rows in account_datasets.items():
+            if _known_account_sql_matches(dataset_key, lowered):
+                return rows
+        raise AssertionError(f"unexpected SQL: {sql}")
+
+    data = build_snowflake_dashboard_data(Settings(), execute=execute)
+
+    assert data.metadata.data_mode == "estimated"
+    assert data.metadata.organization_usage.available is False
+    assert data.metadata.account_usage.available is True
     assert data.datasets["org_spend_daily"] == []
     assert data.datasets["rate_sheet_daily"] == []
 

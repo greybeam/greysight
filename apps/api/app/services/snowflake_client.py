@@ -23,11 +23,13 @@ class SnowflakeQueryError(RuntimeError):
     """Raised with a user-safe Snowflake query message."""
 
 
-class SnowflakeObjectUnavailableError(RuntimeError):
+class SnowflakeObjectUnavailableError(SnowflakeQueryError):
     """Raised when a queried object does not exist or is not authorized.
 
-    Distinct from SnowflakeQueryError so callers (e.g. resilient per-branch
-    fetches) can skip a missing/unauthorized table instead of failing.
+    A specialization of SnowflakeQueryError so resilient per-branch fetches can
+    catch it explicitly to skip a missing/unauthorized table, while broader
+    ``except SnowflakeQueryError`` fallbacks (e.g. main-run source groups) still
+    treat it as a query failure and degrade gracefully to estimated data.
     """
 
 

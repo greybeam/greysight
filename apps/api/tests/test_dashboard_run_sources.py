@@ -66,6 +66,29 @@ def test_claim_rejects_missing_or_deleted_run():
     assert repo.claim_source(run_id, "ai_consumption_daily") is False
 
 
+def test_claim_rejects_expired_run_and_clears_stale_source_state():
+    # Regression: expiry is lazy. A still-"completed" run whose datasets have
+    # aged out must not be claimable, and a previously "completed" source state
+    # must not survive the data it described.
+    repo, run_id = _repo_with_run()
+    repo.claim_source(run_id, "ai_consumption_daily")
+    repo.complete_source(
+        run_id,
+        "ai_consumption_daily",
+        rows=[{"usage_date": "2026-06-01", "consumption_type": "X", "credits_used": 1.0}],
+        partial=False,
+        skipped_branches=[],
+    )
+    assert repo.get_source_state(run_id, "ai_consumption_daily") == "completed"
+
+    repo.expire_run_datasets(run_id)
+
+    assert repo.claim_source(run_id, "ai_consumption_daily") is False
+    assert repo.get_source_state(run_id, "ai_consumption_daily") != "completed"
+    assert repo.get_source_state(run_id, "ai_consumption_daily") is None
+    assert repo.get_run(run_id).status == "expired"
+
+
 _AI_ROWS = [
     {
         "usage_date": "2026-06-05",

@@ -678,3 +678,15 @@ def test_demo_source_returns_completed_detail() -> None:
     assert body["status"] == "completed"
     assert "daily_series" in body["view"]
     assert len(body["view"]["daily_series"]) == 30
+
+
+def test_demo_source_rejects_out_of_bounds_range_with_422_not_500() -> None:
+    # Regression: the deferred-source GET route resolved the view range directly,
+    # so a bad range raised an unhandled 500 instead of the structured 422 the
+    # /view route returns. window_days=15 is below the supported minimum.
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get(
+        "/api/dashboard-runs/demo/sources/ai_consumption_daily?window_days=15"
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid_range"

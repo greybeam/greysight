@@ -149,19 +149,8 @@ class InMemoryDashboardRunRepository:
             if datasets is None:
                 return None
 
-            if any(
-                dataset_is_expired(dataset.retention_expires_at)
-                for dataset in list(datasets.values())
-            ):
-                self._runs[run_id] = run.model_copy(
-                    update={
-                        "status": "expired",
-                        "updated_at": datetime.now(timezone.utc),
-                    }
-                )
-                self._datasets.pop(run_id, None)
-                self._metadata.pop(run_id, None)
-                self._source_bounds.pop(run_id, None)
+            if self._is_run_expired(datasets):
+                self._expire_run_locked(run_id, run)
                 return None
 
             metadata = self._metadata.get(run_id)
@@ -188,6 +177,30 @@ class InMemoryDashboardRunRepository:
     ) -> None:
         self._source_bounds[run_id] = _source_bounds_for_dataset_rows(datasets)
 
+    @staticmethod
+    def _is_run_expired(datasets: dict[str, StoredDashboardDataset]) -> bool:
+        return any(
+            dataset_is_expired(dataset.retention_expires_at)
+            for dataset in list(datasets.values())
+        )
+
+    def _expire_run_locked(self, run_id: UUID, run: DashboardRun) -> None:
+        """Mark a run expired and drop all of its now-invalid in-memory state.
+
+        Callers must already hold ``self._lock``. Source state is cleared here so
+        it can never outlive the data it describes.
+        """
+        self._runs[run_id] = run.model_copy(
+            update={
+                "status": "expired",
+                "updated_at": datetime.now(timezone.utc),
+            }
+        )
+        self._datasets.pop(run_id, None)
+        self._metadata.pop(run_id, None)
+        self._source_bounds.pop(run_id, None)
+        self._source_states.pop(run_id, None)
+
     def get_dataset_response(self, run_id: UUID) -> DashboardDatasetResponse | None:
         with self._lock:
             run = self._runs.get(run_id)
@@ -197,20 +210,8 @@ class InMemoryDashboardRunRepository:
             stored_datasets = self._datasets.get(run_id)
             if stored_datasets is None:
                 return None
-            if any(
-                dataset_is_expired(dataset.retention_expires_at)
-                for dataset in list(stored_datasets.values())
-            ):
-                expired_run = run.model_copy(
-                    update={
-                        "status": "expired",
-                        "updated_at": datetime.now(timezone.utc),
-                    }
-                )
-                self._runs[run_id] = expired_run
-                self._datasets.pop(run_id, None)
-                self._metadata.pop(run_id, None)
-                self._source_bounds.pop(run_id, None)
+            if self._is_run_expired(stored_datasets):
+                self._expire_run_locked(run_id, run)
                 return None
 
             stored_metadata = self._metadata.get(run_id)
@@ -262,7 +263,15 @@ class InMemoryDashboardRunRepository:
             run = self._runs.get(run_id)
             if run is None or run.status != "completed":
                 return False
-            if run_id not in self._datasets:
+            datasets = self._datasets.get(run_id)
+            if datasets is None:
+                return False
+            # Expiry is lazy: a still-"completed" run whose datasets have aged out
+            # must not be claimed (it would trigger wasted Snowflake work and
+            # leave the source pending). Apply the same transition get_view_inputs
+            # uses, clearing the now-invalid in-memory state including source state.
+            if self._is_run_expired(datasets):
+                self._expire_run_locked(run_id, run)
                 return False
             states = self._source_states.setdefault(run_id, {})
             current = states.get(source_id, {}).get("status")
@@ -375,7 +384,7 @@ def read_demo_dashboard_source(
     payload = build_demo_dashboard_dataset()
     bounds = _source_bounds_for_dataset_rows(payload.datasets)
     through_date = payload.metadata.account_usage_through_date or bounds.source_end_date
-    view_range = resolve_dashboard_view_range(
+    view_range = _resolve_source_view_range_or_http_error(
         through_date=through_date,
         source_start_date=bounds.source_start_date,
         source_end_date=bounds.source_end_date,
@@ -535,7 +544,7 @@ def read_dashboard_source(
     meta = dashboard_run_repository.get_source_meta(run_id, source_id) or {}
 
     through_date = _through_date_for(metadata) or source_bounds.source_end_date
-    view_range = resolve_dashboard_view_range(
+    view_range = _resolve_source_view_range_or_http_error(
         through_date=through_date,
         source_start_date=source_bounds.source_start_date,
         source_end_date=source_bounds.source_end_date,
@@ -728,6 +737,43 @@ def _account_locator_for_dataset_rows(
         if account_locator is not None:
             return str(account_locator)
     return None
+
+
+def _resolve_source_view_range_or_http_error(
+    *,
+    through_date: date,
+    source_start_date: date,
+    source_end_date: date,
+    window_days: int | None,
+    start_date: date | None,
+    end_date: date | None,
+):
+    """Resolve a deferred-source view range, translating range errors to HTTP
+    422/409 the same way ``_prepared_view_or_http_error`` does for ``/view``."""
+    try:
+        return resolve_dashboard_view_range(
+            through_date=through_date,
+            source_start_date=source_start_date,
+            source_end_date=source_end_date,
+            window_days=window_days,
+            start_date=start_date,
+            end_date=end_date,
+        )
+    except DashboardRangeOutOfBoundsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "range_out_of_bounds",
+                "message": "Broader date ranges are not supported yet.",
+                "source_start_date": exc.source_start_date.isoformat(),
+                "source_end_date": exc.source_end_date.isoformat(),
+            },
+        ) from None
+    except DashboardInvalidRangeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "invalid_range", "message": str(exc)},
+        ) from None
 
 
 def _prepared_view_or_http_error(
