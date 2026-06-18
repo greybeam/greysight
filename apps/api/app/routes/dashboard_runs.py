@@ -56,6 +56,7 @@ class InMemoryDashboardRunRepository:
         self._datasets: dict[UUID, dict[str, StoredDashboardDataset]] = {}
         self._metadata: dict[UUID, dict[str, Any] | None] = {}
         self._source_bounds: dict[UUID, StoredSourceBounds] = {}
+        self._source_states: dict[UUID, dict[str, dict[str, Any]]] = {}
 
     def clear(self) -> None:
         with self._lock:
@@ -64,6 +65,7 @@ class InMemoryDashboardRunRepository:
             self._datasets.clear()
             self._metadata.clear()
             self._source_bounds.clear()
+            self._source_states.clear()
 
     def create_completed_run(self, request: DashboardRunCreateRequest) -> DashboardRun:
         return self.create_completed_snapshot(
@@ -246,7 +248,65 @@ class InMemoryDashboardRunRepository:
             self._datasets.pop(run_id, None)
             self._metadata.pop(run_id, None)
             self._source_bounds.pop(run_id, None)
+            self._source_states.pop(run_id, None)
             return deleted_run
+
+    def claim_source(self, run_id: UUID, source_id: str) -> bool:
+        """Mark a deferred source in-flight. Returns False if the run is not
+        completed, is deleted/expired, or a fetch is already pending."""
+        with self._lock:
+            run = self._runs.get(run_id)
+            if run is None or run.status != "completed":
+                return False
+            if run_id not in self._datasets:
+                return False
+            states = self._source_states.setdefault(run_id, {})
+            current = states.get(source_id, {}).get("status")
+            if current in {"pending", "completed"}:
+                return False
+            states[source_id] = {"status": "pending"}
+            return True
+
+    def get_source_state(self, run_id: UUID, source_id: str) -> str | None:
+        with self._lock:
+            return self._source_states.get(run_id, {}).get(source_id, {}).get("status")
+
+    def get_source_meta(self, run_id: UUID, source_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            state = self._source_states.get(run_id, {}).get(source_id)
+            return dict(state) if state is not None else None
+
+    def complete_source(
+        self,
+        run_id: UUID,
+        source_id: str,
+        *,
+        rows: list[dict[str, Any]],
+        partial: bool,
+        skipped_branches: list[str],
+    ) -> None:
+        with self._lock:
+            stored = self._datasets.get(run_id)
+            if stored is None:
+                return
+            # Inherit the run's existing retention so the deferred dataset can
+            # never outlive — or prematurely expire — the run.
+            retention = next(
+                (d.retention_expires_at for d in stored.values()),
+                datetime.now(timezone.utc) + timedelta(days=7),
+            )
+            stored[source_id] = StoredDashboardDataset(
+                aggregate_dataset=rows, retention_expires_at=retention
+            )
+            self._source_states.setdefault(run_id, {})[source_id] = {
+                "status": "completed",
+                "partial": partial,
+                "skipped_branches": list(skipped_branches),
+            }
+
+    def fail_source(self, run_id: UUID, source_id: str) -> None:
+        with self._lock:
+            self._source_states.setdefault(run_id, {})[source_id] = {"status": "failed"}
 
 
 dashboard_run_repository = InMemoryDashboardRunRepository()
