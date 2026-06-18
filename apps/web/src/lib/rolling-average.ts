@@ -3,8 +3,10 @@
 // rolling average, and an immutable augmentation that attaches the average to
 // each chart row under a reserved key the chart and tooltip both recognize.
 
-// Reserved data key the rolling-average <Line> plots and the tooltip splits out.
-// Double-underscore keeps it clear of any real series name.
+// Preferred data key the rolling-average <Line> plots and the tooltip splits
+// out. Double-underscore keeps it clear of any real series name; on the
+// vanishingly rare chance an external category collides with it,
+// `resolveRollingAverageKey` derives a guaranteed-unique variant instead.
 export const ROLLING_AVERAGE_KEY = "__rollingAvg7d";
 export const ROLLING_AVERAGE_LABEL = "7-day avg";
 export const ROLLING_AVERAGE_WINDOW = 7;
@@ -50,18 +52,41 @@ export function rollingAverage(
 }
 
 /**
- * Returns new rows, each a copy of the original carrying a `ROLLING_AVERAGE_KEY`
- * field holding the trailing rolling average of the stacked total up to that
- * row. The input rows are never mutated.
+ * Picks a data key for the rolling-average overlay that cannot collide with any
+ * real category. Categories are external Snowflake warehouse/database names, so
+ * one could in principle equal `ROLLING_AVERAGE_KEY`; appending underscores
+ * until the key is unused keeps the overlay from overwriting a real series.
+ */
+export function resolveRollingAverageKey(
+  categories: readonly string[],
+): string {
+  const taken = new Set(categories);
+  let key = ROLLING_AVERAGE_KEY;
+  while (taken.has(key)) {
+    key = `${key}_`;
+  }
+  return key;
+}
+
+/**
+ * Augments each row with the trailing rolling average of the stacked total up
+ * to that row, stored under a `averageKey` that is guaranteed not to collide
+ * with any category. Returns that key alongside the new rows so the chart and
+ * tooltip plot and split out the exact same series. The input rows are never
+ * mutated.
  */
 export function withRollingAverage<T extends Record<string, unknown>>(
   rows: readonly T[],
   categories: readonly string[],
   window: number = ROLLING_AVERAGE_WINDOW,
-): Array<T & { [ROLLING_AVERAGE_KEY]: number }> {
+): { averageKey: string; rows: Array<T & Record<string, number>> } {
+  const averageKey = resolveRollingAverageKey(categories);
   const averages = rollingAverage(stackedDailyTotals(rows, categories), window);
-  return rows.map((row, index) => ({
-    ...row,
-    [ROLLING_AVERAGE_KEY]: averages[index],
-  }));
+  return {
+    averageKey,
+    rows: rows.map((row, index) => ({
+      ...row,
+      [averageKey]: averages[index],
+    })),
+  };
 }

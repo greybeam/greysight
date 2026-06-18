@@ -13,10 +13,7 @@ import {
 import type { CustomTooltipProps } from "@tremor/react";
 
 import { PRIMARY_CHART_COLOR, resolveChartColor } from "../../lib/chart-colors";
-import {
-  ROLLING_AVERAGE_KEY,
-  ROLLING_AVERAGE_LABEL,
-} from "../../lib/rolling-average";
+import { ROLLING_AVERAGE_LABEL } from "../../lib/rolling-average";
 import { createChartTooltip } from "./dashboard-design-system";
 
 // Tremor's sealed BarChart can't host a line series and this Tremor version has
@@ -38,6 +35,7 @@ function resolveBarInterval(pointCount: number): 0 | "preserveStartEnd" {
 }
 
 export function StackedSpendBarChart({
+  averageKey,
   categories,
   colors,
   data,
@@ -46,6 +44,9 @@ export function StackedSpendBarChart({
   testId,
   valueFormatter,
 }: {
+  // Data key the rolling-average overlay is stored under in `data`. Derived by
+  // `withRollingAverage` to never collide with a category name.
+  averageKey: string;
   categories: string[];
   // Color tokens aligned positionally with `categories` (e.g. "chart-1").
   colors: string[];
@@ -59,7 +60,7 @@ export function StackedSpendBarChart({
   valueFormatter: (value: number) => string;
 }) {
   const TooltipContent = createChartTooltip(valueFormatter, {
-    averageKey: ROLLING_AVERAGE_KEY,
+    averageKey,
     averageLabel: ROLLING_AVERAGE_LABEL,
   });
   const trendColor = resolveChartColor(PRIMARY_CHART_COLOR);
@@ -114,7 +115,7 @@ export function StackedSpendBarChart({
           ))}
           <Line
             activeDot={{ r: 3 }}
-            dataKey={ROLLING_AVERAGE_KEY}
+            dataKey={averageKey}
             dot={false}
             isAnimationActive={false}
             name={ROLLING_AVERAGE_LABEL}

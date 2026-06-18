@@ -528,6 +528,9 @@ export function SpendBarChart({
   // segments stay legible. Backed by the `.bar-segment-gap` rule in globals.css
   // since Tremor doesn't expose a per-bar stroke. Only meaningful with `stack`.
   segmentGap?: boolean;
+  // Show the series legend. Applies only to the non-stacked Tremor path; the
+  // stacked path has no legend by design (the hover tooltip surfaces each
+  // series' value), so this is ignored when `stack` is set.
   showLegend?: boolean;
   stack?: boolean;
   testId: string;
@@ -546,13 +549,20 @@ export function SpendBarChart({
 
   // Stacked charts carry a 7-day rolling-average trendline, which Tremor's
   // sealed BarChart can't host — so the stacked path renders on Recharts. The
-  // single-series / non-stacked path stays on Tremor.
+  // single-series / non-stacked path stays on Tremor. `showLegend` is
+  // intentionally not forwarded: the stacked chart has no legend (the hover
+  // tooltip surfaces each series' value instead).
   if (stack) {
+    const { averageKey, rows } = withRollingAverage(
+      chartData,
+      orderedCategories,
+    );
     return (
       <StackedSpendBarChart
+        averageKey={averageKey}
         categories={orderedCategories}
         colors={getSeriesColors(orderedCategories)}
-        data={withRollingAverage(chartData, orderedCategories)}
+        data={rows}
         heightClass={heightClass}
         segmentGap={segmentGap}
         testId={testId}

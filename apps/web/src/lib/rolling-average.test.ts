@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ROLLING_AVERAGE_KEY,
+  resolveRollingAverageKey,
   rollingAverage,
   stackedDailyTotals,
   withRollingAverage,
@@ -47,15 +48,55 @@ describe("rollingAverage", () => {
   });
 });
 
+describe("resolveRollingAverageKey", () => {
+  it("uses the reserved key when no category collides", () => {
+    expect(resolveRollingAverageKey(["a", "b"])).toBe(ROLLING_AVERAGE_KEY);
+  });
+
+  it("derives a unique variant when a category equals the reserved key", () => {
+    const key = resolveRollingAverageKey(["a", ROLLING_AVERAGE_KEY]);
+    expect(key).not.toBe(ROLLING_AVERAGE_KEY);
+    expect(["a", ROLLING_AVERAGE_KEY]).not.toContain(key);
+  });
+
+  it("keeps appending until the key clears every colliding category", () => {
+    // Both the reserved key and the first fallback are taken, so the resolver
+    // must skip past both.
+    const categories = [ROLLING_AVERAGE_KEY, `${ROLLING_AVERAGE_KEY}_`];
+    const key = resolveRollingAverageKey(categories);
+    expect(categories).not.toContain(key);
+  });
+});
+
 describe("withRollingAverage", () => {
   it("attaches the trailing average of the stacked total to each row", () => {
     const rows = [
       { date: "Jun 01", a: 4, b: 6 }, // total 10
       { date: "Jun 02", a: 10, b: 10 }, // total 20
     ];
-    const result = withRollingAverage(rows, ["a", "b"], 7);
-    expect(result[0][ROLLING_AVERAGE_KEY]).toBe(10);
-    expect(result[1][ROLLING_AVERAGE_KEY]).toBe(15);
+    const { averageKey, rows: result } = withRollingAverage(rows, ["a", "b"], 7);
+    expect(averageKey).toBe(ROLLING_AVERAGE_KEY);
+    expect(result[0][averageKey]).toBe(10);
+    expect(result[1][averageKey]).toBe(15);
+  });
+
+  it("stores the average under a non-colliding key when a category collides", () => {
+    // A warehouse literally named like the reserved key must not have its real
+    // value overwritten by the rolling average.
+    const rows = [
+      { date: "Jun 01", [ROLLING_AVERAGE_KEY]: 4, b: 6 }, // total 10
+      { date: "Jun 02", [ROLLING_AVERAGE_KEY]: 10, b: 10 }, // total 20
+    ];
+    const categories = [ROLLING_AVERAGE_KEY, "b"];
+    const { averageKey, rows: result } = withRollingAverage(rows, categories, 7);
+
+    expect(averageKey).not.toBe(ROLLING_AVERAGE_KEY);
+    // The real series keeps its values...
+    expect(result[0][ROLLING_AVERAGE_KEY]).toBe(4);
+    expect(result[1][ROLLING_AVERAGE_KEY]).toBe(10);
+    // ...and the average lands on the derived key.
+    expect(result[0][averageKey]).toBe(10);
+    expect(result[1][averageKey]).toBe(15);
   });
 
   it("does not mutate the input rows", () => {
