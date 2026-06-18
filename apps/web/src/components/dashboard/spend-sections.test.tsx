@@ -77,7 +77,7 @@ describe("spend sections", () => {
     // Stacked daily-by-service bar chart lives inside the total spend card.
     expect(
       within(totalCard).getByTestId("service-spend-tremor-bar-chart"),
-    ).toHaveAttribute("data-chart-library", "tremor");
+    ).toHaveAttribute("data-chart-library", "recharts");
 
     // The total spend card spans two of the three columns.
     expect(totalSection).toHaveClass("lg:col-span-2");
@@ -238,7 +238,7 @@ describe("spend sections", () => {
     const totalCard = screen.getByTestId("total-spend-card");
     expect(
       within(totalCard).getByTestId("service-spend-tremor-bar-chart"),
-    ).toHaveAttribute("data-chart-library", "tremor");
+    ).toHaveAttribute("data-chart-library", "recharts");
 
     // The KPI value is omitted gracefully and replaced by an empty message.
     expect(within(totalCard).getByText("Total Spend")).toBeInTheDocument();
@@ -289,7 +289,7 @@ describe("spend sections", () => {
       ),
     ).toBeInTheDocument();
     const chart = screen.getByTestId("warehouse-spend-tremor-bar-chart");
-    expect(chart).toHaveAttribute("data-chart-library", "tremor");
+    expect(chart).toHaveAttribute("data-chart-library", "recharts");
     expect(chart).toHaveClass("h-96");
   });
 
@@ -395,7 +395,7 @@ describe("spend sections", () => {
     // The stacked daily-by-database bar chart lives inside the card, sized to
     // the storage section's shorter height.
     const chart = screen.getByTestId("storage-spend-tremor-bar-chart");
-    expect(chart).toHaveAttribute("data-chart-library", "tremor");
+    expect(chart).toHaveAttribute("data-chart-library", "recharts");
     expect(chart).toHaveClass("h-80");
 
     // The view model exposes the bucketed database names the chart stacks by.
