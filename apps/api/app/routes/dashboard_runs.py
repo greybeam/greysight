@@ -24,9 +24,13 @@ from app.services.dashboard_datasets import (
 from app.services.dashboard_view_builder import (
     DashboardInvalidRangeError,
     DashboardRangeOutOfBoundsError,
+    _through_date_for,
+    build_ai_detail_view,
     build_dashboard_view,
+    resolve_dashboard_view_range,
 )
 from app.services.dashboard_view_models import DashboardViewResponse
+from app.services.deferred_sources import DEFERRED_SOURCES
 from app.services.demo_data import build_demo_dashboard_dataset
 
 router = APIRouter(prefix="/api/dashboard-runs", tags=["dashboard-runs"])
@@ -431,6 +435,94 @@ def read_dashboard_run_datasets(
     return response
 
 
+@router.post("/{run_id}/sources/{source_id}", status_code=status.HTTP_202_ACCEPTED)
+def trigger_dashboard_source(
+    run_id: UUID,
+    source_id: str,
+    auth_context: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    if source_id not in DEFERRED_SOURCES:
+        raise HTTPException(status_code=404, detail="Unknown deferred source")
+    run = dashboard_run_repository.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Dashboard run not found")
+    _require_dashboard_run_membership(auth_context, run.organization_id)
+
+    if not dashboard_run_repository.claim_source(run_id, source_id):
+        # Already pending/completed, or run not completed/expired/deleted.
+        state = dashboard_run_repository.get_source_state(run_id, source_id)
+        return {"status": state or "unavailable"}
+
+    settings = Settings()
+    try:
+        rows, skipped = _run_deferred_source(source_id, run, settings)
+    except HTTPException:
+        dashboard_run_repository.fail_source(run_id, source_id)
+        raise
+    except Exception:
+        dashboard_run_repository.fail_source(run_id, source_id)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Deferred source fetch failed",
+        ) from None
+    dashboard_run_repository.complete_source(
+        run_id,
+        source_id,
+        rows=rows,
+        partial=bool(skipped),
+        skipped_branches=skipped,
+    )
+    return {"status": "completed"}
+
+
+@router.get("/{run_id}/sources/{source_id}")
+def read_dashboard_source(
+    run_id: UUID,
+    source_id: str,
+    window_days: int | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    auth_context: AuthContext = Depends(require_auth_context),
+) -> dict[str, Any]:
+    if source_id not in DEFERRED_SOURCES:
+        raise HTTPException(status_code=404, detail="Unknown deferred source")
+    run = dashboard_run_repository.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Dashboard run not found")
+    _require_dashboard_run_membership(auth_context, run.organization_id)
+
+    state = dashboard_run_repository.get_source_state(run_id, source_id) or "idle"
+    if state != "completed":
+        return {"status": state}
+
+    view_inputs = dashboard_run_repository.get_view_inputs(run_id)
+    if view_inputs is None:
+        return {"status": "expired"}
+    _run, datasets, metadata, source_bounds = view_inputs
+    meta = dashboard_run_repository.get_source_meta(run_id, source_id) or {}
+
+    through_date = _through_date_for(metadata) or source_bounds.source_end_date
+    view_range = resolve_dashboard_view_range(
+        through_date=through_date,
+        source_start_date=source_bounds.source_start_date,
+        source_end_date=source_bounds.source_end_date,
+        window_days=window_days,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    view = build_ai_detail_view(
+        ai_rows=datasets.get(source_id, []),
+        rate_rows=datasets.get("rate_sheet_daily", []),
+        currency=metadata.currency or "USD",
+        estimated_credit_price_usd=metadata.estimated_credit_price_usd,
+        start_date=view_range.start_date,
+        end_date=view_range.end_date,
+        partial=bool(meta.get("partial")),
+        skipped_branches=list(meta.get("skipped_branches", [])),
+    )
+    return {"status": "completed", "view": view.model_dump(mode="json")}
+
+
 @router.delete("/{run_id}", response_model=DashboardRun)
 def delete_dashboard_run(
     run_id: UUID,
@@ -688,6 +780,45 @@ def _create_snowflake_dashboard_run(
         metadata=dashboard_data.metadata.model_dump(mode="json"),
         retention_days=request.retention_days,
     )
+
+
+def _run_deferred_source(
+    source_id: str, run: DashboardRun, settings: Settings
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Resolve the run's org connection and run the deferred source's fetch.
+
+    Resolution mirrors `_create_snowflake_dashboard_run` but is kept inline
+    (rather than extracted into a shared helper) so the proven create-run path
+    is left untouched. The `execute` closure references
+    `dashboard_datasets.execute_source_query` at call time — the same module
+    attribute the main-run executor binds — so the fetch can be stubbed in tests.
+    """
+    from app.services import dashboard_datasets
+    from app.services.org_connection_resolver import (
+        OrgConnectionNotConfiguredError,
+        resolve_snowflake_config,
+    )
+    from app.services.snowflake_runtime import get_connection_fetcher
+
+    deferred = DEFERRED_SOURCES[source_id]
+    try:
+        connection_config = resolve_snowflake_config(
+            str(run.organization_id),
+            settings,
+            fetch_connection=get_connection_fetcher(settings),
+        )
+    except OrgConnectionNotConfiguredError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This organization has no Snowflake connection configured.",
+        ) from None
+
+    def execute(sql: str, bind_params: dict[str, Any]) -> list[dict[str, Any]]:
+        return dashboard_datasets.execute_source_query(
+            sql, bind_params, connection_config
+        )
+
+    return deferred.fetch(execute, FETCH_WINDOW_DAYS)
 
 
 def _create_demo_dashboard_run(request: DashboardRunCreateRequest) -> DashboardRun:

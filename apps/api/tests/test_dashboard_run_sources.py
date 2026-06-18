@@ -1,9 +1,14 @@
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
+from fastapi.testclient import TestClient
 
+from app.main import app
 from app.models import DashboardRunCreateRequest
-from app.routes.dashboard_runs import InMemoryDashboardRunRepository
+from app.routes.dashboard_runs import (
+    InMemoryDashboardRunRepository,
+    dashboard_run_repository,
+)
 
 
 def _repo_with_run():
@@ -59,3 +64,112 @@ def test_claim_rejects_missing_or_deleted_run():
     assert repo.claim_source(uuid4(), "ai_consumption_daily") is False
     repo.delete_run(run_id)
     assert repo.claim_source(run_id, "ai_consumption_daily") is False
+
+
+_AI_ROWS = [
+    {
+        "usage_date": "2026-06-05",
+        "service_type": "CORTEX_SEARCH",
+        "consumption_type": "CORTEX_SEARCH",
+        "credits_used": 4.0,
+    },
+    {
+        "usage_date": "2026-06-06",
+        "service_type": "AI_INFERENCE",
+        "consumption_type": "AI_INFERENCE",
+        "credits_used": 2.0,
+    },
+]
+
+
+@pytest.fixture
+def client():
+    dashboard_run_repository.clear()
+    yield TestClient(app)
+    dashboard_run_repository.clear()
+
+
+@pytest.fixture
+def client_with_completed_run(monkeypatch):
+    dashboard_run_repository.clear()
+    run = dashboard_run_repository.create_completed_snapshot(
+        organization_id=UUID("00000000-0000-0000-0000-000000000001"),
+        source="snowflake",
+        window_days=100,
+        summary={},
+        datasets={
+            "rate_sheet_daily": [],
+            "service_spend_daily": [
+                # Span a wide enough window that a 30-day relative range fits
+                # within the source bounds (bounds derive from usage dates).
+                {
+                    "usage_date": "2026-03-01",
+                    "service_type": "CORTEX_SEARCH",
+                    "credits_used": 1.0,
+                },
+                {
+                    "usage_date": "2026-06-06",
+                    "service_type": "CORTEX_SEARCH",
+                    "credits_used": 4.0,
+                },
+            ],
+        },
+        metadata={
+            "data_mode": "estimated",
+            "account_locator": "TU24199",
+            "currency": "USD",
+            "billing_through_date": None,
+            "account_usage_through_date": "2026-06-06",
+            "estimated_credit_price_usd": 3.0,
+            "storage_price_usd_per_tb_month": 23.0,
+            "unsupported_reason": None,
+            "organization_usage": {"available": False},
+            "account_usage": {"available": True},
+        },
+        retention_days=7,
+    )
+
+    # Stub the AI-branch fetch: every deferred execute call returns canned AI
+    # rows. The route's execute closure resolves execute_source_query through
+    # app.services.dashboard_datasets, mirroring the main-run executor path.
+    def fake_execute(sql, bind_params, config=None):
+        return _AI_ROWS
+
+    monkeypatch.setattr(
+        "app.services.dashboard_datasets.execute_source_query", fake_execute
+    )
+
+    yield TestClient(app), UUID(run.id)
+    dashboard_run_repository.clear()
+
+
+def test_post_source_then_get_returns_detail_view(client_with_completed_run):
+    client, run_id = client_with_completed_run
+    posted = client.post(f"/api/dashboard-runs/{run_id}/sources/ai_consumption_daily")
+    assert posted.status_code in (200, 202)
+
+    got = client.get(
+        f"/api/dashboard-runs/{run_id}/sources/ai_consumption_daily?window_days=30"
+    )
+    assert got.status_code == 200
+    body = got.json()
+    assert body["status"] == "completed"
+    assert "view" in body and "daily_series" in body["view"]
+
+
+def test_get_unknown_source_404(client_with_completed_run):
+    client, run_id = client_with_completed_run
+    r = client.get(f"/api/dashboard-runs/{run_id}/sources/not_a_source")
+    assert r.status_code == 404
+
+
+def test_post_source_on_missing_run_404(client):
+    r = client.post(f"/api/dashboard-runs/{uuid4()}/sources/ai_consumption_daily")
+    assert r.status_code == 404
+
+
+def test_get_before_post_reports_idle(client_with_completed_run):
+    client, run_id = client_with_completed_run
+    r = client.get(f"/api/dashboard-runs/{run_id}/sources/ai_consumption_daily")
+    assert r.status_code == 200
+    assert r.json()["status"] in ("idle", "pending")
