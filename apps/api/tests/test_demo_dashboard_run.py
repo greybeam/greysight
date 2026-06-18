@@ -664,6 +664,12 @@ def test_demo_view_has_ai_summary() -> None:
     assert body["ai_spend_summary"]["total"] > 0
 
 
+def test_demo_source_returns_404_for_unknown_source() -> None:
+    client = TestClient(app)
+    response = client.get("/api/dashboard-runs/demo/sources/nonexistent_source")
+    assert response.status_code == 404
+
+
 def test_demo_source_returns_completed_detail() -> None:
     client = TestClient(app)
     body = client.get(
@@ -671,4 +677,4 @@ def test_demo_source_returns_completed_detail() -> None:
     ).json()
     assert body["status"] == "completed"
     assert "daily_series" in body["view"]
-    assert len(body["view"]["daily_series"]) > 0
+    assert len(body["view"]["daily_series"]) == 30
