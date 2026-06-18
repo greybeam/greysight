@@ -6,8 +6,11 @@ import { usePrefersReducedMotion } from "../../lib/use-prefers-reduced-motion";
 import {
   fetchDashboardView,
   fetchDemoDashboardView,
+  fetchDemoDashboardSource,
   pollDashboardRun,
+  pollDashboardSource,
   startDashboardRun,
+  triggerDashboardSource,
   type DashboardViewRangeRequest,
 } from "../../lib/dashboard-api";
 import {
@@ -26,9 +29,11 @@ import FilterBar, {
 } from "./filter-bar";
 import SectionEmptyState from "./section-empty-state";
 import {
+  AiSpendSection,
   OverviewSection,
   StorageSpendSection,
   WarehouseSpendSection,
+  type AiSpendDetailState,
 } from "./spend-sections";
 import { useSectionStatuses } from "./use-section-statuses";
 
@@ -119,6 +124,7 @@ function CostDashboardContent({
       : new Map(),
   );
   const rangeRequestSeqRef = useRef(0);
+  const aiSeqRef = useRef(0);
   const runGenerationRef = useRef(0);
   const [activeRange, setActiveRange] = useState<DashboardViewRange | null>(
     data?.range ?? null,
@@ -131,6 +137,9 @@ function CostDashboardContent({
   const [loadState, setLoadState] = useState<LoadState>({
     status: data?.run.status ?? (shouldUseDemo ? "loading" : "queued"),
     view: data,
+  });
+  const [aiDetail, setAiDetail] = useState<AiSpendDetailState>({
+    status: "loading",
   });
 
   const cacheView = useCallback(
@@ -322,6 +331,7 @@ function CostDashboardContent({
   ]);
 
   const accessToken = runtime?.accessToken;
+
   const loadRange = useCallback(
     async (request: DashboardViewRangeRequest) => {
       const currentView = loadState.view;
@@ -401,6 +411,48 @@ function CostDashboardContent({
   const reduceMotion = usePrefersReducedMotion();
   const dataReady =
     viewModel != null && loadState.status !== "loading" && !runInFlight;
+
+  useEffect(() => {
+    if (!dataReady || !viewModel) return;
+    const runId = viewModel.run.id;
+    const request = requestFromViewRange(activeRange ?? viewModel.range);
+    aiSeqRef.current += 1;
+    const seq = aiSeqRef.current;
+    setAiDetail({ status: "loading" });
+
+    void (async () => {
+      try {
+        if (shouldUseDemo) {
+          const result = await fetchDemoDashboardSource(
+            "ai_consumption_daily",
+            request,
+          );
+          if (seq === aiSeqRef.current && result.view) {
+            setAiDetail({ status: "ready", viewModel: result.view });
+          }
+          return;
+        }
+        await triggerDashboardSource(runId, "ai_consumption_daily", {
+          accessToken,
+        });
+        const result = await pollDashboardSource(
+          runId,
+          "ai_consumption_daily",
+          request,
+          { accessToken },
+        );
+        if (seq !== aiSeqRef.current) return;
+        if (result.status === "completed" && result.view) {
+          setAiDetail({ status: "ready", viewModel: result.view });
+        } else {
+          setAiDetail({ status: "error" });
+        }
+      } catch {
+        if (seq === aiSeqRef.current) setAiDetail({ status: "error" });
+      }
+    })();
+  }, [dataReady, viewModel, activeRange, shouldUseDemo, accessToken]);
+
   const isFailedWithoutView =
     !viewModel &&
     (loadState.status === "failed" ||
@@ -494,6 +546,18 @@ function CostDashboardContent({
                     viewModel: viewModel.warehouseSpend,
                   }
                 : { status: "loading" })}
+            />
+            <AiSpendSection
+              currency={viewModel?.header.currency ?? "USD"}
+              range={activeRange ?? viewModel?.range ?? null}
+              summary={
+                viewModel?.aiSpendSummary ?? {
+                  total: 0,
+                  totalLabel: "$0.00",
+                  isEmpty: true,
+                }
+              }
+              detail={dataReady ? aiDetail : { status: "loading" }}
             />
             <StorageSpendSection
               {...(sectionStatuses.storage === "ready" && dataReady && viewModel
