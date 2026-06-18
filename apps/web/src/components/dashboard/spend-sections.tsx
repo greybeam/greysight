@@ -84,6 +84,7 @@ export function OverviewSection(props: OverviewSectionProps) {
           label={buildEndingBalanceLabel(capacityBalance.currentBalanceDate)}
           value={capacityBalance.currentBalanceLabel}
           data={capacityBalance.dailySeries}
+          forecastData={capacityBalance.forecastSeries}
           testId="capacity-balance-card"
           chartTestId="capacity-balance-tremor-line-chart"
         />
