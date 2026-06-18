@@ -239,7 +239,7 @@ def _is_object_unavailable(exc: Exception) -> bool:
         return True
     message = str(exc).lower()
     return (
-        "does not exist" in message
+        ("does not exist" in message and "object" in message)
         or "not authorized" in message
         or "insufficient privileges" in message
     )

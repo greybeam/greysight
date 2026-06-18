@@ -464,3 +464,16 @@ def test_other_error_still_raises_generic_query_error():
         execute_source_query(
             "select 1", {"window_days": 30}, connect=lambda _cfg: _Conn(exc)
         )
+
+
+def test_column_does_not_exist_raises_generic_query_error_not_object_unavailable():
+    # errno 904 = "invalid identifier" in Snowflake — not an object-unavailable code.
+    # The message contains "does not exist" but NOT "object", so it must NOT be
+    # misclassified as SnowflakeObjectUnavailableError.
+    exc = _FakeProgrammingError(
+        "Column 'foo' does not exist in result set", errno=904
+    )
+    with pytest.raises(SnowflakeQueryError):
+        execute_source_query(
+            "select foo from bar", {"window_days": 30}, connect=lambda _cfg: _Conn(exc)
+        )
