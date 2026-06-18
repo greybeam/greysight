@@ -393,3 +393,74 @@ def test_execute_source_query_normalizes_invalid_account() -> None:
 
     with pytest.raises(SnowflakeQueryError):
         execute_source_query("select 1", {}, config)
+
+
+# ---------------------------------------------------------------------------
+# SnowflakeObjectUnavailableError classification tests
+# ---------------------------------------------------------------------------
+
+
+class _FakeProgrammingError(Exception):
+    def __init__(self, msg: str, errno: int) -> None:
+        super().__init__(msg)
+        self.errno = errno
+
+
+class _Cursor:
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def execute(self, sql, params):
+        raise self._exc
+
+    @property
+    def description(self):
+        return ()
+
+    def fetchall(self):
+        return []
+
+
+class _Conn:
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    def cursor(self):
+        return _Cursor(self._exc)
+
+    def close(self):
+        pass
+
+
+def test_object_does_not_exist_raises_object_unavailable():
+    from app.services.snowflake_client import SnowflakeObjectUnavailableError
+
+    exc = _FakeProgrammingError("Object 'X' does not exist", errno=2003)
+    with pytest.raises(SnowflakeObjectUnavailableError):
+        execute_source_query(
+            "select 1", {"window_days": 30}, connect=lambda _cfg: _Conn(exc)
+        )
+
+
+def test_insufficient_privileges_raises_object_unavailable():
+    from app.services.snowflake_client import SnowflakeObjectUnavailableError
+
+    exc = _FakeProgrammingError("Insufficient privileges to operate", errno=3001)
+    with pytest.raises(SnowflakeObjectUnavailableError):
+        execute_source_query(
+            "select 1", {"window_days": 30}, connect=lambda _cfg: _Conn(exc)
+        )
+
+
+def test_other_error_still_raises_generic_query_error():
+    exc = _FakeProgrammingError("syntax error", errno=1003)
+    with pytest.raises(SnowflakeQueryError):
+        execute_source_query(
+            "select 1", {"window_days": 30}, connect=lambda _cfg: _Conn(exc)
+        )
