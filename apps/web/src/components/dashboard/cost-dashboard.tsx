@@ -427,8 +427,11 @@ function CostDashboardContent({
             "ai_consumption_daily",
             request,
           );
-          if (seq === aiSeqRef.current && result.view) {
+          if (seq !== aiSeqRef.current) return;
+          if (result.view) {
             setAiDetail({ status: "ready", viewModel: result.view });
+          } else {
+            setAiDetail({ status: "error" });
           }
           return;
         }
