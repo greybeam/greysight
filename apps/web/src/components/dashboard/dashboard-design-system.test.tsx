@@ -304,6 +304,44 @@ describe("CapacityBalanceCard", () => {
 
     expect(screen.getByText("$12,345.00")).toHaveClass("text-slate-50");
   });
+
+  it("renders the dedicated forecast chart when forecast data is present", () => {
+    const { container } = render(
+      <CapacityBalanceCard
+        ariaLabel="Capacity balance summary"
+        chartTestId="capacity-balance-chart"
+        currency="USD"
+        data={[{ date: "2026-06-11", balance: 12345, balanceLabel: "$12,345.00" }]}
+        forecastData={[
+          { date: "2026-06-11", balance: 12345, balanceLabel: "$12,345.00" },
+          { date: "2026-06-12", balance: 0, balanceLabel: "$0.00" },
+        ]}
+        label="Ending Balance"
+        value="$12,345.00"
+        testId="capacity-balance-card"
+      />,
+    );
+
+    expect(
+      container.querySelector(".capacity-forecast-chart"),
+    ).not.toBeNull();
+  });
+
+  it("renders the single-series chart when no forecast data is present", () => {
+    const { container } = render(
+      <CapacityBalanceCard
+        ariaLabel="Capacity balance summary"
+        chartTestId="capacity-balance-chart"
+        currency="USD"
+        data={[{ date: "2026-06-11", balance: 12345, balanceLabel: "$12,345.00" }]}
+        label="Ending Balance"
+        value="$12,345.00"
+        testId="capacity-balance-card"
+      />,
+    );
+
+    expect(container.querySelector(".capacity-forecast-chart")).toBeNull();
+  });
 });
 
 describe("createChartTooltip", () => {

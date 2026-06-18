@@ -1,8 +1,10 @@
 "use client";
 
+import type React from "react";
+import { useMemo } from "react";
 import type { ReactNode } from "react";
 import { AreaChart, BarChart, Card, LineChart, Text } from "@tremor/react";
-import type { IntervalType } from "@tremor/react";
+import type { CustomTooltipProps, IntervalType } from "@tremor/react";
 
 import type {
   BalancePoint,
@@ -14,6 +16,7 @@ import {
   getSeriesColors,
   orderCategoriesByTotal,
   PRIMARY_CHART_COLOR,
+  resolveChartColor,
 } from "../../lib/chart-colors";
 import { withRollingAverage } from "../../lib/rolling-average";
 import { createChartTooltip } from "./chart-tooltip";
@@ -375,12 +378,152 @@ export function TotalSpendBarCard({
   );
 }
 
+const CAPACITY_BALANCE_CATEGORY = "Balance";
+const CAPACITY_FORECAST_CATEGORY = "Forecasted balance";
+
+// Local row type: unlike ChartPoint (Record<string, string | number>), each
+// series value is optional so history rows omit the forecast and forecast rows
+// omit the balance, leaving recharts a gap (no bridge across the join).
+type CapacityForecastRow = {
+  date: string;
+  // Year-inclusive variant of `date` (e.g. "Jun 11, 2026"), carried on the row
+  // so the tooltip can show the full date while the x-axis stays compact.
+  dateWithYear: string;
+  Balance?: number;
+  "Forecasted balance"?: number;
+};
+
+// Merge the historical balance and forecast series into one date-indexed rows
+// array without mutating either input. The shared join date carries both values
+// so the dotted forecast line starts exactly where the solid balance line ends.
+function buildCapacityForecastData(
+  balanceData: BalancePoint[],
+  forecastData: BalancePoint[],
+): CapacityForecastRow[] {
+  const dates = Array.from(
+    new Set([
+      ...balanceData.map((point) => point.date),
+      ...forecastData.map((point) => point.date),
+    ]),
+  ).sort();
+  const balanceByDate = new Map(balanceData.map((p) => [p.date, p.balance]));
+  const forecastByDate = new Map(forecastData.map((p) => [p.date, p.balance]));
+
+  return dates.map((date) => {
+    const balance = balanceByDate.get(date);
+    const forecast = forecastByDate.get(date);
+    return {
+      date: formatChartDateLabel(date),
+      dateWithYear: formatChartDateLabelWithYear(date),
+      ...(balance !== undefined ? { Balance: balance } : {}),
+      ...(forecast !== undefined ? { "Forecasted balance": forecast } : {}),
+    };
+  });
+}
+
+// Tooltip for the forecast chart: shows only the series with a finite value at
+// the hovered date (so the gap series is hidden) and never renders a "Total"
+// row. The lime series reads as "Forecasted balance".
+function createCapacityTooltip(
+  valueFormatter: (value: number) => string,
+): React.ComponentType<CustomTooltipProps> {
+  function CapacityTooltip({ active, label, payload }: CustomTooltipProps) {
+    if (!active || !payload || payload.length === 0) {
+      return null;
+    }
+    const rows = payload.filter((entry) => Number.isFinite(Number(entry.value)));
+    if (rows.length === 0) {
+      return null;
+    }
+    // Prefer the year-inclusive label carried on the hovered row so far-future
+    // forecast points read unambiguously; fall back to the bare axis label.
+    const hoveredRow = rows[0]?.payload as CapacityForecastRow | undefined;
+    const headerLabel = hoveredRow?.dateWithYear ?? String(label ?? "");
+    return (
+      <div className="rounded-md border border-hairline bg-surface px-3 py-2 shadow-lg">
+        <p className="text-xs font-medium text-slate-100">{headerLabel}</p>
+        <div className="mt-1 grid gap-1">
+          {rows.map((entry, index) => {
+            const name = entry.dataKey ?? entry.name;
+            return (
+              <div
+                className="flex items-center justify-between gap-3 text-xs text-slate-400"
+                key={String(name ?? index)}
+              >
+                <span className="flex items-center gap-1.5">
+                  <span
+                    className="h-2 w-2 rounded-full"
+                    style={{ backgroundColor: resolveChartColor(entry.color) }}
+                  />
+                  {String(name ?? "")}
+                </span>
+                <span className="tabular-nums text-slate-200">
+                  {valueFormatter(Number(entry.value))}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  return CapacityTooltip;
+}
+
+function CapacityForecastChart({
+  balanceData,
+  forecastData,
+  currency,
+  heightClass = "h-80",
+  testId,
+}: {
+  balanceData: BalancePoint[];
+  forecastData: BalancePoint[];
+  currency: string;
+  heightClass?: string;
+  testId: string;
+}) {
+  const valueFormatter = useMemo(
+    () => createCurrencyTickFormatter(currency),
+    [currency],
+  );
+  const CapacityTooltip = useMemo(
+    () => createCapacityTooltip(valueFormatter),
+    [valueFormatter],
+  );
+  const chartData = buildCapacityForecastData(balanceData, forecastData);
+
+  return (
+    <AreaChart
+      autoMinValue
+      categories={[CAPACITY_BALANCE_CATEGORY, CAPACITY_FORECAST_CATEGORY]}
+      className={cx("capacity-forecast-chart mt-4 w-full", heightClass)}
+      colors={["chart-purple", "chart-lime"]}
+      connectNulls={false}
+      customTooltip={CapacityTooltip}
+      data={chartData}
+      data-chart-library="tremor"
+      data-testid={testId}
+      index="date"
+      intervalType={resolveTickInterval(chartData.length)}
+      showGradient
+      showLegend={false}
+      showTooltip
+      tickGap={32}
+      valueFormatter={valueFormatter}
+      yAxisWidth={56}
+    />
+  );
+}
+
 export function CapacityBalanceCard({
   ariaLabel,
   currency,
   label,
   value,
   data,
+  forecastData,
   testId,
   chartTestId,
 }: {
@@ -389,9 +532,12 @@ export function CapacityBalanceCard({
   label: string;
   value: string;
   data: BalancePoint[];
+  forecastData?: BalancePoint[];
   testId?: string;
   chartTestId: string;
 }) {
+  const hasForecast = (forecastData?.length ?? 0) > 0;
+
   return (
     <section aria-label={ariaLabel} data-dashboard-panel="true">
       <Card className="p-6" data-testid={testId}>
@@ -399,14 +545,24 @@ export function CapacityBalanceCard({
         <p className="mt-2 text-4xl font-semibold tracking-normal text-slate-50">
           {value}
         </p>
-        <CurrencyLineChart
-          autoMinValue
-          categories={["balance"]}
-          currency={currency}
-          data={data}
-          heightClass="h-80"
-          testId={chartTestId}
-        />
+        {hasForecast ? (
+          <CapacityForecastChart
+            balanceData={data}
+            forecastData={forecastData ?? []}
+            currency={currency}
+            heightClass="h-80"
+            testId={chartTestId}
+          />
+        ) : (
+          <CurrencyLineChart
+            autoMinValue
+            categories={["balance"]}
+            currency={currency}
+            data={data}
+            heightClass="h-80"
+            testId={chartTestId}
+          />
+        )}
       </Card>
     </section>
   );
@@ -681,10 +837,13 @@ export function buildEndingBalanceLabel(
 
 const ISO_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 
-export function formatChartDateLabel(value: string): string {
+// Parses a strict ISO `yyyy-mm-dd` string into a UTC Date, rejecting malformed
+// or out-of-range values (e.g. month 13, day 40) so callers can fall back to the
+// raw string. Shared by the day-only and year-inclusive label formatters.
+function parseIsoUtcDate(value: string): Date | null {
   const match = ISO_DATE_PATTERN.exec(value);
   if (!match) {
-    return value;
+    return null;
   }
 
   const year = Number(match[1]);
@@ -699,12 +858,39 @@ export function formatChartDateLabel(value: string): string {
     parsed.getUTCMonth() !== month - 1 ||
     parsed.getUTCDate() !== day
   ) {
+    return null;
+  }
+
+  return parsed;
+}
+
+export function formatChartDateLabel(value: string): string {
+  const parsed = parseIsoUtcDate(value);
+  if (!parsed) {
     return value;
   }
 
   return new Intl.DateTimeFormat("en-US", {
     day: "2-digit",
     month: "short",
+    timeZone: "UTC",
+  }).format(parsed);
+}
+
+// Like `formatChartDateLabel` but includes the year, e.g. "Jun 11, 2026". Used
+// for the capacity-forecast tooltip header, where forecasts can run far enough
+// into the future that the bare "Jun 11" is ambiguous across years. The x-axis
+// keeps the compact day-only label to stay uncluttered.
+function formatChartDateLabelWithYear(value: string): string {
+  const parsed = parseIsoUtcDate(value);
+  if (!parsed) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
     timeZone: "UTC",
   }).format(parsed);
 }

@@ -238,6 +238,10 @@ describe("parseDashboardView", () => {
           balance_label: "$11,875.25",
         },
       ],
+      forecast_series: [
+        { date: "2026-06-08", balance: 11875.25, balance_label: "$11,875.25" },
+        { date: "2026-06-09", balance: 0, balance_label: "$0.00" },
+      ],
       is_empty: false,
     },
     total_spend: {
@@ -342,6 +346,10 @@ describe("parseDashboardView", () => {
       balance: 11875.25,
       balanceLabel: "$11,875.25",
     });
+    expect(parsed.capacityBalance.forecastSeries).toEqual([
+      { date: "2026-06-08", balance: 11875.25, balanceLabel: "$11,875.25" },
+      { date: "2026-06-09", balance: 0, balanceLabel: "$0.00" },
+    ]);
     expect(parsed.serviceSpend.dailySeries[0]).toEqual({
       date: "2026-06-08",
       values: { CLOUD_SERVICES: 123.45 },
@@ -370,8 +378,23 @@ describe("parseDashboardView", () => {
       currentBalanceLabel: "$0.00",
       currentBalanceDate: null,
       dailySeries: [],
+      forecastSeries: [],
       isEmpty: true,
     });
+  });
+
+  it("defaults forecastSeries to empty when a prepared view omits it", () => {
+    const payload: Record<string, unknown> = { ...preparedViewPayload };
+    const capacity = {
+      ...(payload.capacity_balance as Record<string, unknown>),
+    };
+    delete capacity.forecast_series;
+    payload.capacity_balance = capacity;
+
+    const parsed = parseDashboardView(payload);
+
+    expect(parsed.capacityBalance.forecastSeries).toEqual([]);
+    expect(parsed.capacityBalance.dailySeries).not.toHaveLength(0);
   });
 
   it("formats the fallback capacity balance label from the header currency", () => {

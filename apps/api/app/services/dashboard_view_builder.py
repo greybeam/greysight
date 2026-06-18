@@ -426,9 +426,23 @@ def _build_dashboard_view_for_ranges(
         currency=currency,
         day_count=len(dates),
     )
+    # The forecast/runway only makes sense anchored at the latest known balance.
+    # `projection_range.end_date` is `through_date` by construction, while the
+    # capacity balance endpoint is bounded by `view_range`. For a custom range
+    # ending before `through_date` the two diverge, so projecting the (older)
+    # balance forward at the trailing spend rate would draw a "forecast" over a
+    # period we already have actual data for. Suppress it in that case; a zero
+    # spend rate yields an empty forecast series.
+    forecast_anchored_to_latest = view_range.end_date == projection_range.end_date
+    forecast_daily_spend = (
+        _trailing_average_spend(projection_daily)
+        if is_billed and forecast_anchored_to_latest
+        else 0.0
+    )
     capacity_balance = _build_capacity_balance(
         rows=capacity_balance_rows,
         currency=currency,
+        forecast_daily_spend=forecast_daily_spend,
     )
 
     return DashboardViewResponse(
@@ -971,10 +985,58 @@ def _build_total_spend(
     )
 
 
+MAX_FORECAST_DAYS = 1825  # ~5 years; bounds the payload if the runway is implausibly long
+FORECAST_AVERAGE_WINDOW_DAYS = 7
+
+
+def _trailing_average_spend(daily: list[DollarPoint]) -> float:
+    """Mean spend over the trailing FORECAST_AVERAGE_WINDOW_DAYS of a daily series."""
+    window = daily[-FORECAST_AVERAGE_WINDOW_DAYS:]
+    if not window:
+        return 0.0
+    return sum(point.spend for point in window) / len(window)
+
+
+def _build_forecast_series(
+    *,
+    current_balance: float,
+    current_date: date,
+    forecast_daily_spend: float,
+    currency: str,
+) -> list[BalancePoint]:
+    """Project the balance forward at a flat daily spend until it reaches zero.
+
+    Returns an empty list when there is nothing to forecast (non-positive spend
+    or balance) or when the runway exceeds MAX_FORECAST_DAYS. The first point is
+    the current (date, balance) so the forecast line joins the historical line;
+    the final point lands exactly on zero (clamped).
+    """
+    if forecast_daily_spend <= 0 or current_balance <= 0:
+        return []
+
+    days_to_zero = math.ceil(current_balance / forecast_daily_spend)
+    if days_to_zero > MAX_FORECAST_DAYS:
+        return []
+
+    points: list[BalancePoint] = []
+    for offset in range(days_to_zero + 1):
+        point_date = current_date + timedelta(days=offset)
+        balance = 0.0 if offset == days_to_zero else max(current_balance - forecast_daily_spend * offset, 0.0)
+        points.append(
+            BalancePoint(
+                date=point_date.isoformat(),
+                balance=balance,
+                balance_label=_format_currency(balance, currency),
+            )
+        )
+    return points
+
+
 def _build_capacity_balance(
     *,
     rows: list[DatasetRow],
     currency: str,
+    forecast_daily_spend: float = 0.0,
 ) -> CapacityBalanceViewModel:
     balance_by_date: dict[date, float] = {}
     for row in rows:
@@ -988,21 +1050,30 @@ def _build_capacity_balance(
     if not balance_by_date:
         return _empty_capacity_balance(currency)
 
+    sorted_dates = sorted(balance_by_date)
     daily_series = [
         BalancePoint(
             date=usage_date.isoformat(),
             balance=balance_by_date[usage_date],
             balance_label=_format_currency(balance_by_date[usage_date], currency),
         )
-        for usage_date in sorted(balance_by_date)
+        for usage_date in sorted_dates
     ]
+    current_date = sorted_dates[-1]
     current_point = daily_series[-1]
+    forecast_series = _build_forecast_series(
+        current_balance=current_point.balance,
+        current_date=current_date,
+        forecast_daily_spend=forecast_daily_spend,
+        currency=currency,
+    )
 
     return CapacityBalanceViewModel(
         current_balance=current_point.balance,
         current_balance_label=current_point.balance_label,
         current_balance_date=current_point.date,
         daily_series=daily_series,
+        forecast_series=forecast_series,
         is_empty=False,
     )
 
