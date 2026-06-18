@@ -63,3 +63,15 @@ body {
   stroke-width: 1px;
   shape-rendering: crispEdges;
 }
+
+/*
+ * Forecasted-drawdown overlay: the lime forecast series renders as a dotted line
+ * over the standard gradient area fade (matching the purple balance area), so the
+ * forecast reads as a projection while still showing the filled fall-off. Tremor
+ * exposes no per-series dash prop, so we target the forecast series by its lime
+ * color class — never by child order — mirroring the .bar-segment-gap hook above.
+ * Scoped to charts that opt in via .capacity-forecast-chart.
+ */
+.capacity-forecast-chart .stroke-chart-lime .recharts-area-curve {
+  stroke-dasharray: 4 4;
+}

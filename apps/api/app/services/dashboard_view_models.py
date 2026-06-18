@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models import DashboardRun, SCHEMA_VERSION
 
@@ -82,6 +82,7 @@ class CapacityBalanceViewModel(BaseModel):
     current_balance_label: str
     current_balance_date: str | None
     daily_series: list[BalancePoint]
+    forecast_series: list[BalancePoint] = Field(default_factory=list)
     is_empty: bool
 
 

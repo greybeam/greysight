@@ -519,6 +519,63 @@ describe("spend sections", () => {
   });
 });
 
+describe("capacity forecast wiring", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  const EMPTY_SERVICE_SPEND: import("../../lib/dashboard-contracts").ServiceSpendViewModel =
+    {
+      basis: "billed",
+      dailySeries: [],
+      serviceNames: [],
+      rankedServices: [],
+      serviceBars: [],
+      isEmpty: true,
+    };
+
+  const EMPTY_TOTAL_SPEND: import("../../lib/dashboard-contracts").TotalSpendViewModel =
+    {
+      basis: "billed",
+      total: 0,
+      totalLabel: "$0.00",
+      averageDaily: 0,
+      averageDailyLabel: "$0.00",
+      projectedMonthly: 0,
+      projectedMonthlyLabel: "$0.00",
+      projectionBasisLabel: "projected",
+      dailySeries: [],
+      topDriver: null,
+      isEmpty: true,
+    };
+
+  it("renders the capacity forecast chart in the overview when forecast data exists", () => {
+    const { container } = render(
+      <OverviewSection
+        status="ready"
+        currency="USD"
+        capacityBalance={{
+          currentBalance: 12345,
+          currentBalanceLabel: "$12,345.00",
+          currentBalanceDate: "2026-06-11",
+          dailySeries: [
+            { date: "2026-06-11", balance: 12345, balanceLabel: "$12,345.00" },
+          ],
+          forecastSeries: [
+            { date: "2026-06-11", balance: 12345, balanceLabel: "$12,345.00" },
+            { date: "2026-06-12", balance: 0, balanceLabel: "$0.00" },
+          ],
+          isEmpty: false,
+        }}
+        serviceSpend={EMPTY_SERVICE_SPEND}
+        totalSpend={EMPTY_TOTAL_SPEND}
+      />,
+    );
+
+    expect(container.querySelector(".capacity-forecast-chart")).not.toBeNull();
+  });
+});
+
 describe("section skeletons", () => {
   afterEach(() => {
     cleanup();
