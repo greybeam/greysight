@@ -40,27 +40,50 @@ blocks the feature:
 
 ### 1. Remove the one-owner cap
 
-New migration that drops `one_owner_membership_per_user` and removes the matching
-API guard in the onboarding path. No data changes. Multi-org *membership* was
-already allowed; this only lifts the *ownership* cap.
+The ownership cap lives in **two** places (not a Python API guard):
+- the partial unique index `one_owner_membership_per_user`
+  (`202606160001_org_snowflake_connections.sql:218`), and
+- an `if exists (... role = 'owner') then raise unique_violation` block **inside
+  the `create_org_with_snowflake_connection` RPC** (same file, ~line 247).
+
+New migration drops the index and removes that guard block. The RPC's per-user
+`pg_advisory_xact_lock` (line 245) existed only to serialize that guard against
+itself — once the account unique index below enforces dedup atomically, the lock
+is dead weight, so remove it too. No data changes.
 
 ### 2. Block duplicate Snowflake accounts
 
 Today `create_org_with_snowflake_connection` always creates a new org. Add a
-uniqueness guard on the **normalized** account:
+uniqueness guard on the account:
 
-- Normalize the account locator (trim + uppercase) and use it for comparison.
-- Enforce at the DB level with a unique index on the normalized account in
-  `organization_snowflake_connections`. The RPC raises a distinct error on
-  collision (atomic — two simultaneous onboardings can't both win).
-- The API maps that error to **409 Conflict**:
+- **Normalization is just `upper(account)`.** The account is already validated by
+  `validate_account_identifier` (`snowflake_account.py:14`), whose regex forbids
+  whitespace and any other punctuation outside `[A-Za-z0-9._-]`, so there is
+  nothing to trim — only case to fold.
+- Enforce with a **functional unique index** `(upper(account))` on
+  `organization_snowflake_connections`. This is atomic — two simultaneous
+  onboardings of the same account can't both win — and needs no advisory lock.
+- **Error mapping reuses the existing path.** `org_provisioning.py:14`
+  (`_is_one_org_conflict`) currently maps any `23505` → `OrgAlreadyExistsError` →
+  "You already have an organization." Since we are removing the owner guard (the
+  only current `23505` source from this RPC), the *only* remaining `23505` will be
+  the new account index. So just change that error's message to:
   *"This Snowflake account is already connected to an organization. Ask its owner
-  to invite you."*
+  to invite you."* — no new error class, no constraint-name branching. (Rename the
+  class to `DuplicateSnowflakeAccountError` for clarity if cheap; optional.)
+
+**Implementation checks:**
+- The migration creates a unique index; it will fail if duplicate accounts already
+  exist. Verify there are none first (early stage — almost certainly none).
+- Confirm what `disconnect_organization_snowflake` does to the connection row. If
+  it **deletes** the row, re-onboarding the same account works. If it leaves the
+  row, the unique index would block re-onboarding — handle only if that's the
+  actual behavior.
 
 **Known limitation:** Snowflake account identifiers can be written multiple ways
-(account locator vs. `ORG-ACCOUNT` form) for the same account. Trim+uppercase
-normalization catches the common cases but is not bulletproof. Acceptable for now;
-documented here so it isn't a surprise.
+(account locator vs. `ORG-ACCOUNT` form) for the same account. `upper()` folding
+catches case variants but not format variants. Acceptable for now; documented so
+it isn't a surprise.
 
 ## Frontend
 
@@ -104,17 +127,21 @@ current full-page inline wizard; only "add another" uses the modal.
   org shows checked.
 - **Duplicate account on add:** wizard surfaces the 409 inline (same error channel
   it already uses for 422/409); modal stays open to correct.
-- **Add cancelled:** closing the modal is a no-op; stays on the current account.
+- **Add cancelled:** closing the modal returns to the current account. No test
+  needed — the wizard has no cancel logic and the modal close is inert.
 
 ## Testing (only what changed)
 
-- **Backend:** second owned-org creation now succeeds; duplicate normalized account
-  → 409; normalization collapses case/format variants.
+- **Backend:** `test_supabase_migration.py` already asserts the old one-org guard
+  (~line 198) — **update that existing assertion** to reflect the lifted cap rather
+  than adding a new "second org succeeds" test. Add **one** service test:
+  duplicate `upper(account)` → 409 with the new message. That's it.
 - **Frontend:** switcher renders for 1 and 2+ orgs; selecting switches active org +
   writes `localStorage`; stale-id fallback; add-account success auto-switches and
-  closes; cancel is a no-op.
+  closes.
 
-Do **not** add tests for unchanged behavior or trivial getters. Keep the suite lean.
+Do **not** add tests for unchanged behavior, trivial getters, or the inert modal
+cancel. Keep the suite lean.
 
 ## Out of scope
 
