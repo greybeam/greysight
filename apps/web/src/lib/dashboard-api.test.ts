@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   fetchDashboardDatasets,
+  fetchDashboardSource,
   fetchDashboardView,
   fetchDemoDashboardDatasets,
   fetchDemoDashboardView,
   pollDashboardRun,
   startDashboardRun,
+  triggerDashboardSource,
 } from "./dashboard-api";
 import demoDashboardDatasets from "./demo-dashboard-data";
 import demoDashboardView from "./demo-dashboard-view";
@@ -163,5 +165,40 @@ describe("dashboard-api", () => {
     await expect(
       pollDashboardRun("run-123", { intervalMs: 0, maxAttempts: 1 }),
     ).rejects.toThrow("Dashboard run polling timed out");
+  });
+});
+
+describe("dashboard source api", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("encodes window_days on GET", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ status: "pending" }), { status: 200 }),
+    );
+    await fetchDashboardSource("run1", "ai_consumption_daily", { windowDays: 30 });
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toContain("/api/dashboard-runs/run1/sources/ai_consumption_daily");
+    expect(url).toContain("window_days=30");
+  });
+
+  it("encodes custom range on GET", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ status: "pending" }), { status: 200 }),
+    );
+    await fetchDashboardSource("run1", "ai_consumption_daily", {
+      startDate: "2026-05-01",
+      endDate: "2026-05-31",
+    });
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toContain("start_date=2026-05-01");
+    expect(url).toContain("end_date=2026-05-31");
+  });
+
+  it("POST triggers the source", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ status: "completed" }), { status: 202 }),
+    );
+    await triggerDashboardSource("run1", "ai_consumption_daily");
+    expect(fetchMock.mock.calls[0][1]?.method).toBe("POST");
   });
 });
