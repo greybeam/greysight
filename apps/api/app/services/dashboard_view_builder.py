@@ -971,6 +971,44 @@ def _build_total_spend(
     )
 
 
+MAX_FORECAST_DAYS = 1825  # ~5 years; bounds the payload if the runway is implausibly long
+
+
+def _build_forecast_series(
+    *,
+    current_balance: float,
+    current_date: date,
+    forecast_daily_spend: float,
+    currency: str,
+) -> list[BalancePoint]:
+    """Project the balance forward at a flat daily spend until it reaches zero.
+
+    Returns an empty list when there is nothing to forecast (non-positive spend
+    or balance) or when the runway exceeds MAX_FORECAST_DAYS. The first point is
+    the current (date, balance) so the forecast line joins the historical line;
+    the final point lands exactly on zero (clamped).
+    """
+    if forecast_daily_spend <= 0 or current_balance <= 0:
+        return []
+
+    days_to_zero = math.ceil(current_balance / forecast_daily_spend)
+    if days_to_zero > MAX_FORECAST_DAYS:
+        return []
+
+    points: list[BalancePoint] = []
+    for offset in range(days_to_zero + 1):
+        point_date = current_date + timedelta(days=offset)
+        balance = max(current_balance - forecast_daily_spend * offset, 0.0)
+        points.append(
+            BalancePoint(
+                date=point_date.isoformat(),
+                balance=balance,
+                balance_label=_format_currency(balance, currency),
+            )
+        )
+    return points
+
+
 def _build_capacity_balance(
     *,
     rows: list[DatasetRow],

@@ -11,6 +11,7 @@ from app.services.dashboard_view_builder import (
     OTHER_STACKED_SERIES_LABEL,
     DashboardInvalidRangeError,
     DashboardRangeOutOfBoundsError,
+    _build_forecast_series,
     _bucket_stacked_series,
     _build_rate_index,
     _build_storage_rate_index,
@@ -1998,3 +1999,58 @@ def test_capacity_balance_view_model_defaults_forecast_series_to_empty() -> None
     )
 
     assert model.forecast_series == []
+
+
+def test_build_forecast_series_projects_to_zero() -> None:
+    series = _build_forecast_series(
+        current_balance=100.0,
+        current_date=date(2026, 6, 8),
+        forecast_daily_spend=25.0,
+        currency="USD",
+    )
+
+    assert [point.date for point in series] == [
+        "2026-06-08",
+        "2026-06-09",
+        "2026-06-10",
+        "2026-06-11",
+        "2026-06-12",
+    ]
+    assert [point.balance for point in series] == [100.0, 75.0, 50.0, 25.0, 0.0]
+    assert series[0].balance == 100.0  # join point == current balance
+    assert series[-1].balance == 0.0
+    assert series[-1].balance_label == "$0.00"
+
+
+def test_build_forecast_series_clamps_final_point_to_zero() -> None:
+    # ceil(100 / 30) = 4 -> 5 points; the final point clamps below zero to 0.0
+    series = _build_forecast_series(
+        current_balance=100.0,
+        current_date=date(2026, 6, 8),
+        forecast_daily_spend=30.0,
+        currency="USD",
+    )
+
+    assert len(series) == 5
+    assert series[-2].balance == pytest.approx(10.0, abs=0.01)  # 100 - 90
+    assert series[-1].balance == 0.0
+
+
+def test_build_forecast_series_empty_for_non_positive_inputs() -> None:
+    base = dict(current_date=date(2026, 6, 8), currency="USD")
+    assert _build_forecast_series(current_balance=100.0, forecast_daily_spend=0.0, **base) == []
+    assert _build_forecast_series(current_balance=100.0, forecast_daily_spend=-5.0, **base) == []
+    assert _build_forecast_series(current_balance=0.0, forecast_daily_spend=25.0, **base) == []
+    assert _build_forecast_series(current_balance=-5.0, forecast_daily_spend=25.0, **base) == []
+
+
+def test_build_forecast_series_empty_when_runway_exceeds_cap() -> None:
+    # 1_000_000 / 0.01 = 100_000_000 days, far beyond MAX_FORECAST_DAYS
+    series = _build_forecast_series(
+        current_balance=1_000_000.0,
+        current_date=date(2026, 6, 8),
+        forecast_daily_spend=0.01,
+        currency="USD",
+    )
+
+    assert series == []
