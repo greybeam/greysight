@@ -1011,7 +1011,7 @@ def _build_forecast_series(
     points: list[BalancePoint] = []
     for offset in range(days_to_zero + 1):
         point_date = current_date + timedelta(days=offset)
-        balance = max(current_balance - forecast_daily_spend * offset, 0.0)
+        balance = 0.0 if offset == days_to_zero else max(current_balance - forecast_daily_spend * offset, 0.0)
         points.append(
             BalancePoint(
                 date=point_date.isoformat(),

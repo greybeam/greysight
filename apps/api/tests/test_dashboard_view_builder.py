@@ -1282,6 +1282,17 @@ def test_warehouse_total_sums_window_daily_dollars() -> None:
     assert view.warehouse_spend.total_label == "$32.00"
 
 
+def test_build_forecast_series_final_point_is_exactly_zero_for_decimals() -> None:
+    series = _build_forecast_series(
+        current_balance=0.9,
+        current_date=date(2026, 6, 8),
+        forecast_daily_spend=0.3,
+        currency="USD",
+    )
+    assert series[-1].balance == 0.0  # exact, not a tiny float remainder
+    assert series[-1].balance_label == "$0.00"
+
+
 # ---------------------------------------------------------------------------
 # Storage Spend backend rework — new-feature coverage.
 # ---------------------------------------------------------------------------
