@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { AccountChromeProvider } from "../../lib/account-context";
 import { getAuthMode } from "../../lib/auth-mode";
 import createBrowserAuthClient, {
   type AuthSession,
@@ -17,6 +18,7 @@ import ConnectWizard from "./connect-wizard";
 export type SelectedOrganization = {
   id: string;
   name: string;
+  accountLocator: string | null;
 };
 
 type MembershipState =
@@ -292,12 +294,18 @@ export default function OrgShell({
     );
   }
 
+  // The dashboard renders its own full-height dark app bar, so the signed-in
+  // identity + sign-out are handed to it through context and surfaced inside
+  // that single bar — no separate (light) account strip wrapping the dashboard.
   return (
-    <div className="min-h-screen bg-slate-50 p-6">
-      <section className="mb-6 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-        {signedInHeader}
-      </section>
+    <AccountChromeProvider
+      value={{
+        email: session.user?.email ?? "Authenticated user",
+        onSignOut: handleSignOut,
+        signOutError,
+      }}
+    >
       {children}
-    </div>
+    </AccountChromeProvider>
   );
 }

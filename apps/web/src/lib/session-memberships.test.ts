@@ -14,7 +14,9 @@ describe("fetchSessionMemberships", () => {
 
     const organizations = await fetchSessionMemberships("access-token");
 
-    expect(organizations).toEqual([{ id: "org-1", name: "Acme" }]);
+    expect(organizations).toEqual([
+      { id: "org-1", name: "Acme", accountLocator: null },
+    ]);
     const [, init] = fetchSpy.mock.calls[0];
     expect((init?.headers as Record<string, string>).authorization).toBe(
       "Bearer access-token",
@@ -78,6 +80,27 @@ describe("fetchSessionMemberships", () => {
 
     const organizations = await fetchSessionMemberships("access-token");
 
-    expect(organizations).toEqual([{ id: "org-1", name: " Acme " }]);
+    expect(organizations).toEqual([
+      { id: "org-1", name: " Acme ", accountLocator: null },
+    ]);
+  });
+
+  it("parses the account locator when present", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          organizations: [
+            { id: "org-1", name: "Acme", account_locator: "IJ42635" },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    const organizations = await fetchSessionMemberships("access-token");
+
+    expect(organizations).toEqual([
+      { id: "org-1", name: "Acme", accountLocator: "IJ42635" },
+    ]);
   });
 });

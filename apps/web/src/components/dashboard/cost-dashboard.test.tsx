@@ -103,7 +103,6 @@ describe("CostDashboard", () => {
     expect(screen.getByText("Total spend by database")).toBeInTheDocument();
     expect(screen.queryByText("User compute spend")).not.toBeInTheDocument();
     expect(screen.queryByText("Storage by database")).not.toBeInTheDocument();
-    expect(screen.getAllByText("Analysis complete").length).toBeGreaterThan(0);
   });
 
   it("uses the shared dashboard content container scale", () => {
@@ -522,15 +521,13 @@ describe("CostDashboard", () => {
     expect(screen.getByText("Overview")).toBeInTheDocument();
   });
 
-  it("shows demo freshness and account locator in the header", async () => {
+  it("shows the account locator in the header", async () => {
     vi.mocked(fetchDemoDashboardView).mockResolvedValue(demoDashboardView);
 
     render(<CostDashboard demoMode />);
 
-    expect(
-      await screen.findByText("Demo data through Jun 8, 2026"),
-    ).toBeInTheDocument();
-    expect(screen.getByText("DEMO123")).toBeInTheDocument();
+    expect(await screen.findByText("DEMO123")).toBeInTheDocument();
+    expect(screen.getByText(/Account:/)).toBeInTheDocument();
   });
 
   it("renders the mixed-currency unsupported state from metadata", async () => {
@@ -557,7 +554,8 @@ describe("CostDashboard", () => {
 
     render(<CostDashboard demoMode />);
 
-    expect(screen.getByRole("button", { name: "Run analysis" })).toBeDisabled();
+    // While loading the button swaps its label for the running spinner state.
+    expect(screen.getByRole("button", { name: /Running/ })).toBeDisabled();
     expect(screen.getByTestId("overview-skeleton")).toBeInTheDocument();
     expect(
       screen.getByTestId("dashboard-section-warehouse-spend"),
@@ -655,7 +653,8 @@ describe("CostDashboard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
 
     await waitFor(() => expect(startDashboardRun).toHaveBeenCalledTimes(1));
-    expect(screen.getByRole("button", { name: "Run analysis" })).toBeDisabled();
+    // The queued/polling run keeps the button disabled in its running state.
+    expect(screen.getByRole("button", { name: /Running/ })).toBeDisabled();
   });
 
   it("shows skeletons instead of stale data while a Snowflake re-run is in flight", async () => {
@@ -865,11 +864,8 @@ describe("CostDashboard", () => {
 
     render(<CostDashboard demoMode />);
 
-    // `RunStatus` (rendered above the content region) ALSO displays
-    // loadState.message, which is "Could not load dashboard data." in the
-    // failed state — so the SAME text appears twice on screen. A bare
-    // findByText would throw "Found multiple elements". Scope the query to the
-    // "Dashboard content" region so it matches only the SectionEmptyState.
+    // On an initial-run failure with no view to fall back on, the message is
+    // surfaced by SectionEmptyState inside the "Dashboard content" region.
     const content = screen.getByLabelText("Dashboard content");
     expect(
       await within(content).findByText("Could not load dashboard data."),

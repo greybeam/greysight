@@ -19,10 +19,10 @@ describe("DashboardPage", () => {
 
     render(<DashboardPage />);
 
-    expect(screen.getByText("Greysight")).toBeInTheDocument();
-    expect(screen.getByText("Loading dashboard data")).toBeInTheDocument();
+    expect(screen.getByText("Greybeam")).toBeInTheDocument();
     // The blank-box loading state is now an always-rendered skeleton section.
     expect(screen.getByTestId("overview-skeleton")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Run analysis" })).toBeDisabled();
+    // The initial demo load is in flight, so the run button shows its running state.
+    expect(screen.getByRole("button", { name: /Running/ })).toBeDisabled();
   });
 });

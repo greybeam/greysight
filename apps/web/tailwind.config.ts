@@ -129,6 +129,21 @@ const config: Config = {
         "tremor-default": "0.5rem",
         "tremor-full": "9999px",
       },
+      fontFamily: {
+        sans: [
+          "var(--font-body)",
+          "Inter",
+          "ui-sans-serif",
+          "system-ui",
+          "sans-serif",
+        ],
+        display: [
+          "var(--font-display)",
+          "ui-sans-serif",
+          "system-ui",
+          "sans-serif",
+        ],
+      },
       fontSize: {
         "tremor-label": ["0.75rem", { lineHeight: "1rem" }],
         "tremor-default": ["0.875rem", { lineHeight: "1.25rem" }],

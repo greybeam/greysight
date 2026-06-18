@@ -42,6 +42,7 @@ export default function DashboardRuntimeShell({
           accessToken,
           organizationId: organization.id,
           organizationName: organization.name,
+          accountLocator: organization.accountLocator,
         }
       : null;
   const runtime = authenticatedRuntime ?? localSnowflakeRuntime;
