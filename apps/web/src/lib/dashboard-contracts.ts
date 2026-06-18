@@ -205,6 +205,7 @@ export type CapacityBalanceViewModel = {
   currentBalanceLabel: string;
   currentBalanceDate: string | null;
   dailySeries: BalancePoint[];
+  forecastSeries: BalancePoint[];
   isEmpty: boolean;
 };
 
@@ -632,6 +633,11 @@ function parseCapacityBalanceViewModel(
     dailySeries: readViewArray(payload, "daily_series", "dailySeries").map(
       parseBalancePoint,
     ),
+    forecastSeries: hasViewValue(payload, "forecast_series", "forecastSeries")
+      ? readViewArray(payload, "forecast_series", "forecastSeries").map(
+          parseBalancePoint,
+        )
+      : [],
     isEmpty: readViewBoolean(payload, "is_empty", "isEmpty"),
   };
 }
@@ -701,6 +707,7 @@ function emptyCapacityBalanceViewModel(
     currentBalanceLabel: formatZeroCurrencyLabel(currency),
     currentBalanceDate: null,
     dailySeries: [],
+    forecastSeries: [],
     isEmpty: true,
   };
 }
