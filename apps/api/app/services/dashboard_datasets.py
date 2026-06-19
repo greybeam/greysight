@@ -15,6 +15,11 @@ from app.services.cost_metrics import (
 )
 from app.services.dashboard_registry import DashboardSource, load_dashboard_registry
 from app.services.dataset_bounds import bound_user_compute_rows
+from app.services.parallel_source_runner import (
+    SourceJob,
+    SourceOutcome,
+    run_sources_parallel,
+)
 from app.services.snowflake_client import (
     SnowflakeConfigurationError,
     SnowflakeConnectionConfig,
@@ -68,34 +73,51 @@ def build_snowflake_dashboard_data(
         if key not in OPTIONAL_ORG_SOURCE_IDS
     }
 
-    account_locator, locator_error = _derive_account_locator(
-        registry.sources["current_account"], execute_source
-    )
-    org_bind_params = {
-        "window_days": FETCH_WINDOW_DAYS,
-        "account_locator": account_locator,
-    }
-    org_datasets, org_availability = _fetch_source_group(
-        org_sources,
+    account_locator, locator_error = _resolve_account_locator(
+        connection_config,
+        registry.sources["current_account"],
         execute_source,
-        bind_params=org_bind_params,
-        skip=account_locator is None,
-        skip_detail=locator_error,
-        unavailable_detail="Could not query Snowflake Organization Usage data.",
     )
-    capacity_datasets, _capacity_availability = _fetch_source_group(
-        optional_org_sources,
-        execute_source,
-        bind_params=org_bind_params,
-        skip=account_locator is None,
-        skip_detail=locator_error,
-        unavailable_detail="Could not query Snowflake capacity balance data.",
-    )
-    account_datasets, account_availability = _fetch_source_group(
+
+    window = {"window_days": FETCH_WINDOW_DAYS}
+    locator_window = {**window, "account_locator": account_locator}
+
+    jobs: list[SourceJob] = [
+        SourceJob(key, source.sql, window)
+        for key, source in account_sources.items()
+    ]
+    if account_locator is not None:
+        # org_spend_daily + rate_sheet_daily are scoped to the account locator.
+        jobs.extend(
+            SourceJob(key, source.sql, locator_window)
+            for key, source in org_sources.items()
+        )
+        # capacity is org-scoped: window only, no locator.
+        jobs.extend(
+            SourceJob(key, source.sql, window)
+            for key, source in optional_org_sources.items()
+        )
+
+    outcomes = run_sources_parallel(jobs, execute_source)
+
+    account_datasets, account_availability = _group_from_outcomes(
         account_sources,
-        execute_source,
-        bind_params={"window_days": FETCH_WINDOW_DAYS},
+        outcomes,
         unavailable_detail="Could not query Snowflake Account Usage data.",
+    )
+    org_datasets, org_availability = _group_from_outcomes(
+        org_sources,
+        outcomes,
+        unavailable_detail="Could not query Snowflake Organization Usage data.",
+        skip=account_locator is None,
+        skip_detail=locator_error,
+    )
+    capacity_datasets, _capacity_availability = _group_from_outcomes(
+        optional_org_sources,
+        outcomes,
+        unavailable_detail="Could not query Snowflake capacity balance data.",
+        skip=account_locator is None,
+        skip_detail=locator_error,
     )
 
     if not org_availability.available and not account_availability.available:
@@ -185,10 +207,16 @@ def _sources_by_kind(
     }
 
 
-def _derive_account_locator(
+def _resolve_account_locator(
+    connection_config: SnowflakeConnectionConfig | None,
     current_account_source: DashboardSource,
     execute: ExecuteFn,
 ) -> tuple[str | None, str | None]:
+    if connection_config is not None and connection_config.account_locator is not None:
+        return _validate_account_locator(connection_config.account_locator)
+
+    # Legacy-row fallback: one-time current_account() query, used for this run
+    # only. Persistence remains the re-validation / onboarding path.
     try:
         rows = execute(current_account_source.sql, {})
     except (SnowflakeQueryError, SnowflakeConfigurationError):
@@ -196,17 +224,19 @@ def _derive_account_locator(
 
     if not rows or not rows[0].get("account_locator"):
         return None, "Could not determine Snowflake account."
-    account_locator = str(rows[0]["account_locator"])
+    return _validate_account_locator(str(rows[0]["account_locator"]))
+
+
+def _validate_account_locator(account_locator: str) -> tuple[str | None, str | None]:
     if not _ACCOUNT_LOCATOR_PATTERN.fullmatch(account_locator):
         return None, "Could not determine Snowflake account."
     return account_locator, None
 
 
-def _fetch_source_group(
+def _group_from_outcomes(
     sources: dict[str, DashboardSource],
-    execute: ExecuteFn,
+    outcomes: dict[str, SourceOutcome],
     *,
-    bind_params: dict[str, Any],
     unavailable_detail: str,
     skip: bool = False,
     skip_detail: str | None = None,
@@ -215,13 +245,15 @@ def _fetch_source_group(
     if skip:
         return empty, SourceAvailability(available=False, detail=skip_detail)
 
-    datasets: dict[str, list[dict[str, Any]]] = {}
-    try:
-        for dataset_key, source in sources.items():
-            datasets[dataset_key] = execute(source.sql, bind_params)
-    except (SnowflakeQueryError, SnowflakeConfigurationError):
+    if any(
+        not outcomes[dataset_key].available or outcomes[dataset_key].rows is None
+        for dataset_key in sources
+    ):
         return empty, SourceAvailability(available=False, detail=unavailable_detail)
 
+    datasets = {
+        dataset_key: outcomes[dataset_key].rows or [] for dataset_key in sources
+    }
     return datasets, SourceAvailability(available=True)
 
 

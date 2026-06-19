@@ -14,6 +14,7 @@ from app.services.dashboard_datasets import (
 )
 from app.services.dataset_bounds import TOP_USER_COUNT
 from app.services.snowflake_client import (
+    SnowflakeConnectionConfig,
     SnowflakeObjectUnavailableError,
     SnowflakeQueryError,
 )
@@ -110,10 +111,8 @@ def _fake_execute(
             assert bind_params == {}
             return [{"account_locator": account_locator}]
         if "remaining_balance_daily" in lowered:
-            assert bind_params == {
-                "window_days": FETCH_WINDOW_DAYS,
-                "account_locator": account_locator,
-            }
+            # capacity is org-scoped: window only, no account_locator.
+            assert bind_params == {"window_days": FETCH_WINDOW_DAYS}
             if capacity_fails:
                 raise SnowflakeQueryError("capacity balance unavailable")
             return org_datasets["capacity_balance_daily"]
@@ -137,6 +136,28 @@ def _fake_execute(
         raise AssertionError(f"unexpected SQL: {sql}")
 
     return execute
+
+
+def test_build_uses_config_locator_without_current_account_query() -> None:
+    executed: list[str] = []
+
+    def execute(sql: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+        executed.append(sql)
+        # Locator-scoped org queries (spend + rate sheet) must receive the
+        # stored locator, never a pre-query result. Capacity is org-scoped and
+        # intentionally carries no locator.
+        if "organization_usage" in sql and "remaining_balance_daily" not in sql:
+            assert params.get("account_locator") == "XY12345"
+        return []
+
+    data = build_snowflake_dashboard_data(
+        Settings(),
+        execute=execute,
+        connection_config=SnowflakeConnectionConfig(account_locator="XY12345"),
+    )
+    # current_account() is NOT run as a gating query when the locator is known
+    assert not any("current_account()" in sql.lower() for sql in executed)
+    assert data.datasets["current_account"] == [{"account_locator": "XY12345"}]
 
 
 def test_builds_billed_dashboard_data_with_metadata_and_bounded_rows() -> None:
