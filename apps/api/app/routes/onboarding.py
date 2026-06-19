@@ -111,7 +111,7 @@ def _validate_and_create(
     )
 
     try:
-        validate_snowflake_connection(config)
+        account_locator = validate_snowflake_connection(config)
     except SnowflakeValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     except SnowflakeConfigurationError:
@@ -140,6 +140,7 @@ def _validate_and_create(
             p_schema=request.schema or "",
             p_private_key_pem=request.private_key_pem,
             p_passphrase=request.passphrase or "",
+            p_account_locator=account_locator or "",
         )
     except DuplicateSnowflakeAccountError:
         raise HTTPException(

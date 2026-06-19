@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
+from app.services import snowflake_client
 from app.services.snowflake_client import (
     SnowflakeConfigurationError,
     SnowflakeConnectionConfig,
@@ -133,6 +134,7 @@ def test_default_connection_uses_environment_config(
     monkeypatch.setenv("SNOWFLAKE_PRIVATE_KEY_PATH", "/secret/key.p8")
 
     cursor = Mock()
+    cursor.fetchone.return_value = ("ACCOUNT123",)
     connection = Mock()
     connection.cursor.return_value = MagicMock()
     connection.cursor.return_value.__enter__.return_value = cursor
@@ -146,11 +148,12 @@ def test_default_connection_uses_environment_config(
             SnowflakeConnectionConfig, "_load_private_key_der", return_value=b"key"
         ),
     ):
-        validate_snowflake_connection()
+        locator = validate_snowflake_connection()
 
     assert connect.call_args.kwargs["account"] == "account"
     assert connect.call_args.kwargs["private_key"] == b"key"
     assert "/secret/key.p8" not in str(connect.call_args.kwargs)
+    assert locator == "ACCOUNT123"
 
 
 def test_config_from_environment_expands_user_key_path(
@@ -298,6 +301,25 @@ def test_execute_source_query_maps_query_errors_to_neutral_message() -> None:
 
     assert str(exc_info.value) == "Could not query Snowflake."
     assert "raw account usage failure" not in str(exc_info.value)
+
+
+def test_validate_snowflake_connection_returns_account_locator(monkeypatch):
+    executed: list[str] = []
+
+    class FakeCursor:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, sql, *args): executed.append(sql)
+        def fetchone(self): return ("XY12345",)
+
+    class FakeConn:
+        def cursor(self): return FakeCursor()
+        def close(self): pass
+
+    monkeypatch.setattr(snowflake_client, "_connect", lambda config: FakeConn())
+    locator = snowflake_client.validate_snowflake_connection()
+    assert locator == "XY12345"
+    assert any("current_account()" in sql.lower() for sql in executed)
 
 
 def _generate_pem() -> str:

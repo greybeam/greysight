@@ -35,7 +35,7 @@ def _payload() -> dict:
 def test_connect_validates_then_creates(monkeypatch) -> None:
     app.dependency_overrides[require_auth_context] = _auth_context
     monkeypatch.setattr(
-        onboarding, "validate_snowflake_connection", lambda config: None
+        onboarding, "validate_snowflake_connection", lambda config: "XY12345"
     )
     created = {}
     monkeypatch.setattr(
@@ -51,6 +51,7 @@ def test_connect_validates_then_creates(monkeypatch) -> None:
     assert response.json()["id"] == "org-123"
     assert created["p_user_id"] == "user-1"  # identity from token, not body
     assert created["p_account"] == "GOPGUKF-JO19546"
+    assert created["p_account_locator"] == "XY12345"
 
 
 def test_connect_rejects_invalid_account(monkeypatch) -> None:
@@ -118,7 +119,7 @@ def test_connect_rate_limited_returns_429(monkeypatch) -> None:
     )
     app.dependency_overrides[require_auth_context] = _auth_context
     monkeypatch.setattr(
-        onboarding, "validate_snowflake_connection", lambda config: None
+        onboarding, "validate_snowflake_connection", lambda config: "XY12345"
     )
     monkeypatch.setattr(
         onboarding, "create_org_with_connection", lambda **kwargs: "org-123"

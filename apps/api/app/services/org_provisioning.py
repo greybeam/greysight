@@ -136,9 +136,36 @@ def configure_org_disconnector(disconnector: SupabaseOrgDisconnector | None) -> 
     _disconnector = disconnector
 
 
-def create_org_with_connection(**params: str) -> str:
+def create_org_with_connection(
+    *,
+    p_user_id: str,
+    p_org_name: str,
+    p_account: str,
+    p_user: str,
+    p_role: str,
+    p_warehouse: str,
+    p_database: str,
+    p_schema: str,
+    p_private_key_pem: str,
+    p_passphrase: str,
+    p_account_locator: str | None = None,
+) -> str:
     if _provisioner is None:
         raise OrgProvisioningError("Org provisioning is not configured.")
+    params: dict[str, str] = {
+        "p_user_id": p_user_id,
+        "p_org_name": p_org_name,
+        "p_account": p_account,
+        "p_user": p_user,
+        "p_role": p_role,
+        "p_warehouse": p_warehouse,
+        "p_database": p_database,
+        "p_schema": p_schema,
+        "p_private_key_pem": p_private_key_pem,
+        "p_passphrase": p_passphrase,
+    }
+    if p_account_locator is not None:
+        params["p_account_locator"] = p_account_locator
     return _provisioner(**params)
 
 
