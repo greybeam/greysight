@@ -26,10 +26,7 @@ def test_snowflake_dashboard_run_uses_v0_builder_and_persists_metadata(
             executed_groups.append("metadata")
             return [{"account_locator": "TU24199"}]
         if "remaining_balance_daily" in lowered:
-            assert bind_params == {
-                "window_days": FETCH_WINDOW_DAYS,
-                "account_locator": "TU24199",
-            }
+            assert bind_params == {"window_days": FETCH_WINDOW_DAYS}
             executed_groups.append("capacity")
             return [
                 {
@@ -154,10 +151,7 @@ def test_snowflake_dashboard_run_does_not_expose_unexpected_backend_detail(
             assert bind_params == {}
             return [{"account_locator": "TU24199"}]
         if "remaining_balance_daily" in lowered:
-            assert bind_params == {
-                "window_days": FETCH_WINDOW_DAYS,
-                "account_locator": "TU24199",
-            }
+            assert bind_params == {"window_days": FETCH_WINDOW_DAYS}
             return [
                 {
                     "usage_date": date(2026, 6, 5),
