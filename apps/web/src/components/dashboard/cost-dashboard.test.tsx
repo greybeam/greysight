@@ -13,20 +13,37 @@ import {
   type DashboardViewRangeRequest,
   fetchDashboardView,
   fetchDemoDashboardView,
-  pollDashboardRun,
+  pollUntilTerminal,
   startDashboardRun,
 } from "../../lib/dashboard-api";
 import demoDashboardView from "../../lib/demo-dashboard-view";
-import { FETCH_WINDOW_DAYS, type DashboardRun } from "../../lib/dashboard-contracts";
+import {
+  FETCH_WINDOW_DAYS,
+  type DashboardRun,
+  type DashboardView,
+} from "../../lib/dashboard-contracts";
 import CostDashboard from "./cost-dashboard";
 import { REVEAL_STEP_MS } from "./use-section-statuses";
 
 vi.mock("../../lib/dashboard-api", () => ({
   fetchDashboardView: vi.fn(),
   fetchDemoDashboardView: vi.fn(),
-  pollDashboardRun: vi.fn(),
+  pollUntilTerminal: vi.fn(),
   startDashboardRun: vi.fn(),
 }));
+
+// Drives the progressive `/view` poll the component runs for Snowflake runs:
+// fetch once, surface the result via `onResult`, then resolve with it as the
+// terminal view. Mirrors the real `pollUntilTerminal` for a single-shot result.
+function mockPollResolvesWith(view: DashboardView) {
+  vi.mocked(pollUntilTerminal).mockImplementation(
+    async (fetcher, _isTerminal, options) => {
+      const result = (await fetcher()) as DashboardView;
+      options?.onResult?.(result);
+      return view as never;
+    },
+  );
+}
 
 type Deferred<T> = {
   promise: Promise<T>;
@@ -580,12 +597,13 @@ describe("CostDashboard", () => {
       ...runningRun,
       status: "completed",
     };
-    vi.mocked(startDashboardRun).mockResolvedValue(runningRun);
-    vi.mocked(pollDashboardRun).mockResolvedValue(completedRun);
-    vi.mocked(fetchDashboardView).mockResolvedValue({
+    const completedView: DashboardView = {
       ...demoDashboardView,
       run: completedRun,
-    });
+    };
+    vi.mocked(startDashboardRun).mockResolvedValue(runningRun);
+    vi.mocked(fetchDashboardView).mockResolvedValue(completedView);
+    mockPollResolvesWith(completedView);
 
     render(
       <CostDashboard
@@ -606,10 +624,6 @@ describe("CostDashboard", () => {
         { accessToken: "test-access-token" },
       );
     });
-    expect(pollDashboardRun).toHaveBeenCalledWith(
-      "run-123",
-      expect.objectContaining({ accessToken: "test-access-token" }),
-    );
     expect(fetchDashboardView).toHaveBeenCalledWith(
       "run-123",
       { windowDays: 30 },
@@ -629,6 +643,61 @@ describe("CostDashboard", () => {
     expect(fetchDemoDashboardView).not.toHaveBeenCalled();
   });
 
+  it("reveals only server-ready sections while a Snowflake run streams provisional views", async () => {
+    const runningRun: DashboardRun = {
+      ...demoDashboardView.run,
+      id: "run-progressive",
+      source: "snowflake",
+      status: "running",
+    };
+    const provisionalView: DashboardView = {
+      ...demoDashboardView,
+      run: runningRun,
+      sectionStatuses: {
+        overview: "ready",
+        warehouse: "pending",
+        storage: "unavailable",
+      },
+    };
+    vi.mocked(startDashboardRun).mockResolvedValue(runningRun);
+    vi.mocked(fetchDashboardView).mockResolvedValue(provisionalView);
+    // Surface the provisional view via onResult, then stay pending so the
+    // per-section readiness (not a terminal completion) drives the reveal.
+    vi.mocked(pollUntilTerminal).mockImplementation(
+      async (fetcher, _isTerminal, options) => {
+        const result = (await fetcher()) as DashboardView;
+        options?.onResult?.(result);
+        return new Promise<never>(() => undefined);
+      },
+    );
+
+    render(
+      <CostDashboard
+        demoMode={false}
+        runtime={{
+          accessToken: "test-access-token",
+          organizationId: "org-123",
+          organizationName: "Acme Analytics",
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+
+    // Overview is server-ready: its content paints while warehouse (pending) and
+    // storage (unavailable) remain in their loading skeletons.
+    expect(
+      await screen.findByText("Total Spend in Last 30 Days"),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("overview-skeleton")).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId("warehouse-spend-skeleton-chart"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("storage-spend-skeleton-chart"),
+    ).toBeInTheDocument();
+  });
+
   it("keeps the run action disabled while a queued Snowflake run is polling", async () => {
     const queuedRun: DashboardRun = {
       ...demoDashboardView.run,
@@ -637,7 +706,7 @@ describe("CostDashboard", () => {
       status: "queued",
     };
     vi.mocked(startDashboardRun).mockResolvedValue(queuedRun);
-    vi.mocked(pollDashboardRun).mockReturnValue(new Promise(() => undefined));
+    vi.mocked(pollUntilTerminal).mockReturnValue(new Promise(() => undefined));
 
     render(
       <CostDashboard
@@ -677,7 +746,7 @@ describe("CostDashboard", () => {
       };
       vi.mocked(startDashboardRun).mockResolvedValue(queuedRun);
       // Keep the poll pending so the re-run stays in flight.
-      vi.mocked(pollDashboardRun).mockReturnValue(new Promise(() => undefined));
+      vi.mocked(pollUntilTerminal).mockReturnValue(new Promise(() => undefined));
 
       render(
         <CostDashboard
@@ -754,7 +823,7 @@ describe("CostDashboard", () => {
       status: "queued",
     };
     vi.mocked(startDashboardRun).mockResolvedValue(queuedRun);
-    vi.mocked(pollDashboardRun).mockReturnValue(new Promise(() => undefined));
+    vi.mocked(pollUntilTerminal).mockReturnValue(new Promise(() => undefined));
 
     render(
       <CostDashboard

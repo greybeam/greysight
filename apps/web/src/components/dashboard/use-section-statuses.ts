@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import type { DashboardViewSectionStatuses } from "../../lib/dashboard-contracts";
+
 export type SectionStatus = "loading" | "ready";
 
 export type DashboardSectionKey = "overview" | "warehouse" | "storage";
@@ -33,6 +35,10 @@ type UseSectionStatusesArgs = {
   // Bumped on every new run / range request. Drives the effect and keys the
   // reveal generation so a stale timer from a superseded request is inert.
   revealGeneration: number;
+  // When present (progressive Snowflake runs), reveal is driven by the server's
+  // per-section readiness instead of the timed stagger. Absent for demo/cached
+  // views, which keep the original stagger.
+  sectionReadiness?: DashboardViewSectionStatuses;
 };
 
 /**
@@ -46,10 +52,18 @@ export function useSectionStatuses({
   dataReady,
   instant,
   revealGeneration,
+  sectionReadiness,
 }: UseSectionStatusesArgs): DashboardSectionStatuses {
   const [statuses, setStatuses] = useState<DashboardSectionStatuses>(() =>
     dataReady ? ALL_READY : ALL_LOADING,
   );
+  // Depend on the per-section status primitives, not the object reference, so a
+  // freshly-parsed `sectionReadiness` with identical values doesn't re-run the
+  // effect (and re-setState) on every render — which would loop indefinitely.
+  const hasReadiness = sectionReadiness !== undefined;
+  const readinessOverview = sectionReadiness?.overview;
+  const readinessWarehouse = sectionReadiness?.warehouse;
+  const readinessStorage = sectionReadiness?.storage;
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   // Distinguishes a real loading->ready transition (stagger) from a view that
   // was ready before this effect run (mount-with-data, or a cache swap that
@@ -83,6 +97,18 @@ export function useSectionStatuses({
       return clearTimers;
     }
 
+    // Progressive path: map server readiness directly; no timers. `unavailable`
+    // deliberately maps to "loading" (skeleton) — this task adds no explicit
+    // unavailable/error UI.
+    if (hasReadiness) {
+      setStatuses({
+        overview: readinessOverview === "ready" ? "ready" : "loading",
+        warehouse: readinessWarehouse === "ready" ? "ready" : "loading",
+        storage: readinessStorage === "ready" ? "ready" : "loading",
+      });
+      return clearTimers;
+    }
+
     if (instant || wasReady) {
       setStatuses(ALL_READY);
       return clearTimers;
@@ -105,7 +131,15 @@ export function useSectionStatuses({
     });
 
     return clearTimers;
-  }, [dataReady, instant, revealGeneration]);
+  }, [
+    dataReady,
+    instant,
+    revealGeneration,
+    hasReadiness,
+    readinessOverview,
+    readinessWarehouse,
+    readinessStorage,
+  ]);
 
   return statuses;
 }

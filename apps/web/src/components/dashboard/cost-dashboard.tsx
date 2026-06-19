@@ -7,8 +7,8 @@ import {
   fetchDashboardView,
   fetchDemoDashboardView,
   fetchDemoDashboardSource,
-  pollDashboardRun,
   pollDashboardSource,
+  pollUntilTerminal,
   startDashboardRun,
   triggerDashboardSource,
   type DashboardViewRangeRequest,
@@ -18,6 +18,7 @@ import {
   type DashboardRunStatus,
   type DashboardView,
   type DashboardViewRange,
+  type DashboardViewSectionStatuses,
 } from "../../lib/dashboard-contracts";
 import DashboardHeader, {
   type DashboardModeLabel,
@@ -69,6 +70,15 @@ const DEFAULT_VIEW_RANGE = {
   windowDays: 30,
 } as const satisfies DashboardViewRangeRequest;
 const DEFAULT_WINDOW_DAYS = DEFAULT_VIEW_RANGE.windowDays;
+
+// Run statuses that end the progressive `/view` poll. Mirrors the lifecycle
+// terminal set used by `pollDashboardRun` in dashboard-api.
+const TERMINAL_RUN_STATUSES: ReadonlySet<DashboardRunStatus> = new Set([
+  "completed",
+  "failed",
+  "expired",
+  "deleted",
+]);
 
 function rangeKey(runId: string, range: DashboardViewRangeRequest): string {
   if (isCustomRangeRequest(range)) {
@@ -134,6 +144,11 @@ function CostDashboardContent({
   const [runInFlight, setRunInFlight] = useState(false);
   const [rangeFetchesInFlight, setRangeFetchesInFlight] = useState(0);
   const [revealGeneration, setRevealGeneration] = useState(0);
+  // Per-section readiness from the server during a live Snowflake run. Undefined
+  // for demo/cached/range loads, which keep the timed-stagger reveal.
+  const [sectionReadiness, setSectionReadiness] = useState<
+    DashboardViewSectionStatuses | undefined
+  >(undefined);
   const [loadState, setLoadState] = useState<LoadState>({
     status: data?.run.status ?? (shouldUseDemo ? "loading" : "queued"),
     view: data,
@@ -194,6 +209,7 @@ function CostDashboardContent({
     setRevealGeneration((value) => value + 1);
     runGenerationRef.current += 1;
     setRunInFlight(true);
+    setSectionReadiness(undefined);
     setLoadState((current) => ({ ...current, status: "loading" }));
     try {
       const dashboardView = await fetchDemoDashboardView(DEFAULT_VIEW_RANGE);
@@ -230,7 +246,9 @@ function CostDashboardContent({
     const options = { accessToken: runtime.accessToken };
     setRevealGeneration((value) => value + 1);
     runGenerationRef.current += 1;
+    const runGeneration = runGenerationRef.current;
     setRunInFlight(true);
+    setSectionReadiness(undefined);
     setLoadState((current) => ({ ...current, status: "loading" }));
 
     try {
@@ -241,40 +259,73 @@ function CostDashboardContent({
         },
         options,
       );
+      if (runGeneration !== runGenerationRef.current) {
+        return;
+      }
       setLoadState((current) => ({
         ...current,
         status: run.status,
         message: run.error ?? run.user_safe_message,
       }));
 
-      const completedRun = await pollDashboardRun(run.id, options);
-      if (completedRun.status !== "completed") {
+      // Stop holding every section in the skeleton via `runInFlight` once the
+      // first provisional view lands; per-section readiness takes over from
+      // there. The `finally` clears it as a backstop for early returns/errors.
+      let firstViewApplied = false;
+
+      const finalView = await pollUntilTerminal(
+        () => fetchDashboardView(run.id, DEFAULT_VIEW_RANGE, options),
+        (view) => TERMINAL_RUN_STATUSES.has(view.run.status),
+        {
+          intervalMs: 1_500,
+          maxAttempts: 60,
+          onResult: (view) => {
+            // Ignore partial views from a superseded run before any state write.
+            if (runGeneration !== runGenerationRef.current) {
+              return;
+            }
+            setSectionReadiness(view.sectionStatuses);
+            // Paints ready sections; pending/unavailable stay skeletoned.
+            applyDashboardView(view);
+            if (!firstViewApplied) {
+              firstViewApplied = true;
+              setRunInFlight(false);
+            }
+          },
+        },
+      );
+
+      if (runGeneration !== runGenerationRef.current) {
+        return;
+      }
+      if (finalView.run.status !== "completed") {
         setLoadState((current) => ({
           ...current,
-          status: completedRun.status,
-          message: completedRun.error ?? completedRun.user_safe_message,
+          status: finalView.run.status,
+          message: finalView.run.error ?? finalView.run.user_safe_message,
         }));
         return;
       }
 
-      const dashboardView = await fetchDashboardView(
-        completedRun.id,
-        DEFAULT_VIEW_RANGE,
-        options,
-      );
-      runGenerationRef.current += 1;
-      cacheView(completedRun.id, DEFAULT_VIEW_RANGE, dashboardView);
-      applyDashboardView(dashboardView);
-      prefetchRelativeWindows(completedRun.id, (range) =>
-        fetchDashboardView(completedRun.id, range, options),
+      // Completed → all sections ready; drop back to the standard reveal path.
+      setSectionReadiness(undefined);
+      cacheView(finalView.run.id, DEFAULT_VIEW_RANGE, finalView);
+      applyDashboardView(finalView);
+      prefetchRelativeWindows(finalView.run.id, (range) =>
+        fetchDashboardView(finalView.run.id, range, options),
       );
     } catch {
+      if (runGeneration !== runGenerationRef.current) {
+        return;
+      }
       setLoadState({
         status: "failed",
         message: "Could not load dashboard data.",
       });
     } finally {
-      setRunInFlight(false);
+      if (runGeneration === runGenerationRef.current) {
+        setRunInFlight(false);
+      }
     }
   }, [applyDashboardView, cacheView, prefetchRelativeWindows, runtime]);
 
@@ -296,6 +347,7 @@ function CostDashboardContent({
     async function fetchInitialDemoView() {
       setRevealGeneration((value) => value + 1);
       setRunInFlight(true);
+      setSectionReadiness(undefined);
       try {
         const dashboardView = await fetchDemoDashboardView(DEFAULT_VIEW_RANGE);
         if (isActive) {
@@ -340,6 +392,7 @@ function CostDashboardContent({
       }
 
       setRevealGeneration((value) => value + 1);
+      setSectionReadiness(undefined);
       rangeRequestSeqRef.current += 1;
       const requestSeq = rangeRequestSeqRef.current;
       const runGeneration = runGenerationRef.current;
@@ -418,6 +471,10 @@ function CostDashboardContent({
     const request = requestFromViewRange(activeRange ?? viewModel.range);
     aiSeqRef.current += 1;
     const seq = aiSeqRef.current;
+    // Intentional reset: when the active view/range changes, the AI detail must
+    // immediately fall back to its loading skeleton before the async refetch
+    // resolves. This is derived-state synchronization, not a cascading loop.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setAiDetail({ status: "loading" });
 
     void (async () => {
@@ -465,6 +522,7 @@ function CostDashboardContent({
     dataReady,
     instant: reduceMotion,
     revealGeneration,
+    sectionReadiness,
   });
   const runDisabled =
     runInFlight ||
