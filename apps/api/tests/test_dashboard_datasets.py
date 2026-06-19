@@ -302,6 +302,40 @@ def test_object_unavailable_in_main_run_group_falls_back_gracefully() -> None:
     assert data.datasets["rate_sheet_daily"] == []
 
 
+def test_invalid_config_locator_skips_org_usage_via_config_path() -> None:
+    executed: list[str] = []
+
+    def execute(sql: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+        executed.append(sql)
+        lowered = sql.lower()
+        for dataset_key, rows in _account_rows().items():
+            if _known_account_sql_matches(dataset_key, lowered):
+                return rows
+        return []
+
+    data = build_snowflake_dashboard_data(
+        Settings(),
+        execute=execute,
+        connection_config=SnowflakeConnectionConfig(account_locator="BAD-DROP"),
+    )
+
+    # Config-path rejection: current_account() must NEVER be queried
+    assert not any("current_account()" in sql.lower() for sql in executed)
+    # Malformed locator degrades to estimated mode
+    assert data.metadata.data_mode == "estimated"
+    # account_locator is None because validation rejected the config value
+    assert data.metadata.account_locator is None
+    # org/capacity jobs must have been skipped entirely
+    assert data.metadata.organization_usage.available is False
+    assert (
+        data.metadata.organization_usage.detail
+        == "Could not determine Snowflake account."
+    )
+    assert "BAD-DROP" not in data.metadata.organization_usage.detail
+    assert data.datasets["org_spend_daily"] == []
+    assert data.datasets["rate_sheet_daily"] == []
+
+
 def test_invalid_current_account_locator_skips_org_usage_with_safe_detail() -> None:
     data = build_snowflake_dashboard_data(
         Settings(), execute=_fake_execute(account_locator="BAD-DROP")

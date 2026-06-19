@@ -80,13 +80,13 @@ def build_snowflake_dashboard_data(
     )
 
     window = {"window_days": FETCH_WINDOW_DAYS}
-    locator_window = {**window, "account_locator": account_locator}
 
     jobs: list[SourceJob] = [
         SourceJob(key, source.sql, window)
         for key, source in account_sources.items()
     ]
     if account_locator is not None:
+        locator_window = {**window, "account_locator": account_locator}
         # org_spend_daily + rate_sheet_daily are scoped to the account locator.
         jobs.extend(
             SourceJob(key, source.sql, locator_window)
