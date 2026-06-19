@@ -132,9 +132,11 @@ def fetch_ai_consumption_daily(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Run each branch concurrently; skip branches that error.
 
-    Returns (rows, skipped_branch_ids). Any SnowflakeQueryError on a single
-    branch marks that branch unavailable and is not propagated — the remaining
-    branches still complete. Rows are returned in deterministic branch order.
+    Returns (rows, skipped_branch_ids). Any SnowflakeQueryError raised by a
+    branch (including subclasses such as SnowflakeObjectUnavailableError) is
+    collapsed to a skipped branch — it is never propagated to the caller. All
+    other exceptions propagate normally. Rows are returned in deterministic
+    branch order.
     """
     bind_params = {"window_days": window_days}
     jobs = [SourceJob(branch.id, branch.sql, bind_params) for branch in AI_CONSUMPTION_BRANCHES]
@@ -143,7 +145,9 @@ def fetch_ai_consumption_daily(
     skipped: list[str] = []
     for branch in AI_CONSUMPTION_BRANCHES:  # deterministic order
         outcome = outcomes[branch.id]
-        if outcome.available and outcome.rows is not None:
+        if outcome.available:
+            # rows is always a list when available=True; assert narrows the type
+            assert outcome.rows is not None
             rows.extend(outcome.rows)
         else:
             skipped.append(branch.id)

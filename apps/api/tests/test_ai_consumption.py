@@ -70,11 +70,8 @@ def test_real_query_error_skips_branch():
 
 
 def test_ai_branches_run_in_parallel_and_skip_unavailable():
-    calls = []
-
     def execute(sql, params):
         time.sleep(0.1)
-        calls.append(sql)
         if "cortex_search" in sql:  # one unavailable branch
             raise SnowflakeObjectUnavailableError("nope")
         return [{"row": 1}]
