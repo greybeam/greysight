@@ -27,6 +27,9 @@ function AccountChromeProbe() {
       <button onClick={account.onSignOut} type="button">
         Sign out
       </button>
+      <button onClick={account.openAddAccount} type="button">
+        Add account
+      </button>
       {account.signOutError ? <p role="alert">{account.signOutError}</p> : null}
     </div>
   );
@@ -51,7 +54,10 @@ const session: AuthSession = {
   user: { email: "owner@example.com", appMetadata: null },
 };
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  window.localStorage.clear();
+});
 
 describe("OrgShell", () => {
   it("renders children with the demo banner when auth is not required", () => {
@@ -373,6 +379,68 @@ describe("OrgShell", () => {
     expect(onOrganizationChange).toHaveBeenLastCalledWith(null);
   });
 
+  it("selects the persisted org from localStorage when still a member", async () => {
+    window.localStorage.setItem("greysight.activeOrganizationId", "org-2");
+    const onOrganizationChange = vi.fn();
+    render(
+      <OrgShell
+        authRequired
+        authClient={authClient(session)}
+        fetchMemberships={vi.fn().mockResolvedValue([
+          { id: "org-1", name: "Alpha", accountLocator: "AAA" },
+          { id: "org-2", name: "Beta", accountLocator: "BBB" },
+        ])}
+        onOrganizationChange={onOrganizationChange}
+      >
+        <p>dashboard</p>
+      </OrgShell>,
+    );
+    await waitFor(() =>
+      expect(onOrganizationChange).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "org-2" }),
+      ),
+    );
+    // A null notify is allowed while loading (loading-screen path), but the
+    // dashboard must be notified with the CORRECT org exactly once and never
+    // with a different/wrong org (the transient wrong-org the reconcile effect
+    // was designed to prevent).
+    const orgCalls = onOrganizationChange.mock.calls.map((c) => c[0]).filter(Boolean);
+    expect(orgCalls).toHaveLength(1);
+    expect(orgCalls[0]).toEqual(expect.objectContaining({ id: "org-2" }));
+  });
+
+  it("falls back to the first org and clears a stale persisted id", async () => {
+    window.localStorage.setItem("greysight.activeOrganizationId", "gone");
+    const onOrganizationChange = vi.fn();
+    render(
+      <OrgShell
+        authRequired
+        authClient={authClient(session)}
+        fetchMemberships={vi
+          .fn()
+          .mockResolvedValue([{ id: "org-1", name: "Alpha", accountLocator: "AAA" }])}
+        onOrganizationChange={onOrganizationChange}
+      >
+        <p>dashboard</p>
+      </OrgShell>,
+    );
+    await waitFor(() =>
+      expect(onOrganizationChange).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "org-1" }),
+      ),
+    );
+    // A null notify is allowed while loading (loading-screen path), but the
+    // dashboard must be notified with the CORRECT org exactly once and never
+    // with a different/wrong org (the transient wrong-org the reconcile effect
+    // was designed to prevent).
+    const orgCalls = onOrganizationChange.mock.calls.map((c) => c[0]).filter(Boolean);
+    expect(orgCalls).toHaveLength(1);
+    expect(orgCalls[0]).toEqual(expect.objectContaining({ id: "org-1" }));
+    expect(
+      window.localStorage.getItem("greysight.activeOrganizationId"),
+    ).toBeNull();
+  });
+
   it("signs out and clears the selected organization", async () => {
     const signOut = vi.fn().mockResolvedValue({ error: null });
     const onOrganizationChange = vi.fn();
@@ -394,5 +462,53 @@ describe("OrgShell", () => {
 
     await waitFor(() => expect(signOut).toHaveBeenCalled());
     expect(onOrganizationChange).toHaveBeenLastCalledWith(null);
+  });
+
+  async function openAddAccountModal() {
+    render(
+      <OrgShell
+        authRequired
+        authClient={authClient(session)}
+        fetchMemberships={vi
+          .fn()
+          .mockResolvedValue([{ id: "org-1", name: "Acme", accountLocator: null }])}
+      >
+        <AccountChromeProbe />
+      </OrgShell>,
+    );
+    await screen.findByText("dashboard");
+    fireEvent.click(screen.getByRole("button", { name: "Add account" }));
+    return await screen.findByRole("dialog");
+  }
+
+  it("closes the add-account modal when the Cancel button is clicked", async () => {
+    await openAddAccountModal();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("closes the add-account modal when the backdrop is pressed", async () => {
+    const dialog = await openAddAccountModal();
+    // mouseDown on the dialog element itself: target === currentTarget, so the
+    // backdrop's outside-press guard fires and the modal closes.
+    fireEvent.mouseDown(dialog);
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("keeps the add-account modal open when pressing inside the modal content", async () => {
+    await openAddAccountModal();
+    // mouseDown on a descendant of the content (the wizard heading): the
+    // backdrop guard sees target !== currentTarget, so it must not close. This
+    // protects a drag/text-selection that starts inside and releases on the
+    // backdrop from discarding partially-entered credentials.
+    const wizardHeading = screen.getByText(/connect your snowflake account/i);
+    fireEvent.mouseDown(wizardHeading);
+    // Give any (incorrect) close handler a chance to run.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 });

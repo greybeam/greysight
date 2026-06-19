@@ -195,14 +195,18 @@ def test_secret_lifecycle_hardening() -> None:
     assert "and (secret_id is not null or status <> 'invalid')" in sql
 
 
-def test_atomic_create_rpc_and_one_org_guard() -> None:
+def test_create_rpc_lifts_one_org_cap_and_dedupes_account() -> None:
     sql = read_migration_sql()
     assert "create or replace function create_org_with_snowflake_connection" in sql
-    # race-safe: advisory lock keyed on the user id, inside the txn
-    assert "pg_advisory_xact_lock" in sql
-    # v1 one-org guard enforced in the DB, not the app
-    assert "create unique index one_owner_membership_per_user" in sql
-    assert "where role = 'owner'" in sql
+    # The one-owner cap is lifted: the new migration drops the index and the
+    # create RPC no longer guards on existing ownership.
+    assert "drop index if exists one_owner_membership_per_user" in sql
+    # Duplicate Snowflake accounts are blocked by a partial unique index on the
+    # upper-cased account, scoped to active connections so a disconnected
+    # account can be re-onboarded.
+    assert "create unique index org_active_account_unique" in sql
+    assert "(upper(account))" in sql
+    assert "where status = 'active'" in sql
     # service-role only
     block = sql.split(
         "grant execute on function create_org_with_snowflake_connection", 1

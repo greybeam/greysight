@@ -222,10 +222,6 @@ describe("CostDashboard", () => {
         id: "run-org-a",
         source: "snowflake" as const,
       },
-      header: {
-        ...demoDashboardView.header,
-        accountLocator: "ORG_A",
-      },
     };
     const { rerender } = render(
       <CostDashboard
@@ -239,7 +235,8 @@ describe("CostDashboard", () => {
       />,
     );
 
-    expect(screen.getByText("ORG_A")).toBeInTheDocument();
+    // Data is pre-loaded; the overview section should be ready (no skeleton).
+    expect(screen.queryByTestId("overview-skeleton")).not.toBeInTheDocument();
 
     rerender(
       <CostDashboard
@@ -252,9 +249,6 @@ describe("CostDashboard", () => {
       />,
     );
 
-    await waitFor(() =>
-      expect(screen.queryByText("ORG_A")).not.toBeInTheDocument(),
-    );
     expect(
       screen.getByTestId("dashboard-section-overview"),
     ).toBeInTheDocument();
@@ -326,6 +320,7 @@ describe("CostDashboard", () => {
 
   it("allows a new run after a pending range response settles", async () => {
     const pendingRange = createDeferred<ReturnType<typeof demoViewForRange>>();
+    const NEW_RUN_SENTINEL = "$9,999.99";
     let defaultLoadCount = 0;
     vi.mocked(fetchDemoDashboardView).mockImplementation(async (range) => {
       if (range?.startDate === "2026-06-01") {
@@ -335,13 +330,10 @@ describe("CostDashboard", () => {
         defaultLoadCount += 1;
         return {
           ...demoViewForRange(range),
-          run: {
-            ...demoDashboardView.run,
-            id: defaultLoadCount === 1 ? "initial-run" : "new-run",
-          },
-          header: {
-            ...demoDashboardView.header,
-            accountLocator: defaultLoadCount === 1 ? "INITIAL_RUN" : "NEW_RUN",
+          totalSpend: {
+            ...demoDashboardView.totalSpend,
+            totalLabel:
+              defaultLoadCount === 1 ? demoDashboardView.totalSpend.totalLabel : NEW_RUN_SENTINEL,
           },
         };
       }
@@ -350,7 +342,7 @@ describe("CostDashboard", () => {
 
     render(<CostDashboard demoMode />);
 
-    expect(await screen.findByText("INITIAL_RUN")).toBeInTheDocument();
+    await screen.findByLabelText("Start date");
     fireEvent.change(screen.getByLabelText("Start date"), {
       target: { value: "2026-06-01" },
     });
@@ -369,29 +361,36 @@ describe("CostDashboard", () => {
     expect(runButton).toBeDisabled();
 
     await act(async () => {
-      pendingRange.resolve({
-        ...demoViewForRange({ startDate: "2026-06-01", endDate: "2026-06-08" }),
-        run: {
-          ...demoDashboardView.run,
-          id: "custom-range-run",
-        },
-        header: {
-          ...demoDashboardView.header,
-          accountLocator: "CUSTOM_RANGE",
-        },
-      });
+      pendingRange.resolve(
+        demoViewForRange({ startDate: "2026-06-01", endDate: "2026-06-08" }),
+      );
     });
 
-    expect(await screen.findByText("CUSTOM_RANGE")).toBeInTheDocument();
     await waitFor(() => expect(runButton).not.toBeDisabled());
 
+    // Record call count before clicking Run analysis so we can prove a NEW call
+    // fires (not just that the initial-load call happened to match windowDays=30).
+    const callCountBeforeRun = vi.mocked(fetchDemoDashboardView).mock.calls.length;
+
     fireEvent.click(runButton);
-    expect(await screen.findByText("NEW_RUN")).toBeInTheDocument();
-    expect(screen.getByText("NEW_RUN")).toBeInTheDocument();
+
+    // The click must trigger exactly one additional fetchDemoDashboardView({windowDays:30}).
+    await waitFor(() =>
+      expect(vi.mocked(fetchDemoDashboardView).mock.calls.length).toBe(callCountBeforeRun + 1),
+    );
+    expect(
+      vi.mocked(fetchDemoDashboardView).mock.calls[callCountBeforeRun][0],
+    ).toEqual({ windowDays: 30 });
+
+    // The sentinel value from the new run's response must become visible,
+    // proving the result was applied (not just that the call was made).
+    expect(await screen.findByText(NEW_RUN_SENTINEL)).toBeInTheDocument();
+    expect(runButton).not.toBeDisabled();
   });
 
   it("allows a new run after a pending range rejection settles", async () => {
     const pendingRange = createDeferred<ReturnType<typeof demoViewForRange>>();
+    const NEW_RUN_SENTINEL = "$8,888.88";
     let defaultLoadCount = 0;
     vi.mocked(fetchDemoDashboardView).mockImplementation(async (range) => {
       if (range?.startDate === "2026-06-01") {
@@ -401,13 +400,10 @@ describe("CostDashboard", () => {
         defaultLoadCount += 1;
         return {
           ...demoViewForRange(range),
-          run: {
-            ...demoDashboardView.run,
-            id: defaultLoadCount === 1 ? "initial-run" : "new-run",
-          },
-          header: {
-            ...demoDashboardView.header,
-            accountLocator: defaultLoadCount === 1 ? "INITIAL_RUN" : "NEW_RUN",
+          totalSpend: {
+            ...demoDashboardView.totalSpend,
+            totalLabel:
+              defaultLoadCount === 1 ? demoDashboardView.totalSpend.totalLabel : NEW_RUN_SENTINEL,
           },
         };
       }
@@ -416,7 +412,7 @@ describe("CostDashboard", () => {
 
     render(<CostDashboard demoMode />);
 
-    expect(await screen.findByText("INITIAL_RUN")).toBeInTheDocument();
+    await screen.findByLabelText("Start date");
     fireEvent.change(screen.getByLabelText("Start date"), {
       target: { value: "2026-06-01" },
     });
@@ -443,9 +439,22 @@ describe("CostDashboard", () => {
     ).toBeInTheDocument();
     await waitFor(() => expect(runButton).not.toBeDisabled());
 
+    // Record call count before clicking Run analysis to prove a NEW call fires.
+    const callCountBeforeRun = vi.mocked(fetchDemoDashboardView).mock.calls.length;
+
     fireEvent.click(runButton);
-    expect(await screen.findByText("NEW_RUN")).toBeInTheDocument();
-    expect(screen.getByText("NEW_RUN")).toBeInTheDocument();
+
+    // The click must trigger exactly one additional fetchDemoDashboardView({windowDays:30}).
+    await waitFor(() =>
+      expect(vi.mocked(fetchDemoDashboardView).mock.calls.length).toBe(callCountBeforeRun + 1),
+    );
+    expect(
+      vi.mocked(fetchDemoDashboardView).mock.calls[callCountBeforeRun][0],
+    ).toEqual({ windowDays: 30 });
+
+    // The sentinel value from the new run's response must become visible,
+    // proving the result was applied. The range error is cleared by the new run.
+    expect(await screen.findByText(NEW_RUN_SENTINEL)).toBeInTheDocument();
     expect(
       screen.queryByText("Could not load selected date range."),
     ).not.toBeInTheDocument();
@@ -519,15 +528,6 @@ describe("CostDashboard", () => {
       await screen.findByText("Could not load selected date range."),
     ).toBeInTheDocument();
     expect(screen.getByText("Overview")).toBeInTheDocument();
-  });
-
-  it("shows the account locator in the header", async () => {
-    vi.mocked(fetchDemoDashboardView).mockResolvedValue(demoDashboardView);
-
-    render(<CostDashboard demoMode />);
-
-    expect(await screen.findByText("DEMO123")).toBeInTheDocument();
-    expect(screen.getByText(/Account:/)).toBeInTheDocument();
   });
 
   it("renders the mixed-currency unsupported state from metadata", async () => {
