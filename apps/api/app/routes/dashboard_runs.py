@@ -187,6 +187,14 @@ class InMemoryDashboardRunRepository:
             updated_at=now,
         )
         retention_expires_at = now + timedelta(days=retention_days)
+        # Seed source states for every base key so completed-view section_statuses
+        # reflect final readiness rather than defaulting to "idle" → "pending".
+        # A key present in datasets (even as an empty list) is "ready" — the data
+        # window had no rows, not a source failure. An absent key is "unavailable".
+        seeded_source_states = {
+            key: {"status": "ready" if key in datasets else "unavailable"}
+            for key in BASE_RUN_SOURCE_KEYS
+        }
         with self._lock:
             self._runs[run_id] = run
             self._summaries[run_id] = summary
@@ -199,6 +207,7 @@ class InMemoryDashboardRunRepository:
                 for dataset_key, rows in datasets.items()
             }
             self._retention_days[run_id] = retention_days
+            self._source_states[run_id] = seeded_source_states
             self._store_source_bounds(run_id, datasets)
         return run
 

@@ -240,6 +240,75 @@ def test_base_complete_source_is_noop_on_terminal_run():
     assert datasets["service_spend_daily"] == [{"usage_date": "2026-05-01"}]
 
 
+def test_completed_snapshot_all_datasets_present_yields_ready_section_statuses():
+    """Regression: create_completed_snapshot must seed _source_states so that
+    read_dashboard_run_view returns section_statuses = {all: ready} when all
+    base datasets are present — not all-pending (the pre-fix bug).
+
+    Empty lists are intentional: an empty dataset IS present in the snapshot
+    (key exists in the dict), so it should produce status=ready, not pending.
+    The view builder handles empty lists gracefully (renders empty charts).
+    """
+    dr.dashboard_run_repository.clear()
+    # All base keys present; empty lists so the view builder has no rows to
+    # validate (avoiding required-field errors on stub data).
+    all_datasets: dict = {key: [] for key in dr.BASE_RUN_SOURCE_KEYS}
+    run = dr.dashboard_run_repository.create_completed_snapshot(
+        organization_id=None,
+        source="snowflake",
+        window_days=30,
+        summary={},
+        datasets=all_datasets,
+        retention_days=7,
+    )
+    run_id = UUID(run.id)
+
+    payload = read_dashboard_run_view(run_id, None, None, None, _anon())
+    assert payload["run"]["status"] == "completed"
+    assert payload["section_statuses"] == {
+        "overview": "ready",
+        "warehouse": "ready",
+        "storage": "ready",
+    }, (
+        "All base datasets present — expected all sections ready; "
+        f"got {payload['section_statuses']!r}"
+    )
+
+
+def test_completed_snapshot_missing_storage_dataset_yields_unavailable_storage():
+    """Regression: a completed snapshot missing database_storage_daily should
+    report storage=unavailable while other present sources remain ready."""
+    dr.dashboard_run_repository.clear()
+    # Omit database_storage_daily (the storage section dependency).
+    partial_datasets: dict = {
+        key: []
+        for key in dr.BASE_RUN_SOURCE_KEYS
+        if key != "database_storage_daily"
+    }
+    run = dr.dashboard_run_repository.create_completed_snapshot(
+        organization_id=None,
+        source="snowflake",
+        window_days=30,
+        summary={},
+        datasets=partial_datasets,
+        retention_days=7,
+    )
+    run_id = UUID(run.id)
+
+    payload = read_dashboard_run_view(run_id, None, None, None, _anon())
+    assert payload["run"]["status"] == "completed"
+    section = payload["section_statuses"]
+    assert section["storage"] == "unavailable", (
+        f"Expected storage=unavailable, got {section['storage']!r}"
+    )
+    assert section["overview"] == "ready", (
+        f"Expected overview=ready, got {section['overview']!r}"
+    )
+    assert section["warehouse"] == "ready", (
+        f"Expected warehouse=ready, got {section['warehouse']!r}"
+    )
+
+
 def test_deferred_ai_source_still_updates_after_completion():
     """The deferred-AI post-completion lifecycle must keep working: an AI source
     legitimately completes AFTER the base run is completed."""
