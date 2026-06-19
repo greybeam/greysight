@@ -36,11 +36,11 @@ vi.mock("../../lib/dashboard-api", () => ({
 // fetch once, surface the result via `onResult`, then resolve with it as the
 // terminal view. Mirrors the real `pollUntilTerminal` for a single-shot result.
 function mockPollResolvesWith(view: DashboardView) {
-  vi.mocked(pollUntilTerminal).mockImplementation(
+  vi.mocked(pollUntilTerminal<DashboardView>).mockImplementation(
     async (fetcher, _isTerminal, options) => {
-      const result = (await fetcher()) as DashboardView;
+      const result = await fetcher();
       options?.onResult?.(result);
-      return view as never;
+      return view;
     },
   );
 }

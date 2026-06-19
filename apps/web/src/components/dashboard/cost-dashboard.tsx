@@ -273,15 +273,24 @@ function CostDashboardContent({
       // there. The `finally` clears it as a backstop for early returns/errors.
       let firstViewApplied = false;
 
+      const isTerminal = (view: DashboardView) =>
+        TERMINAL_RUN_STATUSES.has(view.run.status);
+
       const finalView = await pollUntilTerminal(
         () => fetchDashboardView(run.id, DEFAULT_VIEW_RANGE, options),
-        (view) => TERMINAL_RUN_STATUSES.has(view.run.status),
+        isTerminal,
         {
           intervalMs: 1_500,
           maxAttempts: 60,
           onResult: (view) => {
             // Ignore partial views from a superseded run before any state write.
             if (runGeneration !== runGenerationRef.current) {
+              return;
+            }
+            // Skip terminal views here — the post-await block applies the final
+            // view and clears sectionReadiness, so painting it twice would cause
+            // a brief readiness churn with no benefit.
+            if (isTerminal(view)) {
               return;
             }
             setSectionReadiness(view.sectionStatuses);
@@ -304,6 +313,7 @@ function CostDashboardContent({
           status: finalView.run.status,
           message: finalView.run.error ?? finalView.run.user_safe_message,
         }));
+        setSectionReadiness(undefined);
         return;
       }
 
