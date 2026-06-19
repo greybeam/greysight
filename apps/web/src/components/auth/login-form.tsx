@@ -1,147 +1,148 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { isWorkEmail } from "../../lib/work-email";
 import type { BrowserAuthClient } from "../../lib/supabase-client";
 
 type LoginFormProps = {
   authClient: BrowserAuthClient | null;
 };
 
-const CODE_PATTERN = /^\d{6}$/;
+const TERMS_URL = "https://www.greybeam.ai/terms";
+const GENERIC_ERROR = "Something went wrong. Please try again.";
+const RATE_LIMIT_ERROR = "Too many requests. Please wait a moment and try again.";
+const WORK_EMAIL_ERROR = "Please use your work email.";
+
+// Never surface provider/internal wording verbatim. Recognize the one
+// user-actionable case (rate limiting) and fall back to the generic message for
+// everything else.
+function friendlyAuthError(message?: string | null): string {
+  if (message && /rate limit|too many/i.test(message)) {
+    return RATE_LIMIT_ERROR;
+  }
+  return GENERIC_ERROR;
+}
 
 export default function LoginForm({ authClient }: LoginFormProps) {
-  const [step, setStep] = useState<"request" | "verify">("request");
   const [email, setEmail] = useState("");
-  const [code, setCode] = useState("");
+  const [sent, setSent] = useState(false);
+  const [sentEmail, setSentEmail] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const sentHeadingRef = useRef<HTMLHeadingElement>(null);
 
-  async function requestCode(event: React.FormEvent<HTMLFormElement>) {
+  // Move focus to the confirmation heading when the sent view appears so
+  // keyboard / screen-reader users land on the new content.
+  useEffect(() => {
+    if (sent) {
+      sentHeadingRef.current?.focus();
+    }
+  }, [sent]);
+
+  async function requestLink(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
     if (!authClient) {
       setError("Authentication is not configured.");
       return;
     }
+    const trimmed = email.trim();
+    if (!isWorkEmail(trimmed)) {
+      setError(WORK_EMAIL_ERROR);
+      return;
+    }
     setPending(true);
     try {
-      const result = await authClient.signInWithOtp({ email: email.trim() });
+      const result = await authClient.signInWithOtp({ email: trimmed });
       if (result.error) {
-        setError(result.error.message);
+        setError(friendlyAuthError(result.error.message));
         return;
       }
-      setCode("");
-      setStep("verify");
+      setSentEmail(trimmed);
+      setSent(true);
     } catch {
-      setError("Something went wrong. Please try again.");
-    } finally {
-      setPending(false);
-    }
-  }
-
-  async function verifyCode(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setError(null);
-    if (!authClient) {
-      setError("Authentication is not configured.");
-      return;
-    }
-    if (!CODE_PATTERN.test(code.trim())) {
-      setError("Enter the 6-digit code from your email.");
-      return;
-    }
-    setPending(true);
-    try {
-      const result = await authClient.verifyOtp({
-        email: email.trim(),
-        token: code.trim(),
-      });
-      if (result.error) {
-        setError(result.error.message);
-      }
-    } catch {
-      setError("Something went wrong. Please try again.");
+      setError(GENERIC_ERROR);
     } finally {
       setPending(false);
     }
   }
 
   function resetEmail() {
-    setStep("request");
+    setSent(false);
     setError(null);
-    setCode("");
+  }
+
+  if (sent) {
+    return (
+      <div className="space-y-4 text-center">
+        <h2
+          className="text-base font-semibold text-slate-50 focus:outline-none"
+          ref={sentHeadingRef}
+          tabIndex={-1}
+        >
+          Check your email
+        </h2>
+        <p className="text-sm text-slate-400">
+          We sent a sign-in link to{" "}
+          <span className="font-medium text-slate-200">{sentEmail}</span>.
+          Click it to finish signing in.
+        </p>
+        <button
+          className="text-sm font-medium text-slate-300 underline hover:text-slate-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-chart-purple"
+          onClick={resetEmail}
+          type="button"
+        >
+          Send to a different email
+        </button>
+      </div>
+    );
   }
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-      {step === "request" ? (
-        <form className="space-y-4" onSubmit={requestCode}>
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-slate-700" htmlFor="email">
-              Email
-            </label>
-            <input
-              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-950 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
-              id="email"
-              name="email"
-              onChange={(event) => setEmail(event.target.value)}
-              required
-              type="email"
-              value={email}
-            />
-          </div>
-          <button
-            className="rounded-md bg-slate-950 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 disabled:bg-slate-400"
-            disabled={pending}
-            type="submit"
-          >
-            {pending ? "Sending code" : "Email me a code"}
-          </button>
-        </form>
-      ) : (
-        <form className="space-y-4" onSubmit={verifyCode}>
-          <p className="text-sm text-slate-600">
-            Enter the 6-digit code we emailed to{" "}
-            <span className="font-medium text-slate-950">{email.trim()}</span>.
-          </p>
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-slate-700" htmlFor="code">
-              6-digit code
-            </label>
-            <input
-              autoComplete="one-time-code"
-              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm tracking-widest text-slate-950 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200"
-              id="code"
-              inputMode="numeric"
-              name="code"
-              onChange={(event) => setCode(event.target.value)}
-              required
-              value={code}
-            />
-          </div>
-          <div className="flex items-center gap-3">
-            <button
-              className="rounded-md bg-slate-950 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 disabled:bg-slate-400"
-              disabled={pending}
-              type="submit"
-            >
-              {pending ? "Verifying" : "Verify code"}
-            </button>
-            <button
-              className="text-sm font-medium text-slate-600 hover:text-slate-950"
-              onClick={resetEmail}
-              type="button"
-            >
-              Use a different email
-            </button>
-          </div>
-        </form>
-      )}
+    <form className="space-y-4" onSubmit={requestLink}>
+      <label className="sr-only" htmlFor="email">
+        Email
+      </label>
+      <div className="flex gap-2">
+        <input
+          autoComplete="email"
+          className="flex-1 rounded-md border border-slate-600 bg-canvas px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-chart-purple focus:outline-none focus:ring-1 focus:ring-chart-purple"
+          disabled={pending}
+          id="email"
+          name="email"
+          onChange={(event) => setEmail(event.target.value)}
+          placeholder="your@work-email.com"
+          required
+          type="email"
+          value={email}
+        />
+        <button
+          className="shrink-0 whitespace-nowrap rounded-md bg-chart-purple px-4 py-2 text-sm font-medium text-white hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-chart-purple focus-visible:ring-offset-2 focus-visible:ring-offset-surface disabled:opacity-60"
+          disabled={pending}
+          type="submit"
+        >
+          {pending ? "Sending link" : "Email link"}
+        </button>
+      </div>
       {error ? (
-        <p className="mt-3 text-sm font-medium text-red-700" role="alert">
+        <p className="text-sm font-medium text-red-400" role="alert">
           {error}
         </p>
       ) : null}
-    </div>
+      {/* TODO: the published Terms of Service at greybeam.ai/terms needs an
+          update; this links to the current page for now. */}
+      <p className="text-center text-xs text-slate-500">
+        By continuing you agree to our{" "}
+        <a
+          className="text-slate-400 underline hover:text-slate-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-chart-purple"
+          href={TERMS_URL}
+          rel="noopener noreferrer"
+          target="_blank"
+        >
+          Terms of Service
+        </a>
+        .
+      </p>
+    </form>
   );
 }

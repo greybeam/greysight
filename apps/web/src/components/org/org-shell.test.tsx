@@ -86,7 +86,7 @@ describe("OrgShell", () => {
           <p>dashboard</p>
         </OrgShell>,
       );
-      expect(markup).toContain("Loading authentication");
+      expect(markup).toContain("Authenticating");
       expect(markup).not.toContain("Authentication is not configured");
     } finally {
       if (originalUrl === undefined) {
@@ -118,7 +118,7 @@ describe("OrgShell", () => {
           <p>dashboard</p>
         </OrgShell>,
       );
-      expect(markup).toContain("Loading authentication");
+      expect(markup).toContain("Authenticating");
       expect(markup).not.toContain("Authentication is not configured");
     } finally {
       if (originalUrl === undefined) {
@@ -132,6 +132,40 @@ describe("OrgShell", () => {
         process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = originalKey;
       }
     }
+  });
+
+  it("shows the login form inside the dark brand card when there is no session", async () => {
+    render(
+      <OrgShell authClient={authClient(null)} authRequired>
+        <p>dashboard</p>
+      </OrgShell>,
+    );
+    expect(await screen.findByRole("button", { name: "Email link" })).toBeInTheDocument();
+    // The "Greybeam" wordmark is rendered only by AuthCard, so asserting it
+    // proves the login form is wrapped in the new card (the old shell rendered
+    // no wordmark). This fails before Task 5's wiring and passes after.
+    expect(screen.getByText("Greybeam")).toBeInTheDocument();
+  });
+
+  it("shows the workspace-loading status while memberships resolve", async () => {
+    let resolveMemberships: (orgs: MembershipOrganization[]) => void = () => {};
+    const fetchMemberships = vi.fn(
+      () =>
+        new Promise<MembershipOrganization[]>((resolve) => {
+          resolveMemberships = resolve;
+        }),
+    );
+    render(
+      <OrgShell
+        authClient={authClient(session)}
+        authRequired
+        fetchMemberships={fetchMemberships}
+      >
+        <p>dashboard</p>
+      </OrgShell>,
+    );
+    expect(await screen.findByText("Loading workspace")).toBeInTheDocument();
+    resolveMemberships([]);
   });
 
   it("renders the login form when there is no session", async () => {
@@ -213,6 +247,7 @@ describe("OrgShell", () => {
     expect(
       await screen.findByText(/couldn’t load your organizations/i),
     ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
     expect(
       screen.queryByText(/coming soon/i),
     ).not.toBeInTheDocument();
