@@ -39,7 +39,7 @@ Two independent layers:
 
 - **Delivery:** poll per-dataset (reuse the deferred-source/poll pattern).
 - **Concurrency:** bounded, default 8, env-configurable — enforced **process-wide**
-  (semaphore), not per-run (Codex finding 4).
+  by a single module-level `ThreadPoolExecutor`, not per-run (Codex finding 4).
 - **AI branches:** parallelized alongside base queries.
 - **Run lifecycle:** `POST` returns `202 running` immediately; frontend polls.
 - **Frontend:** per-section readiness; no extra progress UI.
@@ -59,7 +59,7 @@ directly would silently filter to **zero rows**. Resolution:
 
 - **Migration:** add nullable `account_locator text` to
   `organization_snowflake_connections` (`supabase/migrations/`). Existing rows
-  start `null` and are healed lazily (see fallback).
+  start `null` and use the run-only fallback below until re-validated.
 - **Capture at validation:** `validate_snowflake_connection`
   (`snowflake_client.py:169`) already runs validation queries on the
   connection — add `select current_account() as account_locator`, return it, and
@@ -69,7 +69,9 @@ directly would silently filter to **zero rows**. Resolution:
   (`org_connection_resolver.py`) expose `account_locator`.
 - **Fallback (defensive):** if the stored locator is `null` (legacy row not yet
   re-validated), the run fetches it once via `current_account()` at worker
-  start and persists it — so the optimization degrades gracefully, never breaks.
+  start and uses it only for that run. It does not persist the fallback value;
+  the connection save/validate path remains the persistence path. The
+  optimization degrades gracefully without breaking legacy rows.
 
 With the locator available up front, the run no longer runs `current_account()`
 as a gating query; the `current_account` dataset (used only for the
@@ -81,7 +83,7 @@ metadata's account display) is synthesized from the stored locator.
   unit-tested; pure aside from the injected executor):
   - Accepts the registry sources, an injectable `execute` fn (same signature
     used today, so tests stay hermetic and deterministic), the bound
-    `account_locator`, and the shared concurrency primitive.
+    `account_locator`, and the shared module-level executor.
   - Runs queries concurrently on threads. Safe because `execute_source_query`
     opens/closes its own connection per call with no shared mutable state.
   - **No dependency edge.** With the stored locator, every source launches at
@@ -96,12 +98,12 @@ metadata's account display) is synthesized from the stored locator.
     (preserves `DashboardSourcesUnavailableError`).
   - Cheap Python transforms (`account_spend_daily`, `top_warehouses_table`,
     `bound_user_compute_rows`) run inline the instant their parent dataset lands.
-- **Concurrency is process-wide.** A module-level
-  `BoundedSemaphore(GREYSIGHT_QUERY_CONCURRENCY)` (default 8) caps total
-  in-flight Snowflake connections **across all active runs**, so two
+- **Concurrency is process-wide.** A single module-level
+  `ThreadPoolExecutor(max_workers=GREYSIGHT_QUERY_CONCURRENCY)` (default 8)
+  caps total in-flight Snowflake queries **across all active runs**, so two
   simultaneous users cannot push an X-Small warehouse past its default
-  `max_concurrency_level` of 8 (Codex finding 4). The worker thread pool may be
-  larger; the semaphore is the real gate.
+  `max_concurrency_level` of 8 (Codex finding 4). The executor is shared, not
+  created per call.
 - **Config:** `GREYSIGHT_QUERY_CONCURRENCY` (default 8) in `app/config.py`.
 
 ## Layer 2 — Async run lifecycle (backend)
@@ -125,7 +127,8 @@ metadata's account display) is synthesized from the stored locator.
   - `create_running_run(...)` — registers a `running` run with all expected
     sources `pending` (replaces the synchronous `create_completed_snapshot` on
     the create path; the old method stays for tests / demo).
-  - `set_dataset(run_id, key, rows)` + `mark_source_ready/unavailable` —
+  - `set_dataset(run_id, key, rows)` plus generalized
+    `claim_source` / `complete_source` / `fail_source` for base-query sources —
     incremental, lock-guarded, with the running-state staleness guard above.
   - `finalize_run(run_id)` — sets `completed`/`failed`, recomputes
     `source_bounds`, stores `metadata` + `summary` (so the existing
@@ -134,11 +137,17 @@ metadata's account display) is synthesized from the stored locator.
 
 ## Layer 2 — Partial view contract (backend)
 
-- **Section wire format** (Codex finding 8): every section in the view response
-  is a discriminated wrapper
-  `{ "status": "pending" | "ready" | "unavailable", "data": <SectionData> | null }`.
-  This is uniform for both running and completed runs, so frontend parsers have
-  one shape to handle and never call typed accessors on a missing object.
+- **Section wire format** (Codex finding 8): rather than a discriminated
+  per-section wrapper (which would force rewriting every existing parser and
+  component), the running view keeps the **existing section shapes** — each
+  required section is always present, carrying empty/zeroed data when not yet
+  ready — and adds a **top-level `section_statuses` map**
+  `{ "overview" | "warehouse" | "storage": "pending" | "ready" | "unavailable" }`.
+  The current `parseDashboardView` already tolerates empty sections and the
+  frontend already keys reveal state by these section names, so this is the
+  lower-churn choice. `section_statuses` defaults to all-`ready` for legacy/demo
+  payloads; Snowflake completed/failed views compute it from final source
+  records so unavailable sources remain visible.
 - **Running-run bounds** (Codex finding 2): while `running`, the view uses
   **provisional bounds** derived from whatever datasets have landed —
   `through_date = max(usage_date across ready account/org datasets)` (falling
@@ -156,20 +165,21 @@ metadata's account display) is synthesized from the stored locator.
 - `GET /{run_id}/view` is safe to call repeatedly while `running`; once
   `completed`, behavior (incl. range changes) is identical to today.
 - AI keeps its existing `/sources/{id}` poll; its 10 branches now run in
-  parallel inside the shared semaphore.
+  parallel on the shared executor.
 
 ## Layer 2 — Frontend (apps/web)
 
-- After the `202`, **poll `GET /view`** on an interval (reuse the existing
-  poll/backoff helpers in `dashboard-api.ts`). Render each section/chart the
-  moment its `status` flips to `ready`; keep skeletons for `pending`; show an
-  unavailable state for `unavailable`; stop polling when the run is
-  `completed`/`failed`.
+- After the `202`, **poll `GET /view`** on an interval (extend the existing
+  poll/backoff helper in `dashboard-api.ts`, or keep the `/view` loop local to
+  `loadSnowflakeRun`). Render each section/chart the moment its `status` flips
+  to `ready`; keep skeletons for `pending` and `unavailable`; stop polling when
+  the run is `completed`/`failed`.
 - Replace the single `dataReady` boolean + timed 140 ms stagger in
   `use-section-statuses.ts` with **real per-section readiness** from the view
   payload. Existing skeleton components are reused untouched.
-- `dashboard-contracts.ts` mirrors the discriminated `{status, data}` section
-  wrapper; parsers tolerate `pending`/`unavailable` (data `null`).
+- `dashboard-contracts.ts` adds the top-level `section_statuses` map to
+  `DashboardView` (defaulting to all-`ready` when absent); existing section
+  parsers are unchanged and continue to tolerate empty sections.
 - The date-range-change fast path (re-derive `/view` from cached datasets, no
   Snowflake) is preserved — progressive logic applies only while `running`.
 
@@ -182,20 +192,20 @@ contract, no special-casing in the progressive frontend path.
 ## Tests
 
 - **api:** `parallel_source_runner` — full t=0 fan-out (no dependency edge),
-  process-wide semaphore cap, per-source failure → `unavailable` (by exception
+  process-wide executor cap, per-source failure → `unavailable` (by exception
   type, not row count) without failing the run, both-groups-unavailable → run
   `failed`. Injected `execute` keeps it deterministic.
 - **api:** worker lifecycle — unhandled exception still reaches a terminal
   state; stale write into an expired run is discarded; TTL auto-expiry.
 - **api:** locator persistence — validation captures + stores the locator;
-  null-locator legacy row falls back to a one-time fetch.
+  null-locator legacy row falls back to a one-time run-only fetch.
 - **api:** partial `/view` — section `status` transitions, per-section
-  dependency gating, provisional vs finalized bounds, completed-run parity with
-  today's output.
+  dependency gating, provisional vs finalized bounds, final-source statuses for
+  completed/failed runs.
 - **api:** async lifecycle — `POST` → `202 running`, poll → `completed`; update
   existing tests that assert a synchronous `completed` `POST`.
 - **web:** render-on-arrival — sections reveal independently by `status`;
-  skeletons persist for `pending`; `unavailable` renders its state; polling
+  skeletons persist for `pending` and `unavailable`; polling
   stops at `completed`. Range-change fast path unchanged after completion.
 
 ## Risks
@@ -205,12 +215,12 @@ contract, no special-casing in the progressive frontend path.
 - **Schema change:** the `account_locator` column + connection-setup capture
   touch Supabase and the validation flow; the null-locator fallback keeps legacy
   connections working until re-validated.
-- **Multi-tenant load:** addressed by the process-wide semaphore; without it,
+- **Multi-tenant load:** addressed by the process-wide executor cap; without it,
   N concurrent runs would multiply warehouse concurrency.
 - **Stale/stuck runs:** addressed by the terminal-state guarantee, the
   running-state write guard, and the wall-clock TTL.
 - **Provisional bounds** mean a running view's date axis can shift slightly
   until `finalize_run`; acceptable and converges on completion.
 - **Single-process assumption** is unchanged — the in-memory repo, the
-  module-level semaphore, and the background worker all require one worker
+  module-level executor, and the background worker all require one worker
   process, as today.
