@@ -397,6 +397,13 @@ describe("OrgShell", () => {
         expect.objectContaining({ id: "org-2" }),
       ),
     );
+    // A null notify is allowed while loading (loading-screen path), but the
+    // dashboard must be notified with the CORRECT org exactly once and never
+    // with a different/wrong org (the transient wrong-org the reconcile effect
+    // was designed to prevent).
+    const orgCalls = onOrganizationChange.mock.calls.map((c) => c[0]).filter(Boolean);
+    expect(orgCalls).toHaveLength(1);
+    expect(orgCalls[0]).toEqual(expect.objectContaining({ id: "org-2" }));
   });
 
   it("falls back to the first org and clears a stale persisted id", async () => {
@@ -419,6 +426,13 @@ describe("OrgShell", () => {
         expect.objectContaining({ id: "org-1" }),
       ),
     );
+    // A null notify is allowed while loading (loading-screen path), but the
+    // dashboard must be notified with the CORRECT org exactly once and never
+    // with a different/wrong org (the transient wrong-org the reconcile effect
+    // was designed to prevent).
+    const orgCalls = onOrganizationChange.mock.calls.map((c) => c[0]).filter(Boolean);
+    expect(orgCalls).toHaveLength(1);
+    expect(orgCalls[0]).toEqual(expect.objectContaining({ id: "org-1" }));
     expect(
       window.localStorage.getItem("greysight.activeOrganizationId"),
     ).toBeNull();

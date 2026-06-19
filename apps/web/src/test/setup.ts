@@ -33,7 +33,27 @@ class MemoryStorage implements Storage {
   }
 }
 
-Object.defineProperty(window, "localStorage", {
-  value: new MemoryStorage(),
-  configurable: true,
-});
+// Only install the polyfill when jsdom's localStorage is absent or broken
+// (e.g. Node 22+ experimental built-in that shadows jsdom and lacks
+// getItem/setItem). When jsdom already provides a working Storage, leave it
+// untouched so unrelated tests exercise real jsdom storage behaviour.
+function needsPolyfill(): boolean {
+  try {
+    const ls = window.localStorage;
+    if (!ls) return true;
+    const probe = "__setup_probe__";
+    ls.setItem(probe, "1");
+    const ok = ls.getItem(probe) === "1";
+    ls.removeItem(probe);
+    return !ok;
+  } catch {
+    return true;
+  }
+}
+
+if (needsPolyfill()) {
+  Object.defineProperty(window, "localStorage", {
+    value: new MemoryStorage(),
+    configurable: true,
+  });
+}
