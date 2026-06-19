@@ -698,6 +698,88 @@ describe("CostDashboard", () => {
     ).toBeInTheDocument();
   });
 
+  it.each([["failed"], ["expired"]] as const)(
+    "applies a %s terminal view without revealing all sections as ready",
+    async (terminalStatus) => {
+      const runningRun: DashboardRun = {
+        ...demoDashboardView.run,
+        id: "run-terminal",
+        source: "snowflake",
+        status: "running",
+      };
+      const provisionalView: DashboardView = {
+        ...demoDashboardView,
+        run: runningRun,
+        sectionStatuses: {
+          overview: "ready",
+          warehouse: "pending",
+          storage: "pending",
+        },
+      };
+      // The terminal view carries the failure status and section statuses that
+      // are NOT all ready: only overview is ready, warehouse/storage are pending.
+      const terminalRun: DashboardRun = {
+        ...runningRun,
+        status: terminalStatus,
+        user_safe_message: "The run did not finish.",
+      };
+      const terminalView: DashboardView = {
+        ...demoDashboardView,
+        run: terminalRun,
+        sectionStatuses: {
+          overview: "ready",
+          warehouse: "pending",
+          storage: "pending",
+        },
+      };
+      vi.mocked(startDashboardRun).mockResolvedValue(runningRun);
+      vi.mocked(fetchDashboardView).mockResolvedValue(provisionalView);
+      // First call surfaces the provisional (non-terminal) view via onResult,
+      // then the poll resolves with the terminal view as its final result.
+      vi.mocked(pollUntilTerminal).mockImplementation(
+        async (fetcher, _isTerminal, options) => {
+          const result = (await fetcher()) as DashboardView;
+          options?.onResult?.(result);
+          return terminalView;
+        },
+      );
+
+      render(
+        <CostDashboard
+          demoMode={false}
+          runtime={{
+            accessToken: "test-access-token",
+            organizationId: "org-123",
+            organizationName: "Acme Analytics",
+          }}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+
+      // The terminal view's error message surfaces as the inline alert.
+      expect(
+        await screen.findByText("The run did not finish."),
+      ).toBeInTheDocument();
+
+      // The terminal view is applied (overview content paints), but the pending
+      // warehouse/storage sections must NOT be revealed as ready — their
+      // skeletons remain because the terminal section statuses are the source
+      // of truth, not the all-ready timed-stagger reveal.
+      expect(
+        screen.getByText("Total Spend in Last 30 Days"),
+      ).toBeInTheDocument();
+      await waitFor(() =>
+        expect(
+          screen.getByTestId("warehouse-spend-skeleton-chart"),
+        ).toBeInTheDocument(),
+      );
+      expect(
+        screen.getByTestId("storage-spend-skeleton-chart"),
+      ).toBeInTheDocument();
+    },
+  );
+
   it("keeps the run action disabled while a queued Snowflake run is polling", async () => {
     const queuedRun: DashboardRun = {
       ...demoDashboardView.run,

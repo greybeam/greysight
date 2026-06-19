@@ -206,7 +206,7 @@ describe("pollUntilTerminal", () => {
 
   it("throws when maxAttempts is exhausted before terminal status", async () => {
     const running = makeView("running", { overview: "pending", warehouse: "pending", storage: "pending" });
-    vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() =>
       Promise.resolve(
         new Response(JSON.stringify(running), {
           status: 200,
@@ -223,6 +223,10 @@ describe("pollUntilTerminal", () => {
         { intervalMs: 0, maxAttempts: 2 },
       ),
     ).rejects.toThrow(/timed out/i);
+
+    // Polling must stop at exactly maxAttempts — one fetch per attempt, no more
+    // (no over-polling past the cap) and no fewer (no early bail).
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 });
 

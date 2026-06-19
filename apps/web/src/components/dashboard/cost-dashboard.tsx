@@ -308,12 +308,13 @@ function CostDashboardContent({
         return;
       }
       if (finalView.run.status !== "completed") {
-        setLoadState((current) => ({
-          ...current,
-          status: finalView.run.status,
-          message: finalView.run.error ?? finalView.run.user_safe_message,
-        }));
-        setSectionReadiness(undefined);
+        // Terminal failed/expired/deleted: apply the final view (so the last
+        // PROVISIONAL view isn't left on screen) but keep the server's section
+        // statuses as the source of truth. Crucially, do NOT clear
+        // sectionReadiness — that would drop to the timed-stagger reveal and
+        // misleadingly mark every section ready for a run that did not finish.
+        setSectionReadiness(finalView.sectionStatuses);
+        applyDashboardView(finalView);
         return;
       }
 

@@ -2,16 +2,24 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import type { DashboardViewSectionStatuses } from "../../lib/dashboard-contracts";
+import type {
+  DashboardViewSectionKey,
+  DashboardViewSectionStatuses,
+} from "../../lib/dashboard-contracts";
 
 export type SectionStatus = "loading" | "ready";
 
-export type DashboardSectionKey = "overview" | "warehouse" | "storage";
-
-export type DashboardSectionStatuses = Record<DashboardSectionKey, SectionStatus>;
+export type DashboardSectionStatuses = Record<
+  DashboardViewSectionKey,
+  SectionStatus
+>;
 
 // Order sections reveal in, and the gap between each reveal.
-const SECTION_ORDER: DashboardSectionKey[] = ["overview", "warehouse", "storage"];
+const SECTION_ORDER: DashboardViewSectionKey[] = [
+  "overview",
+  "warehouse",
+  "storage",
+];
 export const REVEAL_STEP_MS = 140;
 
 const ALL_LOADING: DashboardSectionStatuses = {
