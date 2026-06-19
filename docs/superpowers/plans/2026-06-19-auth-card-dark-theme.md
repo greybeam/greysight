@@ -8,6 +8,10 @@
 
 **Tech Stack:** Next.js (App Router, client components), React, TypeScript, Tailwind (class-based dark mode, tokens in `tailwind.config.ts`), Tremor (dashboard only), Vitest + Testing Library (jsdom).
 
+## Commit Workflow
+
+Each task ends with a "Commit" step, but per this repo's workflow commits are **not** made autonomously by an executing subagent. The orchestrator (or Kyle) reviews the task's diff and commits after approval. Treat each task's "Commit" step as the checkpoint where, once the task is approved, the listed `git add`/`git commit` is run. A subagent implementing a task should stop after its tests pass and hand back for review rather than committing itself.
+
 ## Global Constraints
 
 - Dark theme tokens (from `apps/web/tailwind.config.ts` / `src/lib/chart-colors.ts`), exact values: `canvas` `#161616`, `surface` `#1C1C1C`, `hairline` `#2A2A2A`, `chart-purple` `#9F57E7`, `chart-lime` `#C9E930`. Use the Tailwind token classes (`bg-canvas`, `bg-surface`, `border-hairline`, `bg-chart-purple`, `text-chart-purple`) where they exist; use the literal hex only in the glow `style`.
@@ -85,8 +89,34 @@ describe("isWorkEmail", () => {
     expect(isWorkEmail("Person@Greybeam.AI")).toBe(true);
   });
 
+  it("rejects all blocklisted domains in FREE_EMAIL_DOMAINS", () => {
+    for (const domain of [
+      "yahoo.co.uk",
+      "msn.com",
+      "me.com",
+      "mac.com",
+      "zoho.com",
+      "yandex.com",
+      "qq.com",
+      "163.com",
+    ]) {
+      expect(isWorkEmail(`a@${domain}`)).toBe(false);
+    }
+  });
+
   it("rejects empty or malformed input", () => {
-    for (const value of ["", "  ", "no-at-sign", "a@", "@b.com", "a@@b.com"]) {
+    for (const value of [
+      "",
+      "  ",
+      "no-at-sign",
+      "a@",
+      "@b.com",
+      "a@@b.com",
+      "a@.com",
+      "a@b.",
+      "a@b..com",
+      "a@b",
+    ]) {
       expect(isWorkEmail(value)).toBe(false);
     }
   });
@@ -131,17 +161,17 @@ export const FREE_EMAIL_DOMAINS: ReadonlySet<string> = new Set([
 ]);
 
 // True only for a syntactically plausible email whose domain is not a known free
-// provider. Exactly one "@", non-empty local part, and a dotted domain.
+// provider. The pattern requires a non-empty local part, exactly one "@", and a
+// dotted domain whose labels are each non-empty — so malformed forms like
+// "a@.com", "a@b.", and "a@b..com" are rejected, not just the no-"@" cases.
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$/;
+
 export function isWorkEmail(email: string): boolean {
   const normalized = email.trim().toLowerCase();
-  const parts = normalized.split("@");
-  if (parts.length !== 2) {
+  if (!EMAIL_PATTERN.test(normalized)) {
     return false;
   }
-  const [local, domain] = parts;
-  if (local.length === 0 || domain.length === 0 || !domain.includes(".")) {
-    return false;
-  }
+  const domain = normalized.slice(normalized.indexOf("@") + 1);
   return !FREE_EMAIL_DOMAINS.has(domain);
 }
 ```
@@ -601,7 +631,7 @@ export default function LoginForm({ authClient }: LoginFormProps) {
           Click it to finish signing in.
         </p>
         <button
-          className="text-sm font-medium text-chart-purple hover:opacity-90 focus-visible:underline focus-visible:outline-none"
+          className="text-sm font-medium text-slate-300 underline hover:text-slate-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-chart-purple"
           onClick={resetEmail}
           type="button"
         >
@@ -701,14 +731,17 @@ and replace each with:
 Then add two new assertions near the existing membership/loading tests (place inside the top-level `describe("OrgShell", ...)` block, e.g. after the SSR tests):
 
 ```ts
-  it("shows the dark login card when there is no session", async () => {
+  it("shows the login form inside the dark brand card when there is no session", async () => {
     render(
       <OrgShell authClient={authClient(null)} authRequired>
         <p>dashboard</p>
       </OrgShell>,
     );
     expect(await screen.findByRole("button", { name: "Email link" })).toBeInTheDocument();
-    expect(screen.getByRole("main")).toBeInTheDocument();
+    // The "Greybeam" wordmark is rendered only by AuthCard, so asserting it
+    // proves the login form is wrapped in the new card (the old shell rendered
+    // no wordmark). This fails before Task 5's wiring and passes after.
+    expect(screen.getByText("Greybeam")).toBeInTheDocument();
   });
 
   it("shows the workspace-loading status while memberships resolve", async () => {
