@@ -13,6 +13,8 @@ import {
   type MembershipOrganization,
 } from "../../lib/session-memberships";
 import LoginForm from "../auth/login-form";
+import AuthCard from "../auth/auth-card";
+import AuthStatus from "../auth/auth-status";
 import ConnectWizard from "./connect-wizard";
 
 export type SelectedOrganization = {
@@ -188,40 +190,40 @@ export default function OrgShell({
 
   if (!authClientResolved) {
     return (
-      <main className="min-h-screen bg-slate-50 p-6">
-        <p className="text-sm text-slate-600">Loading authentication</p>
-      </main>
+      <AuthCard>
+        <AuthStatus label="Authenticating" />
+      </AuthCard>
     );
   }
 
   if (!authClient) {
     return (
-      <main className="min-h-screen bg-slate-50 p-6">
-        <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-          <h1 className="text-lg font-semibold text-slate-950">
+      <AuthCard>
+        <div className="space-y-2 text-center">
+          <h2 className="text-base font-semibold text-slate-50">
             Authentication is not configured
-          </h1>
-          <p className="mt-2 text-sm text-slate-600">
+          </h2>
+          <p className="text-sm text-slate-400">
             Set public Supabase URL and anon key to enable login.
           </p>
-        </section>
-      </main>
+        </div>
+      </AuthCard>
     );
   }
 
   if (loadingSession) {
     return (
-      <main className="min-h-screen bg-slate-50 p-6">
-        <p className="text-sm text-slate-600">Loading authentication</p>
-      </main>
+      <AuthCard>
+        <AuthStatus label="Authenticating" />
+      </AuthCard>
     );
   }
 
   if (!session) {
     return (
-      <main className="min-h-screen bg-slate-50 p-6">
+      <AuthCard>
         <LoginForm authClient={authClient} />
-      </main>
+      </AuthCard>
     );
   }
 
@@ -254,29 +256,29 @@ export default function OrgShell({
 
   if (membership.status === "idle" || membership.status === "loading") {
     return (
-      <main className="min-h-screen bg-slate-50 p-6">
-        <p className="text-sm text-slate-600">Loading your workspace</p>
-      </main>
+      <AuthCard>
+        <AuthStatus label="Loading workspace" />
+      </AuthCard>
     );
   }
 
   if (membership.status === "error") {
     return (
-      <main className="min-h-screen bg-slate-50 p-6">
-        <section className="space-y-4 rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+      <AuthCard>
+        <div className="space-y-4">
           {signedInHeader}
-          <p className="text-sm text-red-700" role="alert">
+          <p className="text-sm text-red-400" role="alert">
             We couldn’t load your organizations. Please try again.
           </p>
           <button
-            className="rounded-md bg-slate-950 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
+            className="w-full rounded-md bg-chart-purple px-4 py-2 text-sm font-medium text-white hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-chart-purple focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
             onClick={() => accessToken && void loadMemberships(accessToken)}
             type="button"
           >
             Retry
           </button>
-        </section>
-      </main>
+        </div>
+      </AuthCard>
     );
   }
 
