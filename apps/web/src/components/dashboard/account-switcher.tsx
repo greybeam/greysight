@@ -39,7 +39,18 @@ export default function AccountSwitcher() {
         <span className="font-mono text-slate-200">
           {active.accountLocator ?? active.name}
         </span>
-        <span aria-hidden="true">▾</span>
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.75}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="h-4 w-4 shrink-0"
+        >
+          <path d="M6 8l4 4 4-4" />
+        </svg>
       </button>
       {open ? (
         <div

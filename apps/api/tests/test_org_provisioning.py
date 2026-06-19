@@ -86,7 +86,60 @@ def test_raises_provisioning_error_on_non_json_body() -> None:
         _provision(provisioner)
 
 
-def test_duplicate_account_detected_by_json_code() -> None:
+def test_duplicate_account_detected_by_account_constraint() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "code": "23505",
+                "message": (
+                    "duplicate key value violates unique constraint "
+                    '"org_active_account_unique"'
+                ),
+                "details": "Key (upper(account))=(ABC123) already exists.",
+            },
+        )
+
+    provisioner = SupabaseOrgProvisioner(
+        supabase_url="https://example.supabase.co",
+        service_role_key="svc",
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(DuplicateSnowflakeAccountError):
+        _provision(provisioner)
+
+
+def test_other_unique_violation_not_treated_as_duplicate_account() -> None:
+    # A 23505 from the legacy one-owner-cap index (raised when a user who
+    # already owns an org adds a second org on a DB missing migration
+    # 202606180001) must NOT be mislabeled as a duplicate Snowflake account.
+    # It should fall through to the generic OrgProvisioningError -> 502.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "code": "23505",
+                "message": (
+                    "duplicate key value violates unique constraint "
+                    '"one_owner_membership_per_user"'
+                ),
+                "details": "Key (user_id)=(user-1) already exists.",
+            },
+        )
+
+    provisioner = SupabaseOrgProvisioner(
+        supabase_url="https://example.supabase.co",
+        service_role_key="svc",
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(OrgProvisioningError) as excinfo:
+        _provision(provisioner)
+    assert not isinstance(excinfo.value, DuplicateSnowflakeAccountError)
+
+
+def test_generic_unique_violation_message_not_treated_as_duplicate() -> None:
+    # A bare 23505 with no recognizable constraint name should NOT be treated
+    # as a duplicate account; it falls through to the generic error.
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             400, json={"code": "23505", "message": "unique_violation"}
@@ -97,8 +150,9 @@ def test_duplicate_account_detected_by_json_code() -> None:
         service_role_key="svc",
         transport=httpx.MockTransport(handler),
     )
-    with pytest.raises(DuplicateSnowflakeAccountError):
+    with pytest.raises(OrgProvisioningError) as excinfo:
         _provision(provisioner)
+    assert not isinstance(excinfo.value, DuplicateSnowflakeAccountError)
 
 
 def test_success_body_not_misread_as_conflict() -> None:

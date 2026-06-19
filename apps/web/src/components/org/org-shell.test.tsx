@@ -27,6 +27,9 @@ function AccountChromeProbe() {
       <button onClick={account.onSignOut} type="button">
         Sign out
       </button>
+      <button onClick={account.openAddAccount} type="button">
+        Add account
+      </button>
       {account.signOutError ? <p role="alert">{account.signOutError}</p> : null}
     </div>
   );
@@ -459,5 +462,53 @@ describe("OrgShell", () => {
 
     await waitFor(() => expect(signOut).toHaveBeenCalled());
     expect(onOrganizationChange).toHaveBeenLastCalledWith(null);
+  });
+
+  async function openAddAccountModal() {
+    render(
+      <OrgShell
+        authRequired
+        authClient={authClient(session)}
+        fetchMemberships={vi
+          .fn()
+          .mockResolvedValue([{ id: "org-1", name: "Acme", accountLocator: null }])}
+      >
+        <AccountChromeProbe />
+      </OrgShell>,
+    );
+    await screen.findByText("dashboard");
+    fireEvent.click(screen.getByRole("button", { name: "Add account" }));
+    return await screen.findByRole("dialog");
+  }
+
+  it("closes the add-account modal when the Cancel button is clicked", async () => {
+    await openAddAccountModal();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("closes the add-account modal when the backdrop is pressed", async () => {
+    const dialog = await openAddAccountModal();
+    // mouseDown on the dialog element itself: target === currentTarget, so the
+    // backdrop's outside-press guard fires and the modal closes.
+    fireEvent.mouseDown(dialog);
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("keeps the add-account modal open when pressing inside the modal content", async () => {
+    await openAddAccountModal();
+    // mouseDown on a descendant of the content (the wizard heading): the
+    // backdrop guard sees target !== currentTarget, so it must not close. This
+    // protects a drag/text-selection that starts inside and releases on the
+    // backdrop from discarding partially-entered credentials.
+    const wizardHeading = screen.getByText(/connect your snowflake account/i);
+    fireEvent.mouseDown(wizardHeading);
+    // Give any (incorrect) close handler a chance to run.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 });

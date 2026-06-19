@@ -11,12 +11,29 @@ class DuplicateSnowflakeAccountError(OrgProvisioningError):
     """Raised when the Snowflake account is already connected to an org."""
 
 
+# The account-dedup unique index whose violation means "this Snowflake account
+# is already connected to an org". The create RPC can raise 23505 from OTHER
+# unique constraints too (e.g. the legacy `one_owner_membership_per_user`
+# one-owner cap on DBs missing migration 202606180001), so we must NOT treat
+# every 23505 as a duplicate account — that would mislabel an unrelated owner-
+# cap violation (brand-new account) as "already connected". We therefore narrow
+# to the constraint name, which PostgREST surfaces in the `message` field (and
+# the column may appear in `details`).
+_ACCOUNT_DEDUP_CONSTRAINT = "org_active_account_unique"
+
+
 def _is_duplicate_account_conflict(response: httpx.Response) -> bool:
     try:
         body = response.json()
     except ValueError:
         return False
-    return isinstance(body, dict) and body.get("code") == "23505"
+    if not (isinstance(body, dict) and body.get("code") == "23505"):
+        return False
+    # Only the account-dedup constraint maps to DuplicateSnowflakeAccountError.
+    # If the constraint name is absent (different unique violation, or PostgREST
+    # omitted it), fall through to the generic OrgProvisioningError -> 502.
+    haystack = f"{body.get('message') or ''}\n{body.get('details') or ''}".lower()
+    return _ACCOUNT_DEDUP_CONSTRAINT in haystack
 
 
 class SupabaseOrgProvisioner:

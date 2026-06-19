@@ -358,11 +358,19 @@ export default function OrgShell({
           className="dark fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 p-6 [color-scheme:dark]"
           role="dialog"
           aria-modal="true"
+          onMouseDown={(e) => {
+            // Close only when the press both begins and ends on the backdrop
+            // itself. Guarding on target === currentTarget prevents a drag or
+            // text-selection that starts inside the wizard and releases over
+            // the backdrop from dismissing the modal and discarding
+            // partially-entered Snowflake credentials.
+            if (e.target === e.currentTarget) setAddAccountOpen(false);
+          }}
         >
           <div className="w-full max-w-4xl">
             <div className="mb-3 flex justify-end">
               <button
-                className="h-9 rounded-md border border-hairline px-3 text-sm font-medium text-slate-300 hover:bg-white/5"
+                className="h-9 rounded-md border border-hairline bg-surface px-3 text-sm font-medium text-slate-300 hover:bg-white/5"
                 onClick={() => setAddAccountOpen(false)}
                 type="button"
               >
