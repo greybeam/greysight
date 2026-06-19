@@ -37,7 +37,7 @@ def test_set_dataset_and_mark_ready_updates_view_inputs():
     ] == "ready"
     view_inputs = repo.get_view_inputs(run_id)
     assert view_inputs is not None
-    _run, datasets, _metadata, bounds, _statuses = view_inputs
+    _run, datasets, _metadata, bounds, _statuses, _auth = view_inputs
     assert datasets["service_spend_daily"] == [{"usage_date": "2026-06-01"}]
     # provisional bounds reflect the only landed usage_date
     assert bounds.source_start_date.isoformat() == "2026-06-01"
@@ -64,7 +64,7 @@ def test_finalize_run_sets_completed_and_authoritative_bounds():
     assert run is not None and run.status == "completed"
     view_inputs = repo.get_view_inputs(run_id)
     assert view_inputs is not None
-    _run, datasets, _meta, bounds, _statuses = view_inputs
+    _run, datasets, _meta, bounds, _statuses, _auth = view_inputs
     assert datasets["service_spend_daily"] == [{"usage_date": "2026-05-01"}]
     assert bounds.source_end_date.isoformat() == "2026-05-01"
 
@@ -76,7 +76,7 @@ def test_writes_after_terminal_state_are_discarded():
     # A late worker write must not mutate the finalized run.
     repo.set_dataset(run_id, "service_spend_daily", [{"usage_date": "1999-01-01"}])
     repo.complete_source(run_id, "service_spend_daily")
-    _run, datasets, _m, _b, _s = repo.get_view_inputs(run_id)
+    _run, datasets, _m, _b, _s, _auth = repo.get_view_inputs(run_id)
     assert datasets["service_spend_daily"] == [{"usage_date": "2026-05-01"}]
 
 

@@ -265,6 +265,7 @@ class InMemoryDashboardRunRepository:
             DashboardDatasetMetadata,
             StoredSourceBounds,
             dict[str, str] | None,
+            bool,
         ]
         | None
     ):
@@ -272,6 +273,13 @@ class InMemoryDashboardRunRepository:
         source-status map are all read under a SINGLE lock acquisition so a
         concurrent worker write can never split a "ready" status from a stale
         empty dataset. ``source_statuses`` is None for non-snowflake runs.
+
+        The final tuple element ``metadata_authoritative`` is True iff the
+        returned metadata came from stored (finalized) metadata rather than
+        being RECONSTRUCTED from dataset rows. Group-availability reconciliation
+        (``_reconcile_completed_source_statuses``) must only downgrade gating
+        sources when metadata is authoritative; reconstructed metadata has no
+        real collapse signal, so the streamed/seeded statuses are trusted as-is.
         """
         with self._lock:
             run = self._runs.get(run_id)
@@ -303,6 +311,7 @@ class InMemoryDashboardRunRepository:
                 if run.source == "snowflake"
                 else None
             )
+            metadata_authoritative = metadata is not None
             return (
                 run,
                 dataset_rows,
@@ -311,6 +320,7 @@ class InMemoryDashboardRunRepository:
                 else _metadata_for_dataset_rows(dataset_rows),
                 source_bounds,
                 source_statuses,
+                metadata_authoritative,
             )
 
     def _store_source_bounds(
@@ -764,7 +774,14 @@ def read_dashboard_run_view(
     view_inputs = dashboard_run_repository.get_view_inputs(run_id)
     if view_inputs is None:
         raise HTTPException(status_code=404, detail="Dashboard view not found")
-    run, datasets, metadata, source_bounds, source_statuses = view_inputs
+    (
+        run,
+        datasets,
+        metadata,
+        source_bounds,
+        source_statuses,
+        metadata_authoritative,
+    ) = view_inputs
     # Normalize every base source key to [] when absent so the view builder
     # never receives missing keys for a still-streaming run. (build_dashboard_view
     # already defaults absent keys via _dataset_rows, but normalizing keeps the
@@ -814,8 +831,12 @@ def read_dashboard_run_view(
         # zeroed the whole group) must read "unavailable" even if its streamed
         # state still says "ready". A present-but-empty time window does NOT
         # collapse the group, so it stays "ready".
+        # The reconciliation only downgrades when metadata is AUTHORITATIVE
+        # (stored/finalized): for a completed snapshot whose stored metadata was
+        # None, metadata is reconstructed from rows and carries no real collapse
+        # signal, so the streamed/seeded statuses are trusted as-is.
         effective_statuses = _reconcile_completed_source_statuses(
-            source_statuses, metadata
+            source_statuses, metadata, authoritative=metadata_authoritative
         )
         view = view.model_copy(
             update={"section_statuses": compute_section_statuses(effective_statuses)}
@@ -853,6 +874,8 @@ def _group_is_available(metadata: Any, group_field: str) -> bool:
 def _reconcile_completed_source_statuses(
     source_statuses: dict[str, str],
     metadata: Any,
+    *,
+    authoritative: bool = True,
 ) -> dict[str, str]:
     """Reconcile streamed per-source status against finalized GROUP availability.
 
@@ -867,12 +890,24 @@ def _reconcile_completed_source_statuses(
     leaves the group available, so a present-but-empty gating source keeps its
     streamed "ready" status.
 
+    The downgrade applies ONLY when ``authoritative`` is True — i.e. ``metadata``
+    came from STORED (finalized) metadata, which is the real collapse signal. For
+    a completed snapshot whose stored metadata was None, the route reconstructs
+    metadata from dataset rows; that reconstruction has no genuine group-collapse
+    information (an empty-but-present gating dataset would otherwise look
+    collapsed), so when ``authoritative`` is False this is a NO-OP and the
+    streamed/seeded ``source_statuses`` are returned unchanged. The route never
+    passes None metadata to this helper, so the ``authoritative=False`` branch —
+    not None-defensiveness — is what protects the reconstructed path.
+
     ``metadata`` is the run's stored metadata dict (or None / a typed object) and
-    is read defensively: a missing/None metadata or missing availability flag
-    DEFAULTS to available, so streamed statuses are preserved unchanged and a
-    missing signal never force-collapses a section. Non-gating sources are never
-    altered.
+    is still read defensively when authoritative: a missing/None metadata or
+    missing availability flag DEFAULTS to available, so streamed statuses are
+    preserved unchanged and a missing signal never force-collapses a section.
+    Non-gating sources are never altered.
     """
+    if not authoritative:
+        return dict(source_statuses)
     return {
         key: (
             "unavailable"
@@ -963,7 +998,7 @@ def read_dashboard_source(
     view_inputs = dashboard_run_repository.get_view_inputs(run_id)
     if view_inputs is None:
         return {"status": "expired"}
-    _run, datasets, metadata, source_bounds, _source_statuses = view_inputs
+    _run, datasets, metadata, source_bounds, _source_statuses, _metadata_authoritative = view_inputs
     meta = dashboard_run_repository.get_source_meta(run_id, source_id) or {}
 
     through_date = _through_date_for(metadata) or source_bounds.source_end_date

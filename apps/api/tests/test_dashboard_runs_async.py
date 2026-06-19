@@ -311,7 +311,7 @@ def test_base_complete_source_is_noop_on_terminal_run():
 
     # Source state for base sources is unchanged; datasets not mutated.
     assert repo.get_source(run_id, "service_spend_daily").status == before
-    _r, datasets, _m, _b, _s = repo.get_view_inputs(run_id)
+    _r, datasets, _m, _b, _s, _auth = repo.get_view_inputs(run_id)
     assert datasets["service_spend_daily"] == [{"usage_date": "2026-05-01"}]
 
 
@@ -450,7 +450,7 @@ def test_deferred_source_completes_completed_while_base_run_running():
     assert repo.get_run(run_id).status == "running"
     assert repo.get_source_state(run_id, "ai_consumption_daily") == "completed"
     # The served-view inputs include the deferred rows.
-    _r, datasets, _m, _b, _s = repo.get_view_inputs(run_id)
+    _r, datasets, _m, _b, _s, _auth = repo.get_view_inputs(run_id)
     assert datasets["ai_consumption_daily"] == [{"usage_date": "2026-05-02"}]
 
 
@@ -480,7 +480,7 @@ def test_deferred_ai_source_still_updates_after_completion():
         run_id, "ai_consumption_daily", rows=[{"usage_date": "2026-05-02"}]
     )
     assert repo.get_source(run_id, "ai_consumption_daily").status == "completed"
-    _r, datasets, _m, _b, _s = repo.get_view_inputs(run_id)
+    _r, datasets, _m, _b, _s, _auth = repo.get_view_inputs(run_id)
     assert datasets["ai_consumption_daily"] == [{"usage_date": "2026-05-02"}]
 
 
