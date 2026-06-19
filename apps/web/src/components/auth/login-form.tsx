@@ -100,13 +100,13 @@ export default function LoginForm({ authClient }: LoginFormProps) {
 
   return (
     <form className="space-y-4" onSubmit={requestLink}>
-      <div className="space-y-2">
-        <label className="text-sm font-medium text-slate-300" htmlFor="email">
-          Email
-        </label>
+      <label className="sr-only" htmlFor="email">
+        Email
+      </label>
+      <div className="flex gap-2">
         <input
           autoComplete="email"
-          className="w-full rounded-md border border-slate-600 bg-canvas px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-chart-purple focus:outline-none focus:ring-1 focus:ring-chart-purple"
+          className="flex-1 rounded-md border border-slate-600 bg-canvas px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-chart-purple focus:outline-none focus:ring-1 focus:ring-chart-purple"
           disabled={pending}
           id="email"
           name="email"
@@ -116,14 +116,14 @@ export default function LoginForm({ authClient }: LoginFormProps) {
           type="email"
           value={email}
         />
+        <button
+          className="shrink-0 whitespace-nowrap rounded-md bg-chart-purple px-4 py-2 text-sm font-medium text-white hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-chart-purple focus-visible:ring-offset-2 focus-visible:ring-offset-surface disabled:opacity-60"
+          disabled={pending}
+          type="submit"
+        >
+          {pending ? "Sending link" : "Email link"}
+        </button>
       </div>
-      <button
-        className="w-full rounded-md bg-chart-purple px-4 py-2 text-sm font-medium text-white hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-chart-purple focus-visible:ring-offset-2 focus-visible:ring-offset-surface disabled:opacity-60"
-        disabled={pending}
-        type="submit"
-      >
-        {pending ? "Sending link" : "Email link"}
-      </button>
       {error ? (
         <p className="text-sm font-medium text-red-400" role="alert">
           {error}

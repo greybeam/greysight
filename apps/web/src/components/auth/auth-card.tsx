@@ -19,7 +19,7 @@ export default function AuthCard({ children }: { children: ReactNode }) {
         style={{ background: GLOW_BACKGROUND }}
       />
       <section className="relative w-full max-w-sm rounded-xl border border-hairline bg-surface p-6 shadow-xl">
-        <div className="flex flex-col items-center gap-2">
+        <div className="flex flex-row items-center justify-center gap-3">
           {/* Static brand mark from /public; next/image would force
               dangerouslyAllowSVG for no benefit. Decorative — the wordmark below
               already names the brand to assistive tech. */}
