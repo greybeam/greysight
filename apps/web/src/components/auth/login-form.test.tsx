@@ -127,4 +127,31 @@ describe("LoginForm", () => {
     expect(link).toHaveAttribute("href", "https://www.greybeam.ai/terms");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
   });
+
+  it("disables the email input while pending and shows the originally-submitted address in the sent view", async () => {
+    let resolveOtp!: (value: { error: null }) => void;
+    const deferredOtp = new Promise<{ error: null }>((resolve) => {
+      resolveOtp = resolve;
+    });
+    const signInWithOtp = vi.fn().mockReturnValue(deferredOtp);
+
+    render(<LoginForm authClient={authClient({ signInWithOtp })} />);
+
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: "owner@greybeam.ai" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Email link" }));
+
+    // While the request is in flight the input must be disabled
+    await waitFor(() =>
+      expect(screen.getByLabelText("Email")).toBeDisabled(),
+    );
+
+    // Resolve the deferred promise (simulating the server response)
+    resolveOtp({ error: null });
+
+    // The sent view must show the address that was actually submitted
+    expect(await screen.findByText("Check your email")).toBeInTheDocument();
+    expect(screen.getByText(/owner@greybeam\.ai/)).toBeInTheDocument();
+  });
 });

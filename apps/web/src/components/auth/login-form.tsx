@@ -26,6 +26,7 @@ function friendlyAuthError(message?: string | null): string {
 export default function LoginForm({ authClient }: LoginFormProps) {
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
+  const [sentEmail, setSentEmail] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const sentHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -57,6 +58,7 @@ export default function LoginForm({ authClient }: LoginFormProps) {
         setError(friendlyAuthError(result.error.message));
         return;
       }
+      setSentEmail(trimmed);
       setSent(true);
     } catch {
       setError(GENERIC_ERROR);
@@ -82,7 +84,7 @@ export default function LoginForm({ authClient }: LoginFormProps) {
         </h2>
         <p className="text-sm text-slate-400">
           We sent a sign-in link to{" "}
-          <span className="font-medium text-slate-200">{email.trim()}</span>.
+          <span className="font-medium text-slate-200">{sentEmail}</span>.
           Click it to finish signing in.
         </p>
         <button
@@ -105,6 +107,7 @@ export default function LoginForm({ authClient }: LoginFormProps) {
         <input
           autoComplete="email"
           className="w-full rounded-md border border-slate-600 bg-canvas px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-chart-purple focus:outline-none focus:ring-1 focus:ring-chart-purple"
+          disabled={pending}
           id="email"
           name="email"
           onChange={(event) => setEmail(event.target.value)}
