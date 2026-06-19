@@ -54,8 +54,10 @@ class and `[color-scheme:dark]` like the existing ConnectWizard wrapper does.
 
 The centered dark shell wrapping every pre-dashboard state.
 
-- Full-screen container: `dark [color-scheme:dark] min-h-screen bg-canvas flex
-  items-center justify-center p-6`, `relative` with `overflow-hidden`.
+- Root element is a `<main>` (preserves the page landmark the old
+  `<main class="...">` wrappers provided): `dark [color-scheme:dark] min-h-screen
+  bg-canvas flex items-center justify-center p-6`, `relative` with
+  `overflow-hidden`.
 - **Radial glow layer**: an absolutely-positioned, `aria-hidden`, pointer-events-
   none div behind the card with two low-opacity radial gradients — purple toward
   the top, lime toward the bottom — blurred and subtle (think ~10–15% alpha).
@@ -65,15 +67,17 @@ The centered dark shell wrapping every pre-dashboard state.
   bg-surface p-6 shadow-xl`.
 - **Brand header** (always shown): logo `img` (`/greybeam_assets/greybeam_logo.svg`)
   + `Greybeam` wordmark, reusing the dashboard-header pattern
-  (`font-display ... text-slate-50`), centered.
-- Slots: `children` (body) and optional `footer` (terms).
+  (`font-display ... text-slate-50`), centered. The logo is **decorative**
+  (`alt=""`) since the visible wordmark already names the brand to assistive tech.
+- Single `children` body slot. No `footer` prop — the Terms footer belongs to
+  `LoginForm` (the only screen that shows it), so it owns and renders that markup
+  inside its own body rather than threading it through a card it doesn't render.
 
 Props:
 
 ```ts
 interface AuthCardProps {
   children: React.ReactNode;
-  footer?: React.ReactNode;
 }
 ```
 
@@ -85,6 +89,10 @@ to the bottom with the status".
 - A small `animate-spin` ring in brand purple (a bordered circle, purple top
   border) + a status label (`text-sm text-slate-300`).
 - Centered, stacked.
+- The container carries `role="status"` + `aria-live="polite"` so each
+  transition (Authenticating → Loading workspace → Check your email) is announced
+  to screen readers. The spinner itself is `aria-hidden`; the label is the
+  announced text.
 
 Props:
 
@@ -118,19 +126,29 @@ Single-step magic-link flow.
   1. If not `isWorkEmail(email)` → set error "Please use your work email."
      and do **not** call the client.
   2. Else call `authClient.signInWithOtp({ email })`; on success set `sent = true`.
-  - Error + generic-catch paths render in the existing `role="alert"` region.
+  - Error rendering (`role="alert"`): a thrown/network error shows the friendly
+    "Something went wrong. Please try again." A returned provider error shows its
+    message, but **provider wording is not surfaced verbatim** — map it through a
+    small normalizer that falls back to the friendly message for anything not
+    recognized as user-actionable, so internal/provider phrasing never leaks.
   - Button label: "Email link" idle, "Sending link" pending.
 - **Sent view** (`sent === true`): renders `AuthStatus`-style confirmation
   "Check your email" + the address + a "Send to a different email" button that
-  resets to the request view.
-- Footer (request view only): muted text "By continuing you agree to our Terms
-  of Service" linking to `https://www.greybeam.ai/terms` in a new tab. Add a
-  `// TODO` that the terms page needs updating soon.
+  resets to the request view. On entering the sent view, move focus to the
+  confirmation heading so keyboard/SR users land on the new content.
+- Terms footer (request view only, owned by `LoginForm`): muted text "By
+  continuing you agree to our Terms of Service" linking to
+  `https://www.greybeam.ai/terms` in a new tab (`rel="noopener noreferrer"`).
+  Add a `// TODO` that the terms page needs updating soon.
 - The 6-digit code input, `verifyOtp` call, and "Verify code" button are removed.
 
-Dark input styling: `bg-canvas border-hairline text-slate-100
-placeholder:text-slate-500 focus:border-[#9F57E7] focus:ring-1
-focus:ring-[#9F57E7]` (or equivalent token classes).
+Dark input styling: the boundary must clear WCAG's 3:1 non-text contrast against
+`bg-surface`, so use a lighter resting border than `hairline` (e.g. a
+`slate-600`/`slate-500`-class border) plus a visible focus ring in brand purple:
+`bg-canvas text-slate-100 placeholder:text-slate-500
+focus-visible:border-[#9F57E7] focus-visible:ring-1 focus-visible:ring-[#9F57E7]`.
+All interactive elements (button, links, reset) keep a visible `focus-visible`
+ring — never `outline-none` without a replacement.
 
 ### `apps/web/src/components/org/org-shell.tsx` (edit)
 
@@ -146,9 +164,12 @@ Wrap every pre-dashboard branch in `AuthCard`, replacing the light
 | membership `idle`/`loading` | `AuthStatus label="Loading workspace"` |
 | membership `error` | error text + Retry button (dark, in-card) |
 
-The membership-error branch keeps the signed-in identity + Retry, restyled for
-the dark card. The `membership.organizations.length === 0` (ConnectWizard) and
-the final dashboard branches are unchanged.
+The membership-error branch keeps the **full existing `signedInHeader`** —
+signed-in identity, the **Sign out** button, and the `signOutError` alert — plus
+Retry, all restyled for the dark card. (Only the styling changes; the sign-out
+path and its error handling must be preserved, not dropped.) The
+`membership.organizations.length === 0` (ConnectWizard) and the final dashboard
+branches are unchanged.
 
 ## Data Flow / Behavior
 
@@ -159,6 +180,18 @@ the final dashboard branches are unchanged.
    resolves → brief "Authenticating" → membership loads → "Loading workspace" →
    dashboard.
 4. Non-work email → inline "Please use your work email." error, no email sent.
+
+### Magic-link redirect (unchanged, documented)
+
+The browser client is created with `createClient(url, key)` and **no options**,
+so Supabase's default `detectSessionInUrl: true` applies. There is **no
+`/auth/callback` route** and **no `emailRedirectTo`** in the code. The magic link
+therefore returns to the Supabase-dashboard-configured **Site URL** (the app
+root, which redirects to `/dashboard`); on landing, `detectSessionInUrl` parses
+the token and `onAuthStateChange` fires, resolving the session. This work does
+**not** change any of that — it only restyles the screens shown before/after that
+resolution. Correct Site URL / redirect-allowlist config in Supabase is a
+deployment prerequisite, not part of this change.
 
 ## Error Handling
 
@@ -180,10 +213,25 @@ the final dashboard branches are unchanged.
 - **`org-shell.test.tsx`** + **`dashboard-runtime-shell.integration.test.tsx`**:
   update status-string assertions ("Loading authentication" → "Authenticating";
   add "Loading workspace"); keep the membership-error and ConnectWizard
-  assertions.
+  assertions. **Retain (do not delete) the existing behavioral invariants** —
+  hydration-determinism placeholder, stale-membership-token discard, callback
+  identity stability, and synchronous sign-out clearing — adjusting only the
+  strings they assert, not the behaviors. The membership-error test must still
+  assert the Sign out control is present.
+- `role="status"` announcement is asserted for `AuthStatus`; the work-email error
+  and the "Check your email" confirmation are reachable by accessible name/role.
+  (Full automated a11y/contrast auditing is out of scope — we get the semantics
+  right and assert the key roles.)
 
 ## Follow-ups (out of scope)
 
-- Server-side work-email enforcement (Supabase auth hook / API guard).
+- Server-side work-email enforcement (Supabase auth hook / API guard) — the
+  client check is bypassable outside the UI.
 - Update the published Terms of Service at greybeam.ai/terms.
 - Optionally drop the now-unused `verifyOtp` from `BrowserAuthClient`.
+- Optional `emailRedirectTo` so the magic link returns to a known in-app path
+  (and route preservation) rather than relying solely on Supabase Site URL.
+- Failed/expired/reused magic-link return state and a resend-with-cooldown +
+  rate-limit messaging flow. These are pre-existing behaviors of the magic-link
+  flow this change does not touch; worth a dedicated follow-up rather than
+  bundling into the restyle.
