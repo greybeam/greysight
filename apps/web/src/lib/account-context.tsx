@@ -2,6 +2,8 @@
 
 import { createContext, useContext } from "react";
 
+import type { MembershipOrganization } from "./session-memberships";
+
 // Account-level chrome (signed-in identity + sign-out) lifted out of OrgShell so
 // the dashboard's own app bar can render it as a single unified header instead
 // of OrgShell stacking a second bar above the dashboard. Consumers read it via
@@ -11,6 +13,13 @@ export type AccountChrome = {
   email: string;
   onSignOut: () => void;
   signOutError: string | null;
+  // Org switcher: the user's orgs, the active selection, and the actions the
+  // header dropdown drives. Empty list / null active in the single-org demo
+  // contexts where the switcher simply shows the lone (or no) account.
+  organizations: MembershipOrganization[];
+  activeOrganizationId: string | null;
+  setActiveOrganization: (id: string) => void;
+  openAddAccount: () => void;
 };
 
 const AccountChromeContext = createContext<AccountChrome | null>(null);

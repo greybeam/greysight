@@ -3,6 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AccountChromeProvider } from "../../lib/account-context";
+import {
+  readActiveOrganizationId,
+  writeActiveOrganizationId,
+} from "../../lib/active-organization";
 import { getAuthMode } from "../../lib/auth-mode";
 import createBrowserAuthClient, {
   type AuthSession,
@@ -64,6 +68,8 @@ export default function OrgShell({
     status: "idle",
   });
   const [signOutError, setSignOutError] = useState<string | null>(null);
+  const [activeOrgId, setActiveOrgId] = useState<string | null>(null);
+  const [addAccountOpen, setAddAccountOpen] = useState(false);
   const accessToken = session?.accessToken ?? null;
 
   // When no client prop is supplied, defer createBrowserAuthClient() to a
@@ -153,10 +159,47 @@ export default function OrgShell({
     void loadMemberships(accessToken);
   }, [accessToken, authRequired, loadMemberships]);
 
+  const organizations =
+    membership.status === "resolved" ? membership.organizations : [];
+  const activeOrganization =
+    organizations.find((org) => org.id === activeOrgId) ??
+    organizations[0] ??
+    null;
+
+  // Reconcile the active org from localStorage AND notify the parent in ONE
+  // effect, so the dashboard runtime rebuilds exactly once with the correct org.
+  //   1. Keep the persisted id if it is still a member; otherwise fall back to
+  //      the first org and CLEAR the stale key (write null — we never persist the
+  //      implicit first-org fallback; persistence happens only on an explicit
+  //      selection via setActiveOrganization).
+  //   2. Settle activeOrgId first (return), then notify on the next pass once
+  //      activeOrgId equals the resolved selection. This avoids the transient
+  //      wrong-org notify that a separate [activeOrganization] effect would emit
+  //      (first org, then the persisted org) on the first resolved render.
   useEffect(() => {
     if (membership.status !== "resolved") return;
-    onOrganizationChangeRef.current?.(membership.organizations[0] ?? null);
-  }, [membership]);
+    const orgs = membership.organizations;
+    const stored = readActiveOrganizationId();
+    const valid =
+      stored && orgs.some((org) => org.id === stored) ? stored : null;
+    if (stored && !valid) writeActiveOrganizationId(null);
+    const resolvedId = valid ?? orgs[0]?.id ?? null;
+    if (resolvedId !== activeOrgId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setActiveOrgId(resolvedId);
+      return;
+    }
+    onOrganizationChangeRef.current?.(
+      orgs.find((org) => org.id === resolvedId) ?? null,
+    );
+  }, [membership, activeOrgId]);
+
+  const setActiveOrganization = useCallback((id: string) => {
+    setActiveOrgId(id);
+    writeActiveOrganizationId(id);
+  }, []);
+
+  const openAddAccount = useCallback(() => setAddAccountOpen(true), []);
 
   const handleSignOut = useCallback(async () => {
     setSignOutError(null);
@@ -303,9 +346,44 @@ export default function OrgShell({
         email: session.user?.email ?? "Authenticated user",
         onSignOut: handleSignOut,
         signOutError,
+        organizations,
+        activeOrganizationId: activeOrganization?.id ?? null,
+        setActiveOrganization,
+        openAddAccount,
       }}
     >
       {children}
+      {addAccountOpen ? (
+        <div
+          className="dark fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 p-6 [color-scheme:dark]"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="w-full max-w-4xl">
+            <div className="mb-3 flex justify-end">
+              <button
+                className="h-9 rounded-md border border-hairline px-3 text-sm font-medium text-slate-300 hover:bg-white/5"
+                onClick={() => setAddAccountOpen(false)}
+                type="button"
+              >
+                Cancel
+              </button>
+            </div>
+            <ConnectWizard
+              accessToken={accessToken}
+              onConnected={(newOrgId) => {
+                // Persist the new org and reload memberships; once the reload
+                // includes it, the reconcile effect selects it (now a valid
+                // member) and notifies the dashboard. No setActiveOrganization
+                // call needed here.
+                writeActiveOrganizationId(newOrgId);
+                setAddAccountOpen(false);
+                if (accessToken) void loadMemberships(accessToken);
+              }}
+            />
+          </div>
+        </div>
+      ) : null}
     </AccountChromeProvider>
   );
 }

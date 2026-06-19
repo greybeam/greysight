@@ -51,7 +51,10 @@ const session: AuthSession = {
   user: { email: "owner@example.com", appMetadata: null },
 };
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  window.localStorage.clear();
+});
 
 describe("OrgShell", () => {
   it("renders children with the demo banner when auth is not required", () => {
@@ -371,6 +374,54 @@ describe("OrgShell", () => {
       expect(onAccessTokenChange).toHaveBeenLastCalledWith(null),
     );
     expect(onOrganizationChange).toHaveBeenLastCalledWith(null);
+  });
+
+  it("selects the persisted org from localStorage when still a member", async () => {
+    window.localStorage.setItem("greysight.activeOrganizationId", "org-2");
+    const onOrganizationChange = vi.fn();
+    render(
+      <OrgShell
+        authRequired
+        authClient={authClient(session)}
+        fetchMemberships={vi.fn().mockResolvedValue([
+          { id: "org-1", name: "Alpha", accountLocator: "AAA" },
+          { id: "org-2", name: "Beta", accountLocator: "BBB" },
+        ])}
+        onOrganizationChange={onOrganizationChange}
+      >
+        <p>dashboard</p>
+      </OrgShell>,
+    );
+    await waitFor(() =>
+      expect(onOrganizationChange).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "org-2" }),
+      ),
+    );
+  });
+
+  it("falls back to the first org and clears a stale persisted id", async () => {
+    window.localStorage.setItem("greysight.activeOrganizationId", "gone");
+    const onOrganizationChange = vi.fn();
+    render(
+      <OrgShell
+        authRequired
+        authClient={authClient(session)}
+        fetchMemberships={vi
+          .fn()
+          .mockResolvedValue([{ id: "org-1", name: "Alpha", accountLocator: "AAA" }])}
+        onOrganizationChange={onOrganizationChange}
+      >
+        <p>dashboard</p>
+      </OrgShell>,
+    );
+    await waitFor(() =>
+      expect(onOrganizationChange).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "org-1" }),
+      ),
+    );
+    expect(
+      window.localStorage.getItem("greysight.activeOrganizationId"),
+    ).toBeNull();
   });
 
   it("signs out and clears the selected organization", async () => {
