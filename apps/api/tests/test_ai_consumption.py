@@ -1,3 +1,4 @@
+import threading
 import time
 from datetime import date
 
@@ -70,16 +71,29 @@ def test_real_query_error_skips_branch():
 
 
 def test_ai_branches_run_in_parallel_and_skip_unavailable():
+    # Peak-concurrency proof instead of a tight wall-clock bound (latent CI
+    # flake): track how many branches are simultaneously in-flight. A sequential
+    # runner would never exceed peak==1; true parallelism drives it above 1.
+    lock = threading.Lock()
+    active = 0
+    peak = 0
+
     def execute(sql, params):
-        time.sleep(0.1)
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            time.sleep(0.05)  # widen the overlap window without racing a deadline
+        finally:
+            with lock:
+                active -= 1
         if "cortex_search" in sql:  # one unavailable branch
             raise SnowflakeObjectUnavailableError("nope")
         return [{"row": 1}]
 
-    start = time.monotonic()
     rows, skipped = fetch_ai_consumption_daily(execute, window_days=30)
-    elapsed = time.monotonic() - start
-    assert elapsed < 0.5  # 10 branches * 0.1 serial = 1s
+    assert peak > 1  # branches genuinely overlapped (ran concurrently)
     assert any("cortex_search" in s for s in skipped)
     assert len(rows) > 0
 

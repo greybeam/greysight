@@ -1,4 +1,5 @@
-import time
+import threading
+
 from app.services.parallel_source_runner import SourceJob, run_sources_parallel
 from app.services.snowflake_client import SnowflakeQueryError
 from app.services import query_concurrency
@@ -34,17 +35,22 @@ def test_unavailable_source_does_not_fail_run():
 
 
 def test_runs_concurrently():
+    # Barrier-based concurrency proof (no wall-clock race): each of the 4 jobs
+    # must enter execute() before any is allowed to proceed. A sequential runner
+    # would run jobs one at a time, so the barrier would never trip and wait()
+    # would raise BrokenBarrierError. The generous timeout keeps this robust on
+    # slow CI while still guaranteeing true parallelism.
     query_concurrency.configure(8)
     jobs = [SourceJob(f"k{i}", "s", {}) for i in range(4)]
+    barrier = threading.Barrier(len(jobs))
 
     def execute(sql, params):
-        time.sleep(0.2)
+        barrier.wait(timeout=5)
         return []
 
-    start = time.monotonic()
-    run_sources_parallel(jobs, execute)
-    # 4 jobs * 0.2s sequential = 0.8s; parallel should be well under 0.5s
-    assert time.monotonic() - start < 0.5
+    outcomes = run_sources_parallel(jobs, execute)
+    assert all(o.available for o in outcomes.values())
+    assert not barrier.broken
 
 
 def test_on_complete_called_per_job():

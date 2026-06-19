@@ -79,6 +79,33 @@ SECTION_SOURCE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "storage": ("database_storage_daily",),
 }
 
+# Maps each gating source (a SECTION_SOURCE_DEPENDENCIES value) to the finalized
+# metadata availability field that records whether that source's GROUP collapsed
+# at finalize. _group_from_outcomes collapses an entire source group together and
+# persists the group's availability in the view metadata under "account_usage" /
+# "organization_usage". All three current gating sources are kind
+# snowflake_account_usage, so they map to "account_usage".
+#
+# IMPORTANT: this MUST be extended whenever a SECTION_SOURCE_DEPENDENCIES source
+# of a DIFFERENT kind is added (e.g. an organization_usage source would map to
+# "organization_usage"). The assertion below fails fast if a gating source is
+# ever added without a corresponding group entry.
+GATING_SOURCE_GROUP: dict[str, str] = {
+    "service_spend_daily": "account_usage",
+    "warehouse_spend_daily": "account_usage",
+    "database_storage_daily": "account_usage",
+}
+
+# Fail-fast guard: every gating source MUST have an availability-group entry, or
+# its collapse signal could never be read. Keeps GATING_SOURCE_GROUP in lockstep
+# with SECTION_SOURCE_DEPENDENCIES.
+assert {
+    dep for deps in SECTION_SOURCE_DEPENDENCIES.values() for dep in deps
+} <= set(GATING_SOURCE_GROUP), (
+    "Every SECTION_SOURCE_DEPENDENCIES gating source must have a "
+    "GATING_SOURCE_GROUP availability-field entry."
+)
+
 
 def compute_section_statuses(source_statuses: dict[str, str]) -> dict[str, str]:
     """Roll per-source readiness up into per-section status.
@@ -189,8 +216,13 @@ class InMemoryDashboardRunRepository:
         retention_expires_at = now + timedelta(days=retention_days)
         # Seed source states for every base key so completed-view section_statuses
         # reflect final readiness rather than defaulting to "idle" → "pending".
-        # A key present in datasets (even as an empty list) is "ready" — the data
-        # window had no rows, not a source failure. An absent key is "unavailable".
+        # A key present in datasets is "ready"; an absent key is "unavailable".
+        # NOTE: an empty [] dataset is ambiguous — it can mean either "no rows in
+        # the window" OR a collapsed/unavailable source group (see
+        # _group_from_outcomes). The /view completed branch reconciles "ready"
+        # against finalized GROUP availability (metadata.account_usage /
+        # organization_usage), NOT dataset emptiness, so only a genuinely
+        # collapsed group surfaces as "unavailable" — an empty window stays ready.
         seeded_source_states = {
             key: {"status": "ready" if key in datasets else "unavailable"}
             for key in BASE_RUN_SOURCE_KEYS
@@ -232,9 +264,15 @@ class InMemoryDashboardRunRepository:
             dict[str, list[dict[str, Any]]],
             DashboardDatasetMetadata,
             StoredSourceBounds,
+            dict[str, str] | None,
         ]
         | None
     ):
+        """Atomic view snapshot: datasets, metadata, bounds AND the base
+        source-status map are all read under a SINGLE lock acquisition so a
+        concurrent worker write can never split a "ready" status from a stale
+        empty dataset. ``source_statuses`` is None for non-snowflake runs.
+        """
         with self._lock:
             run = self._runs.get(run_id)
             if run is None or run.status == "deleted":
@@ -256,6 +294,15 @@ class InMemoryDashboardRunRepository:
                 dataset_key: stored_dataset.aggregate_dataset
                 for dataset_key, stored_dataset in datasets.items()
             }
+            states = self._source_states.get(run_id, {})
+            source_statuses = (
+                {
+                    key: states.get(key, {}).get("status", "idle")
+                    for key in BASE_RUN_SOURCE_KEYS
+                }
+                if run.source == "snowflake"
+                else None
+            )
             return (
                 run,
                 dataset_rows,
@@ -263,6 +310,7 @@ class InMemoryDashboardRunRepository:
                 if metadata is not None
                 else _metadata_for_dataset_rows(dataset_rows),
                 source_bounds,
+                source_statuses,
             )
 
     def _store_source_bounds(
@@ -445,8 +493,16 @@ class InMemoryDashboardRunRepository:
                 stored[source_id] = StoredDashboardDataset(
                     aggregate_dataset=rows, retention_expires_at=retention
                 )
+            # "ready" (streamed, not yet terminal) applies ONLY to BASE sources
+            # while the base run is still running. A DEFERRED (non-base) source
+            # finishing during a running base run must stamp "completed" so its
+            # GET /sources/{id} poll can reach a terminal/served state instead of
+            # degrading to error.
+            is_streaming_base = (
+                source_id in BASE_RUN_SOURCE_KEYS and run.status == "running"
+            )
             self._source_states.setdefault(run_id, {})[source_id] = {
-                "status": "ready" if run.status == "running" else "completed",
+                "status": "ready" if is_streaming_base else "completed",
                 "partial": partial,
                 "skipped_branches": list(skipped_branches or []),
             }
@@ -473,7 +529,6 @@ class InMemoryDashboardRunRepository:
             if error is not None:
                 state["error"] = error
             self._source_states.setdefault(run_id, {})[source_id] = state
-
 
     def create_running_run(
         self,
@@ -709,7 +764,7 @@ def read_dashboard_run_view(
     view_inputs = dashboard_run_repository.get_view_inputs(run_id)
     if view_inputs is None:
         raise HTTPException(status_code=404, detail="Dashboard view not found")
-    run, datasets, metadata, source_bounds = view_inputs
+    run, datasets, metadata, source_bounds, source_statuses = view_inputs
     # Normalize every base source key to [] when absent so the view builder
     # never receives missing keys for a still-streaming run. (build_dashboard_view
     # already defaults absent keys via _dataset_rows, but normalizing keeps the
@@ -718,14 +773,6 @@ def read_dashboard_run_view(
         **{key: [] for key in BASE_RUN_SOURCE_KEYS},
         **datasets,
     }
-    source_statuses = (
-        {
-            key: dashboard_run_repository.get_source(run_id, key).status
-            for key in BASE_RUN_SOURCE_KEYS
-        }
-        if run.source == "snowflake"
-        else None
-    )
     if run.status == "running":
         # Provisional view: span whatever has landed; the date axis is
         # provisional until finalize_run. Section gating drives rendering. We
@@ -761,11 +808,80 @@ def read_dashboard_run_view(
     if source_statuses is not None:
         # Completed/failed views surface the FINAL per-source readiness (not the
         # all-ready model defaults), so an unavailable source stays visible.
+        # Crucially, status is reconciled against GROUP AVAILABILITY recorded in
+        # the finalized metadata: a gating source whose source GROUP collapsed
+        # (e.g. account_usage.available is False after _group_from_outcomes
+        # zeroed the whole group) must read "unavailable" even if its streamed
+        # state still says "ready". A present-but-empty time window does NOT
+        # collapse the group, so it stays "ready".
+        effective_statuses = _reconcile_completed_source_statuses(
+            source_statuses, metadata
+        )
         view = view.model_copy(
-            update={"section_statuses": compute_section_statuses(source_statuses)}
+            update={"section_statuses": compute_section_statuses(effective_statuses)}
         )
     _record_dashboard_run_view_retrieved(view)
     return view.model_dump(mode="json")
+
+
+def _group_is_available(metadata: Any, group_field: str) -> bool:
+    """Read a source group's finalized availability flag DEFENSIVELY.
+
+    ``metadata`` is normally the run's stored metadata dict
+    (``DashboardDatasetMetadata.model_dump()``) or None, but this also tolerates
+    a typed ``DashboardDatasetMetadata`` (getattr fallback). The result is True
+    UNLESS the group's availability flag is explicitly False — missing/None
+    metadata, a missing group field, or a missing/None ``available`` value all
+    DEFAULT to available so a missing signal never force-collapses a section and
+    never crashes.
+    """
+    group = None
+    if isinstance(metadata, dict):
+        group = metadata.get(group_field)
+    elif metadata is not None:
+        group = getattr(metadata, group_field, None)
+    if group is None:
+        return True
+    if isinstance(group, dict):
+        available = group.get("available", True)
+    else:
+        available = getattr(group, "available", True)
+    # Treat as available unless EXPLICITLY False (None/missing => available).
+    return available is not False
+
+
+def _reconcile_completed_source_statuses(
+    source_statuses: dict[str, str],
+    metadata: Any,
+) -> dict[str, str]:
+    """Reconcile streamed per-source status against finalized GROUP availability.
+
+    For a settled (completed/terminal) snowflake view, a source that gates a
+    section (its dataset key is a SECTION_SOURCE_DEPENDENCIES value) is treated
+    as "unavailable" for the section-status rollup ONLY when its source GROUP
+    collapsed — i.e. the metadata availability flag for the source's group
+    (``GATING_SOURCE_GROUP`` → ``account_usage`` / ``organization_usage``) is
+    explicitly False. This is the authoritative collapse signal from
+    ``_group_from_outcomes`` (which zeroes an entire group when a member fails);
+    an empty dataset alone is NOT, because a legitimately empty time window
+    leaves the group available, so a present-but-empty gating source keeps its
+    streamed "ready" status.
+
+    ``metadata`` is the run's stored metadata dict (or None / a typed object) and
+    is read defensively: a missing/None metadata or missing availability flag
+    DEFAULTS to available, so streamed statuses are preserved unchanged and a
+    missing signal never force-collapses a section. Non-gating sources are never
+    altered.
+    """
+    return {
+        key: (
+            "unavailable"
+            if key in GATING_SOURCE_GROUP
+            and not _group_is_available(metadata, GATING_SOURCE_GROUP[key])
+            else status_value
+        )
+        for key, status_value in source_statuses.items()
+    }
 
 
 @router.get("/{run_id}/datasets", response_model=DashboardDatasetResponse)
@@ -847,7 +963,7 @@ def read_dashboard_source(
     view_inputs = dashboard_run_repository.get_view_inputs(run_id)
     if view_inputs is None:
         return {"status": "expired"}
-    _run, datasets, metadata, source_bounds = view_inputs
+    _run, datasets, metadata, source_bounds, _source_statuses = view_inputs
     meta = dashboard_run_repository.get_source_meta(run_id, source_id) or {}
 
     through_date = _through_date_for(metadata) or source_bounds.source_end_date
@@ -1150,6 +1266,16 @@ def _run_dashboard_worker(
             connection_config=connection_config,
             on_source_outcome=on_outcome,
         )
+        # The success finalize (model_dump/finalize_run) is INSIDE the guarded
+        # block: a crash here must still finalize the run terminal rather than
+        # strand it "running" until the wall-clock TTL.
+        repo.finalize_run(
+            run_id,
+            status="completed",
+            summary=data.summary,
+            metadata=data.metadata.model_dump(mode="json"),
+            datasets=data.datasets,
+        )
     except DashboardSourcesUnavailableError:
         repo.finalize_run(
             run_id,
@@ -1159,11 +1285,11 @@ def _run_dashboard_worker(
             datasets={},
             error="Could not query Snowflake billing or Account Usage data.",
         )
-        return
     except Exception:  # noqa: BLE001 — terminal-state guarantee
         # The raw exception detail must never reach the user-facing run.error
         # field (it is serialized on every DashboardRun GET). Log it
-        # server-side and store only a neutral message.
+        # server-side and store only a neutral message. This also covers a crash
+        # in the success finalize above.
         logger.exception("Dashboard run %s failed unexpectedly", run_id)
         repo.finalize_run(
             run_id,
@@ -1173,14 +1299,6 @@ def _run_dashboard_worker(
             datasets={},
             error="An unexpected error occurred while building the dashboard.",
         )
-        return
-    repo.finalize_run(
-        run_id,
-        status="completed",
-        summary=data.summary,
-        metadata=data.metadata.model_dump(mode="json"),
-        datasets=data.datasets,
-    )
 
 
 def _create_snowflake_dashboard_run(

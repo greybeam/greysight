@@ -86,17 +86,19 @@ def build_snowflake_dashboard_data(
         SourceJob(key, source.sql, window)
         for key, source in account_sources.items()
     ]
+    # capacity is org-scoped: window only, no locator. Its SQL is locator-free,
+    # so it must run regardless of whether locator resolution succeeded — gating
+    # it on the locator would skip capacity merely because locator lookup failed.
+    jobs.extend(
+        SourceJob(key, source.sql, window)
+        for key, source in optional_org_sources.items()
+    )
     if account_locator is not None:
         locator_window = {**window, "account_locator": account_locator}
         # org_spend_daily + rate_sheet_daily are scoped to the account locator.
         jobs.extend(
             SourceJob(key, source.sql, locator_window)
             for key, source in org_sources.items()
-        )
-        # capacity is org-scoped: window only, no locator.
-        jobs.extend(
-            SourceJob(key, source.sql, window)
-            for key, source in optional_org_sources.items()
         )
 
     outcomes = run_sources_parallel(
@@ -119,8 +121,6 @@ def build_snowflake_dashboard_data(
         optional_org_sources,
         outcomes,
         unavailable_detail="Could not query Snowflake capacity balance data.",
-        skip=account_locator is None,
-        skip_detail=locator_error,
     )
 
     if not org_availability.available and not account_availability.available:

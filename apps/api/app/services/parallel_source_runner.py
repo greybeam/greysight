@@ -34,6 +34,10 @@ def run_sources_parallel(
     A SnowflakeQueryError (incl. the object-unavailable subclass) marks that
     single source unavailable; it never aborts the others. Availability comes
     from the exception type, not row count.
+
+    ``on_complete`` is invoked from WORKER THREADS (one per job, as each job
+    settles) — it MUST be thread-safe. Callers should only touch lock-guarded
+    state inside it and avoid assuming any particular invocation order.
     """
 
     def _run(job: SourceJob) -> SourceOutcome:

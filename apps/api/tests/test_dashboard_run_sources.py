@@ -4,7 +4,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.models import DashboardRunCreateRequest
 from app.routes.dashboard_runs import (
     InMemoryDashboardRunRepository,
     dashboard_run_repository,
@@ -46,7 +45,7 @@ def test_complete_source_appends_dataset_and_inherits_expiry():
     assert repo.get_source_state(run_id, "ai_consumption_daily") == "completed"
     inputs = repo.get_view_inputs(run_id)
     assert inputs is not None
-    _run, datasets, _meta, _bounds = inputs
+    _run, datasets, _meta, _bounds, _statuses = inputs
     assert "ai_consumption_daily" in datasets
 
 
