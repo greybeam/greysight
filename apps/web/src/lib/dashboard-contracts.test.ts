@@ -573,6 +573,15 @@ describe("parseDashboardView", () => {
         storage: "unavailable",
       });
     });
+
+    it("throws on an invalid section status value", () => {
+      expect(() =>
+        parseDashboardView({
+          ...preparedViewPayload,
+          section_statuses: { overview: "bogus", warehouse: "ready", storage: "ready" },
+        }),
+      ).toThrow("Dashboard view response is invalid");
+    });
   });
 });
 
