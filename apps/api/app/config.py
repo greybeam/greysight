@@ -52,6 +52,10 @@ class Settings(BaseSettings):
         default=("http://localhost:3000",),
         validation_alias=AliasChoices("GREYSIGHT_CORS_ALLOWED_ORIGINS"),
     )
+    query_concurrency: int = Field(
+        default=8, gt=0, le=64,
+        validation_alias=AliasChoices("GREYSIGHT_QUERY_CONCURRENCY"),
+    )
 
     @field_validator(
         "storage_price_usd_per_tb_month",
