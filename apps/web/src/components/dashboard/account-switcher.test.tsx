@@ -67,8 +67,22 @@ describe("AccountSwitcher", () => {
   });
 
   it("renders nothing when organizations is empty", () => {
-    renderWith({ organizations: [] });
-    expect(screen.queryByRole("button")).toBeNull();
+    const { container } = render(
+      <AccountChromeProvider
+        value={{
+          email: "user@example.com",
+          onSignOut: vi.fn(),
+          signOutError: null,
+          organizations: [],
+          activeOrganizationId: null,
+          setActiveOrganization: vi.fn(),
+          openAddAccount: vi.fn(),
+        }}
+      >
+        <AccountSwitcher />
+      </AccountChromeProvider>,
+    );
+    expect(container.firstChild).toBeNull();
   });
 
   it("falls back to org name on the trigger when accountLocator is null", () => {
