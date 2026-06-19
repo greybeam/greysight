@@ -320,9 +320,22 @@ describe("CostDashboard", () => {
 
   it("allows a new run after a pending range response settles", async () => {
     const pendingRange = createDeferred<ReturnType<typeof demoViewForRange>>();
+    const NEW_RUN_SENTINEL = "$9,999.99";
+    let defaultLoadCount = 0;
     vi.mocked(fetchDemoDashboardView).mockImplementation(async (range) => {
       if (range?.startDate === "2026-06-01") {
         return pendingRange.promise;
+      }
+      if (range?.windowDays === 30) {
+        defaultLoadCount += 1;
+        return {
+          ...demoViewForRange(range),
+          totalSpend: {
+            ...demoDashboardView.totalSpend,
+            totalLabel:
+              defaultLoadCount === 1 ? demoDashboardView.totalSpend.totalLabel : NEW_RUN_SENTINEL,
+          },
+        };
       }
       return demoViewForRange(range);
     });
@@ -355,18 +368,44 @@ describe("CostDashboard", () => {
 
     await waitFor(() => expect(runButton).not.toBeDisabled());
 
+    // Record call count before clicking Run analysis so we can prove a NEW call
+    // fires (not just that the initial-load call happened to match windowDays=30).
+    const callCountBeforeRun = vi.mocked(fetchDemoDashboardView).mock.calls.length;
+
     fireEvent.click(runButton);
+
+    // The click must trigger exactly one additional fetchDemoDashboardView({windowDays:30}).
     await waitFor(() =>
-      expect(fetchDemoDashboardView).toHaveBeenCalledWith({ windowDays: 30 }),
+      expect(vi.mocked(fetchDemoDashboardView).mock.calls.length).toBe(callCountBeforeRun + 1),
     );
+    expect(
+      vi.mocked(fetchDemoDashboardView).mock.calls[callCountBeforeRun][0],
+    ).toEqual({ windowDays: 30 });
+
+    // The sentinel value from the new run's response must become visible,
+    // proving the result was applied (not just that the call was made).
+    expect(await screen.findByText(NEW_RUN_SENTINEL)).toBeInTheDocument();
     expect(runButton).not.toBeDisabled();
   });
 
   it("allows a new run after a pending range rejection settles", async () => {
     const pendingRange = createDeferred<ReturnType<typeof demoViewForRange>>();
+    const NEW_RUN_SENTINEL = "$8,888.88";
+    let defaultLoadCount = 0;
     vi.mocked(fetchDemoDashboardView).mockImplementation(async (range) => {
       if (range?.startDate === "2026-06-01") {
         return pendingRange.promise;
+      }
+      if (range?.windowDays === 30) {
+        defaultLoadCount += 1;
+        return {
+          ...demoViewForRange(range),
+          totalSpend: {
+            ...demoDashboardView.totalSpend,
+            totalLabel:
+              defaultLoadCount === 1 ? demoDashboardView.totalSpend.totalLabel : NEW_RUN_SENTINEL,
+          },
+        };
       }
       return demoViewForRange(range);
     });
@@ -400,10 +439,22 @@ describe("CostDashboard", () => {
     ).toBeInTheDocument();
     await waitFor(() => expect(runButton).not.toBeDisabled());
 
+    // Record call count before clicking Run analysis to prove a NEW call fires.
+    const callCountBeforeRun = vi.mocked(fetchDemoDashboardView).mock.calls.length;
+
     fireEvent.click(runButton);
+
+    // The click must trigger exactly one additional fetchDemoDashboardView({windowDays:30}).
     await waitFor(() =>
-      expect(fetchDemoDashboardView).toHaveBeenCalledWith({ windowDays: 30 }),
+      expect(vi.mocked(fetchDemoDashboardView).mock.calls.length).toBe(callCountBeforeRun + 1),
     );
+    expect(
+      vi.mocked(fetchDemoDashboardView).mock.calls[callCountBeforeRun][0],
+    ).toEqual({ windowDays: 30 });
+
+    // The sentinel value from the new run's response must become visible,
+    // proving the result was applied. The range error is cleared by the new run.
+    expect(await screen.findByText(NEW_RUN_SENTINEL)).toBeInTheDocument();
     expect(
       screen.queryByText("Could not load selected date range."),
     ).not.toBeInTheDocument();

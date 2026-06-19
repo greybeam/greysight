@@ -59,4 +59,38 @@ describe("AccountSwitcher", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: /Add Account/ }));
     expect(value.openAddAccount).toHaveBeenCalled();
   });
+
+  it("renders nothing when there is no AccountChromeProvider", () => {
+    // Render without wrapping in any provider so useAccountChrome() returns null.
+    const { container } = render(<AccountSwitcher />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("renders nothing when organizations is empty", () => {
+    renderWith({ organizations: [] });
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("falls back to org name on the trigger when accountLocator is null", () => {
+    renderWith({
+      organizations: [{ id: "org-1", name: "Alpha Corp", accountLocator: null }],
+      activeOrganizationId: "org-1",
+    });
+    // The trigger must display the org name when accountLocator is absent.
+    expect(screen.getByRole("button", { name: /Alpha Corp/ })).toBeInTheDocument();
+  });
+
+  it("closes the menu when clicking outside the container", () => {
+    renderWith({
+      organizations: [{ id: "org-1", name: "Alpha", accountLocator: "AAA-111" }],
+      activeOrganizationId: "org-1",
+    });
+    // Open the menu.
+    fireEvent.click(screen.getByRole("button", { name: /AAA-111/ }));
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+
+    // Simulate a mousedown outside the component (on document.body).
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
 });
