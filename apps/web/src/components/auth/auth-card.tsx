@@ -18,7 +18,7 @@ export default function AuthCard({ children }: { children: ReactNode }) {
         className="pointer-events-none absolute inset-0"
         style={{ background: GLOW_BACKGROUND }}
       />
-      <section className="relative w-full max-w-sm rounded-xl border border-hairline bg-surface p-6 shadow-xl">
+      <section className="relative w-full max-w-md rounded-xl border border-hairline bg-surface p-10 shadow-xl">
         <div className="flex flex-row items-center justify-center gap-3">
           {/* Static brand mark from /public; next/image would force
               dangerouslyAllowSVG for no benefit. Decorative — the wordmark below
@@ -26,12 +26,12 @@ export default function AuthCard({ children }: { children: ReactNode }) {
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             alt=""
-            className="h-10 w-10 rounded-md"
-            height={40}
+            className="rounded-md"
+            height={60}
             src="/greybeam_assets/greybeam_logo.svg"
-            width={40}
+            width={60}
           />
-          <h1 className="font-display text-xl font-semibold text-slate-50">
+          <h1 className="font-display text-4xl font-semibold text-slate-50">
             Greybeam
           </h1>
         </div>

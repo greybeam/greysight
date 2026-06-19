@@ -111,7 +111,7 @@ export default function LoginForm({ authClient }: LoginFormProps) {
           id="email"
           name="email"
           onChange={(event) => setEmail(event.target.value)}
-          placeholder="you@company.com"
+          placeholder="your@work-email.com"
           required
           type="email"
           value={email}
