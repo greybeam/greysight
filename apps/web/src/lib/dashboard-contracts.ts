@@ -306,6 +306,15 @@ export type AIDetailViewModel = {
   skippedBranches: string[];
 };
 
+export type DashboardSectionStatus = "pending" | "ready" | "unavailable";
+
+export type DashboardViewSectionKey = "overview" | "warehouse" | "storage";
+
+export type DashboardViewSectionStatuses = Record<
+  DashboardViewSectionKey,
+  DashboardSectionStatus
+>;
+
 export type DashboardView = {
   schema_version: 1;
   run: DashboardRun;
@@ -320,6 +329,7 @@ export type DashboardView = {
   serviceSpend: ServiceSpendViewModel;
   detailTables: DetailTablesViewModel;
   aiSpendSummary: AISpendSummaryViewModel;
+  sectionStatuses: DashboardViewSectionStatuses;
 };
 
 const REQUIRED_DATASET_KEYS = [
@@ -389,6 +399,54 @@ const OPTIONAL_RUN_STRING_KEYS = [
   "error",
   "user_safe_message",
 ] as const satisfies readonly (keyof DashboardRun)[];
+
+const DASHBOARD_VIEW_SECTION_KEYS = [
+  "overview",
+  "warehouse",
+  "storage",
+] as const satisfies readonly DashboardViewSectionKey[];
+
+const DASHBOARD_SECTION_STATUSES = [
+  "pending",
+  "ready",
+  "unavailable",
+] as const satisfies readonly DashboardSectionStatus[];
+
+const ALL_READY_SECTION_STATUSES: DashboardViewSectionStatuses = {
+  overview: "ready",
+  warehouse: "ready",
+  storage: "ready",
+};
+
+function isDashboardSectionStatus(
+  value: unknown,
+): value is DashboardSectionStatus {
+  return (
+    typeof value === "string" &&
+    (DASHBOARD_SECTION_STATUSES as readonly string[]).includes(value)
+  );
+}
+
+function parseSectionStatuses(
+  payload: Record<string, unknown>,
+): DashboardViewSectionStatuses {
+  if (!hasViewValue(payload, "section_statuses", "sectionStatuses")) {
+    return { ...ALL_READY_SECTION_STATUSES };
+  }
+  const record = readViewRecord(payload, "section_statuses", "sectionStatuses");
+  const result: DashboardViewSectionStatuses = { ...ALL_READY_SECTION_STATUSES };
+  for (const key of DASHBOARD_VIEW_SECTION_KEYS) {
+    const value = record[key];
+    if (value === undefined) {
+      continue;
+    }
+    if (!isDashboardSectionStatus(value)) {
+      throwInvalidDashboardView();
+    }
+    result[key] = value;
+  }
+  return result;
+}
 
 export default function parseDashboardDatasets(payload: unknown): DashboardData {
   if (!isRecord(payload)) {
@@ -486,6 +544,7 @@ export function parseDashboardView(payload: unknown): DashboardView {
           readViewRecord(payload, "ai_spend_summary", "aiSpendSummary"),
         )
       : { total: 0, totalLabel: "$0.00", isEmpty: true },
+    sectionStatuses: parseSectionStatuses(payload),
   };
 }
 
