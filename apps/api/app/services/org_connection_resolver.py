@@ -20,6 +20,7 @@ class OrgConnectionRow:
     private_key_pem: str = field(repr=False)
     passphrase: str | None = field(repr=False)
     status: str = "active"
+    account_locator: str | None = None
 
 
 class OrgConnectionNotConfiguredError(RuntimeError):
@@ -58,6 +59,7 @@ def resolve_snowflake_config(
             private_key_pem=row.private_key_pem,
             private_key_passphrase=row.passphrase,
             query_timeout_seconds=settings.query_timeout_seconds,
+            account_locator=row.account_locator,
         )
 
     if settings.auth_required:
@@ -103,7 +105,7 @@ class SupabaseConnectionFetcher:
                 self._table_url,
                 params={
                     "organization_id": f"eq.{organization_id}",
-                    "select": "account,snowflake_user,role,warehouse,database,schema,status,secret_id",
+                    "select": "account,account_locator,snowflake_user,role,warehouse,database,schema,status,secret_id",
                     "limit": "1",
                 },
                 headers=self._headers(),
@@ -152,4 +154,5 @@ class SupabaseConnectionFetcher:
             private_key_pem=str(pem),
             passphrase=secret.get("passphrase"),
             status=str(meta.get("status") or "invalid"),
+            account_locator=meta.get("account_locator"),
         )

@@ -59,6 +59,7 @@ class SnowflakeConnectionConfig:
     private_key_pem: str | None = field(default=None, repr=False)
     private_key_passphrase: str | None = field(default=None, repr=False)
     query_timeout_seconds: int = 60
+    account_locator: str | None = None
 
     @classmethod
     def from_environment(cls) -> SnowflakeConnectionConfig:
@@ -77,6 +78,7 @@ class SnowflakeConnectionConfig:
             query_timeout_seconds=int(
                 os.environ.get("GREYSIGHT_QUERY_TIMEOUT_SECONDS", "60")
             ),
+            account_locator=os.environ.get("SNOWFLAKE_ACCOUNT_LOCATOR"),
         )
 
     def connector_kwargs(self) -> dict[str, Any]:
