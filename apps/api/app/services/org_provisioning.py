@@ -7,13 +7,11 @@ class OrgProvisioningError(RuntimeError):
     """Raised when org provisioning fails."""
 
 
-class OrgAlreadyExistsError(OrgProvisioningError):
-    """Raised when the one-org guard rejects a second org for the user."""
+class DuplicateSnowflakeAccountError(OrgProvisioningError):
+    """Raised when the Snowflake account is already connected to an org."""
 
 
-def _is_one_org_conflict(response: httpx.Response) -> bool:
-    if response.status_code == 409:
-        return True
+def _is_duplicate_account_conflict(response: httpx.Response) -> bool:
     try:
         body = response.json()
     except ValueError:
@@ -54,8 +52,11 @@ class SupabaseOrgProvisioner:
             # frames hold `params` (p_private_key_pem / p_passphrase) — is not
             # re-raised alongside this error.
             raise OrgProvisioningError("Could not create the organization.") from None
-        if _is_one_org_conflict(response):
-            raise OrgAlreadyExistsError("You already have an organization.")
+        if _is_duplicate_account_conflict(response):
+            raise DuplicateSnowflakeAccountError(
+                "This Snowflake account is already connected to an organization. "
+                "Ask its owner to invite you."
+            )
         if response.status_code not in (200, 201):
             raise OrgProvisioningError("Could not create the organization.")
         try:

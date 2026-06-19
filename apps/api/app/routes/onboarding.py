@@ -124,7 +124,7 @@ def _validate_and_create(
         ) from None
 
     from app.services.org_provisioning import (
-        OrgAlreadyExistsError,
+        DuplicateSnowflakeAccountError,
         OrgProvisioningError,
     )
 
@@ -141,9 +141,13 @@ def _validate_and_create(
             p_private_key_pem=request.private_key_pem,
             p_passphrase=request.passphrase or "",
         )
-    except OrgAlreadyExistsError:
+    except DuplicateSnowflakeAccountError:
         raise HTTPException(
-            status_code=409, detail="You already have an organization."
+            status_code=409,
+            detail=(
+                "This Snowflake account is already connected to an organization. "
+                "Ask its owner to invite you."
+            ),
         ) from None
     except OrgProvisioningError:
         raise HTTPException(
