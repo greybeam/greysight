@@ -27,3 +27,10 @@ def test_ai_detail_model_fields():
 
 def test_view_response_requires_ai_summary():
     assert "ai_spend_summary" in DashboardViewResponse.model_fields
+
+
+def test_section_statuses_defaults_all_ready():
+    fields = DashboardViewResponse.model_fields
+    assert "section_statuses" in fields
+    default = fields["section_statuses"].default_factory()
+    assert default == {"overview": "ready", "warehouse": "ready", "storage": "ready"}
