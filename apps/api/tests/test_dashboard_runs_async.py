@@ -2,8 +2,114 @@ import time
 from uuid import UUID
 
 import app.routes.dashboard_runs as dr
+from app.auth import AuthContext
 from app.config import Settings
+from app.routes.dashboard_runs import read_dashboard_run_view
 from app.services.parallel_source_runner import SourceOutcome
+
+
+def _anon() -> AuthContext:
+    """Auth-disabled context for direct route-function calls in these tests."""
+    return AuthContext(user_id=None, auth_required=False)
+
+
+def _all_dep_sources() -> set[str]:
+    return {s for deps in dr.SECTION_SOURCE_DEPENDENCIES.values() for s in deps}
+
+
+def test_sections_are_overview_warehouse_storage():
+    assert set(dr.SECTION_SOURCE_DEPENDENCIES) == {"overview", "warehouse", "storage"}
+
+
+def test_section_ready_only_when_all_deps_ready():
+    all_ready = {key: "ready" for key in _all_dep_sources()}
+    statuses = dr.compute_section_statuses(all_ready)
+    assert statuses == {
+        "overview": "ready",
+        "warehouse": "ready",
+        "storage": "ready",
+    }
+
+
+def test_pending_dep_keeps_section_pending():
+    statuses = dr.compute_section_statuses({"warehouse_spend_daily": "pending"})
+    assert statuses["warehouse"] == "pending"
+
+
+def test_unavailable_dep_marks_section_unavailable():
+    base = {key: "ready" for key in _all_dep_sources()}
+    base["database_storage_daily"] = "unavailable"
+    statuses = dr.compute_section_statuses(base)
+    assert statuses["storage"] == "unavailable"
+
+
+def test_failed_dep_marks_section_unavailable():
+    base = {key: "ready" for key in _all_dep_sources()}
+    base["service_spend_daily"] = "failed"
+    statuses = dr.compute_section_statuses(base)
+    assert statuses["overview"] == "unavailable"
+
+
+def test_missing_dep_defaults_section_to_pending():
+    # An empty source-status map (nothing landed yet) keeps every section pending.
+    statuses = dr.compute_section_statuses({})
+    assert statuses == {
+        "overview": "pending",
+        "warehouse": "pending",
+        "storage": "pending",
+    }
+
+
+def test_running_view_reports_section_statuses():
+    dr.dashboard_run_repository.clear()
+    run = dr.dashboard_run_repository.create_running_run(
+        organization_id=None,
+        source="snowflake",
+        window_days=100,
+        expected_sources=dr.BASE_RUN_SOURCE_KEYS,
+        retention_days=7,
+    )
+    run_id = UUID(run.id)
+    # Only warehouse data has landed.
+    dr.dashboard_run_repository.set_dataset(
+        run_id,
+        "warehouse_spend_daily",
+        [
+            {
+                "usage_date": "2026-06-01",
+                "warehouse_name": "WH",
+                "credits_used": 1.0,
+                "credits_used_compute": 1.0,
+            }
+        ],
+    )
+    dr.dashboard_run_repository.complete_source(run_id, "warehouse_spend_daily")
+
+    payload = read_dashboard_run_view(run_id, None, None, None, _anon())
+    assert payload["run"]["status"] == "running"
+    assert payload["section_statuses"]["warehouse"] == "ready"
+    assert payload["section_statuses"]["overview"] == "pending"
+    assert payload["section_statuses"]["storage"] == "pending"
+
+
+def test_running_view_with_no_landed_data_keeps_all_pending():
+    dr.dashboard_run_repository.clear()
+    run = dr.dashboard_run_repository.create_running_run(
+        organization_id=None,
+        source="snowflake",
+        window_days=100,
+        expected_sources=dr.BASE_RUN_SOURCE_KEYS,
+        retention_days=7,
+    )
+    run_id = UUID(run.id)
+
+    payload = read_dashboard_run_view(run_id, None, None, None, _anon())
+    assert payload["run"]["status"] == "running"
+    assert payload["section_statuses"] == {
+        "overview": "pending",
+        "warehouse": "pending",
+        "storage": "pending",
+    }
 
 
 def _wait_terminal(run_id: UUID, timeout: float = 2.0) -> str:

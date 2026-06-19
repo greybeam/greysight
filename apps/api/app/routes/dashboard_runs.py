@@ -58,6 +58,47 @@ BASE_RUN_SOURCE_KEYS: tuple[str, ...] = (
     "capacity_balance_daily",
 )
 
+# Source->section gating matrix. Each section renders as soon as its PRIMARY
+# source(s) land. Secondary inputs the view builder already tolerates when empty
+# are intentionally EXCLUDED so their lag never blocks a section:
+#   - capacity_balance_daily        (overview capacity strip)
+#   - org_spend_daily               (billed total-spend override)
+#   - query_compute_by_user_daily   (per-user warehouse breakdown)
+#   - rate_sheet_daily              (currency conversion)
+# rate_sheet_daily is OMITTED here on purpose: build_dashboard_view degrades
+# gracefully on an empty rate sheet (native/USD pricing, no crash — verified in
+# _build_rate_index / _estimated_conversion_unsupported_view_model). The
+# trade-off (premature-readiness risk): a converted-currency section may flip to
+# "ready" and render in native/stale FX a beat before the rate sheet lands.
+#   - overview  -> total_spend + service breakdown => service_spend_daily
+#   - warehouse -> warehouse_spend                 => warehouse_spend_daily
+#   - storage   -> storage_spend                    => database_storage_daily
+SECTION_SOURCE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
+    "overview": ("service_spend_daily",),
+    "warehouse": ("warehouse_spend_daily",),
+    "storage": ("database_storage_daily",),
+}
+
+
+def compute_section_statuses(source_statuses: dict[str, str]) -> dict[str, str]:
+    """Roll per-source readiness up into per-section status.
+
+    ready       — every dependency is "ready"
+    unavailable — at least one dependency is "unavailable" or "failed"
+    pending     — otherwise (a dependency is still pending/unknown)
+    """
+    result: dict[str, str] = {}
+    for section, deps in SECTION_SOURCE_DEPENDENCIES.items():
+        dep_states = [source_statuses.get(dep, "pending") for dep in deps]
+        if any(state in {"unavailable", "failed"} for state in dep_states):
+            result[section] = "unavailable"
+        elif all(state == "ready" for state in dep_states):
+            result[section] = "ready"
+        else:
+            result[section] = "pending"
+    return result
+
+
 # Wall-clock ceiling for a run stuck in "running"; independent of dataset
 # retention. A worker that dies without finalizing can never leave a run
 # permanently running.
@@ -660,6 +701,45 @@ def read_dashboard_run_view(
     if view_inputs is None:
         raise HTTPException(status_code=404, detail="Dashboard view not found")
     run, datasets, metadata, source_bounds = view_inputs
+    # Normalize every base source key to [] when absent so the view builder
+    # never receives missing keys for a still-streaming run. (build_dashboard_view
+    # already defaults absent keys via _dataset_rows, but normalizing keeps the
+    # running and completed paths identical.)
+    datasets = {
+        **{key: [] for key in BASE_RUN_SOURCE_KEYS},
+        **datasets,
+    }
+    source_statuses = (
+        {
+            key: dashboard_run_repository.get_source(run_id, key).status
+            for key in BASE_RUN_SOURCE_KEYS
+        }
+        if run.source == "snowflake"
+        else None
+    )
+    if run.status == "running":
+        # Provisional view: span whatever has landed; the date axis is
+        # provisional until finalize_run. Section gating drives rendering. We
+        # ignore the caller's range here — a finalize-era range would 409 against
+        # the narrow provisional bounds. [source_start, source_end] always
+        # satisfies resolve_dashboard_view_range's bounds check.
+        view = _prepared_view_or_http_error(
+            run=run,
+            datasets=datasets,
+            metadata=metadata,
+            source_bounds=source_bounds,
+            window_days=None,
+            start_date=source_bounds.source_start_date,
+            end_date=source_bounds.source_end_date,
+        )
+        view = view.model_copy(
+            update={
+                "section_statuses": compute_section_statuses(source_statuses or {})
+            }
+        )
+        _record_dashboard_run_view_retrieved(view)
+        return view.model_dump(mode="json")
+
     view = _prepared_view_or_http_error(
         run=run,
         datasets=datasets,
@@ -669,6 +749,12 @@ def read_dashboard_run_view(
         start_date=start_date,
         end_date=end_date,
     )
+    if source_statuses is not None:
+        # Completed/failed views surface the FINAL per-source readiness (not the
+        # all-ready model defaults), so an unavailable source stays visible.
+        view = view.model_copy(
+            update={"section_statuses": compute_section_statuses(source_statuses)}
+        )
     _record_dashboard_run_view_retrieved(view)
     return view.model_dump(mode="json")
 
