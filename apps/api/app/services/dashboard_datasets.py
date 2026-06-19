@@ -49,6 +49,7 @@ def build_snowflake_dashboard_data(
     execute: ExecuteFn | None = None,
     summary_window_days: int = FETCH_WINDOW_DAYS,
     connection_config: SnowflakeConnectionConfig | None = None,
+    on_source_outcome: Callable[[SourceOutcome], None] | None = None,
 ) -> SnowflakeDashboardData:
     if execute is not None:
         execute_source = execute
@@ -98,7 +99,9 @@ def build_snowflake_dashboard_data(
             for key, source in optional_org_sources.items()
         )
 
-    outcomes = run_sources_parallel(jobs, execute_source)
+    outcomes = run_sources_parallel(
+        jobs, execute_source, on_complete=on_source_outcome
+    )
 
     account_datasets, account_availability = _group_from_outcomes(
         account_sources,

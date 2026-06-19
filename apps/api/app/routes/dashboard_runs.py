@@ -1,9 +1,10 @@
+import logging
 from datetime import date, datetime, timedelta, timezone
-from threading import RLock
+from threading import RLock, Thread
 from typing import Any, NamedTuple
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 
 from app.auth import AuthContext, require_auth_context, require_org_membership
@@ -32,6 +33,9 @@ from app.services.dashboard_view_builder import (
 from app.services.dashboard_view_models import DashboardViewResponse
 from app.services.deferred_sources import DEFERRED_SOURCES
 from app.services.demo_data import build_demo_dashboard_dataset
+from app.services.parallel_source_runner import SourceOutcome
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/dashboard-runs", tags=["dashboard-runs"])
 ACCOUNT_USAGE_DATASET_KEYS = (
@@ -58,6 +62,12 @@ BASE_RUN_SOURCE_KEYS: tuple[str, ...] = (
 # retention. A worker that dies without finalizing can never leave a run
 # permanently running.
 RUNNING_RUN_TTL_SECONDS = 300
+
+# Run statuses past which a run is settled. A base source landing late (after
+# finalize/expire/delete) must be a silent no-op for these.
+_TERMINAL_RUN_STATUSES: frozenset[str] = frozenset(
+    {"completed", "failed", "expired", "deleted"}
+)
 
 
 class StoredDashboardDataset(BaseModel):
@@ -357,6 +367,15 @@ class InMemoryDashboardRunRepository:
             run = self._runs.get(run_id)
             if run is None:
                 return
+            # A slow BASE source landing after the run is already terminal must
+            # never mutate or resurrect the run. The deferred-AI path
+            # (non-base sources) legitimately updates post-completion, so it is
+            # not guarded here.
+            if (
+                source_id in BASE_RUN_SOURCE_KEYS
+                and run.status in _TERMINAL_RUN_STATUSES
+            ):
+                return
             if run.status == "running":
                 # Staleness guard for running runs.
                 if not self._is_running_locked(run_id):
@@ -387,6 +406,14 @@ class InMemoryDashboardRunRepository:
     ) -> None:
         with self._lock:
             run = self._runs.get(run_id)
+            # Same terminal-state guard as complete_source: a late BASE source
+            # failure must not mutate an already-terminal run.
+            if (
+                run is not None
+                and source_id in BASE_RUN_SOURCE_KEYS
+                and run.status in _TERMINAL_RUN_STATUSES
+            ):
+                return
             if run is not None and run.status == "running":
                 if not self._is_running_locked(run_id):
                     return
@@ -592,12 +619,13 @@ def read_demo_dashboard_source(
 @router.post("", response_model=DashboardRun, status_code=status.HTTP_201_CREATED)
 def create_dashboard_run(
     request: DashboardRunCreateRequest,
+    response: Response,
     _auth_context: AuthContext = Depends(require_auth_context),
 ) -> DashboardRun:
     _require_dashboard_run_membership(_auth_context, request.organization_id)
     settings = Settings()
     if settings.data_source == "snowflake":
-        run = _create_snowflake_dashboard_run(request, settings)
+        run = _create_snowflake_dashboard_run(request, settings, response)
     else:
         run = _create_demo_dashboard_run(request)
     _record_dashboard_run_created(run)
@@ -998,8 +1026,72 @@ def _prepared_view_or_http_error(
         ) from None
 
 
+def _run_dashboard_worker(
+    run_id: UUID,
+    settings: Settings,
+    connection_config: Any,
+    summary_window_days: int,
+) -> None:
+    """Drive the parallel run to completion, streaming each dataset as it lands.
+
+    Wrapped so the run ALWAYS reaches a terminal state — a crash mid-fetch
+    finalizes ``failed`` rather than leaving the run stuck ``running``. The
+    ``on_outcome`` hook fires from worker threads as each base source lands; it
+    only touches the lock-guarded repo, so it is cheap and thread-safe.
+    """
+    repo = dashboard_run_repository
+
+    def on_outcome(outcome: SourceOutcome) -> None:
+        if outcome.available and outcome.rows is not None:
+            repo.set_dataset(run_id, outcome.key, outcome.rows)
+            repo.complete_source(run_id, outcome.key)
+        else:
+            repo.fail_source(run_id, outcome.key, error="unavailable")
+
+    try:
+        data = build_snowflake_dashboard_data(
+            settings,
+            summary_window_days=summary_window_days,
+            connection_config=connection_config,
+            on_source_outcome=on_outcome,
+        )
+    except DashboardSourcesUnavailableError:
+        repo.finalize_run(
+            run_id,
+            status="failed",
+            summary={},
+            metadata=None,
+            datasets={},
+            error="Could not query Snowflake billing or Account Usage data.",
+        )
+        return
+    except Exception:  # noqa: BLE001 — terminal-state guarantee
+        # The raw exception detail must never reach the user-facing run.error
+        # field (it is serialized on every DashboardRun GET). Log it
+        # server-side and store only a neutral message.
+        logger.exception("Dashboard run %s failed unexpectedly", run_id)
+        repo.finalize_run(
+            run_id,
+            status="failed",
+            summary={},
+            metadata=None,
+            datasets={},
+            error="An unexpected error occurred while building the dashboard.",
+        )
+        return
+    repo.finalize_run(
+        run_id,
+        status="completed",
+        summary=data.summary,
+        metadata=data.metadata.model_dump(mode="json"),
+        datasets=data.datasets,
+    )
+
+
 def _create_snowflake_dashboard_run(
-    request: DashboardRunCreateRequest, settings: Settings
+    request: DashboardRunCreateRequest,
+    settings: Settings,
+    response: Response,
 ) -> DashboardRun:
     from app.services.org_connection_resolver import (
         OrgConnectionNotConfiguredError,
@@ -1007,6 +1099,8 @@ def _create_snowflake_dashboard_run(
     )
     from app.services.snowflake_runtime import get_connection_fetcher
 
+    # Resolve the connection synchronously so a missing connection still 409s on
+    # POST (rather than failing asynchronously inside the worker).
     try:
         connection_config = resolve_snowflake_config(
             str(request.organization_id),
@@ -1019,30 +1113,21 @@ def _create_snowflake_dashboard_run(
             detail="This organization has no Snowflake connection configured.",
         ) from None
 
-    try:
-        dashboard_data = build_snowflake_dashboard_data(
-            settings,
-            summary_window_days=request.window_days,
-            connection_config=connection_config,
-        )
-    except DashboardSourcesUnavailableError:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Could not query Snowflake billing or Account Usage data.",
-        ) from None
-
-    return dashboard_run_repository.create_completed_snapshot(
+    run = dashboard_run_repository.create_running_run(
         organization_id=request.organization_id,
         source=request.source,
         # Persist the Snowflake fetch window used for datasets.
-        # dashboard_data.summary was computed with request.window_days for legacy
-        # summary compatibility.
         window_days=FETCH_WINDOW_DAYS,
-        summary=dashboard_data.summary,
-        datasets=dashboard_data.datasets,
-        metadata=dashboard_data.metadata.model_dump(mode="json"),
+        expected_sources=BASE_RUN_SOURCE_KEYS,
         retention_days=request.retention_days,
     )
+    response.status_code = status.HTTP_202_ACCEPTED
+    Thread(
+        target=_run_dashboard_worker,
+        args=(UUID(run.id), settings, connection_config, request.window_days),
+        daemon=True,
+    ).start()
+    return run
 
 
 def _run_deferred_source(

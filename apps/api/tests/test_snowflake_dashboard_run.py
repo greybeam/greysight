@@ -1,5 +1,7 @@
+import time
 from datetime import date
 from typing import Any
+from uuid import UUID
 
 from fastapi.testclient import TestClient
 
@@ -8,6 +10,17 @@ from app.models import SCHEMA_VERSION
 from app.routes.dashboard_runs import dashboard_run_repository
 from app.services.dashboard_datasets import FETCH_WINDOW_DAYS
 from app.services.snowflake_client import SnowflakeQueryError
+
+
+def _wait_terminal(run_id: str, timeout: float = 3.0) -> str:
+    """Poll the async run until it leaves the running state."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        run = dashboard_run_repository.get_run(UUID(run_id))
+        if run is not None and run.status in {"completed", "failed", "expired"}:
+            return run.status
+        time.sleep(0.02)
+    raise AssertionError("dashboard run never reached a terminal state")
 
 
 def test_snowflake_dashboard_run_uses_v0_builder_and_persists_metadata(
@@ -78,9 +91,11 @@ def test_snowflake_dashboard_run_uses_v0_builder_and_persists_metadata(
         },
     )
 
-    assert run_response.status_code == 201
+    assert run_response.status_code == 202
     run = run_response.json()
+    assert run["status"] == "running"
     assert run["window_days"] == FETCH_WINDOW_DAYS
+    assert _wait_terminal(run["id"]) == "completed"
 
     datasets_response = TestClient(app).get(f"/api/dashboard-runs/{run['id']}/datasets")
     assert datasets_response.status_code == 200
@@ -131,8 +146,11 @@ def test_snowflake_dashboard_run_returns_neutral_error_when_sources_fail(
         },
     )
 
-    assert response.status_code == 502
-    assert response.json()["detail"] == (
+    assert response.status_code == 202
+    run_id = response.json()["id"]
+    assert _wait_terminal(run_id) == "failed"
+    failed_run = dashboard_run_repository.get_run(UUID(run_id))
+    assert failed_run.error == (
         "Could not query Snowflake billing or Account Usage data."
     )
 
@@ -207,8 +225,13 @@ def test_snowflake_dashboard_run_does_not_expose_unexpected_backend_detail(
         },
     )
 
-    assert response.status_code == 500
-    assert "raw private backend detail" not in response.text
+    assert response.status_code == 202
+    run_id = response.json()["id"]
+    assert _wait_terminal(run_id) == "failed"
+    failed_run = dashboard_run_repository.get_run(UUID(run_id))
+    # The raw backend detail must never reach the user-facing run.error field.
+    assert "raw private backend detail" not in (failed_run.error or "")
+    assert "raw private backend detail" not in failed_run.model_dump_json()
 
 
 def test_snowflake_dashboard_run_falls_back_to_estimated_mode(
@@ -239,9 +262,11 @@ def test_snowflake_dashboard_run_falls_back_to_estimated_mode(
         },
     )
 
-    assert run_response.status_code == 201
+    assert run_response.status_code == 202
+    run_id = run_response.json()["id"]
+    assert _wait_terminal(run_id) == "completed"
     datasets_response = TestClient(app).get(
-        f"/api/dashboard-runs/{run_response.json()['id']}/datasets"
+        f"/api/dashboard-runs/{run_id}/datasets"
     )
     body = datasets_response.json()
     assert body["metadata"]["data_mode"] == "estimated"
@@ -304,6 +329,8 @@ def test_snowflake_dashboard_run_view_route_returns_prepared_view(monkeypatch) -
         },
     )
     run_id = run_response.json()["id"]
+    assert run_response.status_code == 202
+    assert _wait_terminal(run_id) == "completed"
 
     view_response = client.get(f"/api/dashboard-runs/{run_id}/view")
 
@@ -336,6 +363,8 @@ def test_snowflake_dashboard_view_rejects_too_old_custom_range(monkeypatch) -> N
         },
     )
     run_id = run_response.json()["id"]
+    assert run_response.status_code == 202
+    assert _wait_terminal(run_id) == "completed"
 
     response = client.get(
         f"/api/dashboard-runs/{run_id}/view",
@@ -370,6 +399,7 @@ def test_snowflake_dashboard_view_rejects_invalid_window_days(monkeypatch) -> No
             "window_days": 30,
         },
     ).json()["id"]
+    assert _wait_terminal(run_id) == "completed"
 
     response = client.get(
         f"/api/dashboard-runs/{run_id}/view",
