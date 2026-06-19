@@ -19,9 +19,8 @@ def test_runs_all_jobs_and_collects_rows():
 
 def test_unavailable_source_does_not_fail_run():
     query_concurrency.configure(8)
-    jobs = [SourceJob("ok", "s", {}), SourceJob("bad", "s", {})]
 
-    def execute(sql, params):  # noqa: F811
+    def execute(sql, params):
         if params.get("fail"):
             raise SnowflakeQueryError("boom")
         return []
