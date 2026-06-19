@@ -29,13 +29,13 @@
 - Modify: `apps/api/tests/test_org_provisioning.py` — rename the two conflict tests to the new error.
 
 **Frontend**
-- Create: `apps/web/src/lib/active-organization.ts` — `localStorage` read/write/clear for the active org id (SSR-safe).
-- Create: `apps/web/src/lib/active-organization.test.ts`
+- Create: `apps/web/src/lib/active-organization.ts` — `localStorage` read/write/clear for the active org id (SSR-safe). Created in Task 4 (its sole consumer); no dedicated test — a trivial getter/setter exercised end-to-end through OrgShell's reconcile tests.
 - Create: `apps/web/src/components/dashboard/account-switcher.tsx` — the dropdown.
 - Create: `apps/web/src/components/dashboard/account-switcher.test.tsx`
 - Modify: `apps/web/src/lib/account-context.tsx` — extend `AccountChrome` with org list + active org + setter + `openAddAccount`.
-- Modify: `apps/web/src/components/org/org-shell.tsx` — own active-org state (localStorage-seeded), provide the new context fields, host the Add-Account modal.
+- Modify: `apps/web/src/components/org/org-shell.tsx` — own active-org state, provide the new context fields, host the Add-Account modal.
 - Modify: `apps/web/src/components/dashboard/dashboard-header.tsx` — replace the static `Account:` span with `<AccountSwitcher />`.
+- Modify: `apps/web/src/components/dashboard/dashboard-header.test.tsx` — drop the header-rendered-locator assertions (the locator moved into `AccountSwitcher`).
 
 ---
 
@@ -189,19 +189,23 @@ git commit -m "feat(db): lift one-owner cap, dedupe snowflake account (#16)"
 
 **Interfaces:**
 - Consumes: the `23505` unique-violation now originates only from `org_active_account_unique` (the owner guard is gone), so a `23505` from this RPC means "duplicate account".
-- Produces: `DuplicateSnowflakeAccountError(OrgProvisioningError)` raised by `SupabaseOrgProvisioner` on `23505`; mapped to HTTP 409 with the verbatim duplicate-account message.
+- Produces: `DuplicateSnowflakeAccountError(OrgProvisioningError)` raised by `SupabaseOrgProvisioner` when the RPC response carries `code == "23505"`; mapped to HTTP 409 with the verbatim duplicate-account message.
 
-- [ ] **Step 1: Update the provisioning unit tests to the new error name**
+> **Codex review fix:** the old `_is_one_org_conflict` treated *any* HTTP 409 as a conflict, which could misclassify unrelated 409s. The detector is narrowed to match on the JSON `code == "23505"` only — more precise, and it collapses the two existing conflict tests into one (the HTTP status no longer matters), so we delete the redundant one.
 
-In `apps/api/tests/test_org_provisioning.py`, update the import and the two conflict tests. Change the import line (top of file) from `OrgAlreadyExistsError` to `DuplicateSnowflakeAccountError`, then:
+- [ ] **Step 1: Update the provisioning unit tests to the new error + narrowed detector**
 
-Rename `test_raises_on_one_org_guard_conflict` (line 56) → `test_raises_duplicate_account_on_unique_violation` and change its assertion:
+In `apps/api/tests/test_org_provisioning.py`:
+
+1. Change the import (top of file) from `OrgAlreadyExistsError` to `DuplicateSnowflakeAccountError`.
+2. **Delete** `test_raises_on_one_org_guard_conflict` (lines 56-79) — it differs from the JSON-code test only by HTTP status, which the narrowed detector ignores. (Keep `test_success_body_not_misread_as_conflict` and the transport/non-JSON tests.)
+3. Rename `test_one_org_conflict_detected_by_json_code` (line 114) → `test_duplicate_account_detected_by_json_code` and change `pytest.raises(OrgAlreadyExistsError)` → `pytest.raises(DuplicateSnowflakeAccountError)`:
 
 ```python
-def test_raises_duplicate_account_on_unique_violation() -> None:
+def test_duplicate_account_detected_by_json_code() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            409, json={"code": "23505", "message": "unique_violation"}
+            400, json={"code": "23505", "message": "unique_violation"}
         )
 
     provisioner = SupabaseOrgProvisioner(
@@ -210,28 +214,17 @@ def test_raises_duplicate_account_on_unique_violation() -> None:
         transport=httpx.MockTransport(handler),
     )
     with pytest.raises(DuplicateSnowflakeAccountError):
-        provisioner(
-            p_user_id="user-1",
-            p_org_name="Acme",
-            p_account="acct",
-            p_user="u",
-            p_role="r",
-            p_warehouse="w",
-            p_database="",
-            p_schema="",
-            p_private_key_pem="PEM",
-            p_passphrase="",
-        )
+        _provision(provisioner)
 ```
 
-Rename `test_one_org_conflict_detected_by_json_code` (line 114) → `test_duplicate_account_detected_by_json_code` and change its `pytest.raises(OrgAlreadyExistsError)` to `pytest.raises(DuplicateSnowflakeAccountError)`. Also in `test_raises_provisioning_error_on_transport_failure` (line 95) change `assert not isinstance(excinfo.value, OrgAlreadyExistsError)` to `DuplicateSnowflakeAccountError`.
+4. In `test_raises_provisioning_error_on_transport_failure` (line 95) change `assert not isinstance(excinfo.value, OrgAlreadyExistsError)` → `DuplicateSnowflakeAccountError`.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `cd apps/api && uv run pytest tests/test_org_provisioning.py -v`
 Expected: FAIL with `ImportError`/`NameError` for `DuplicateSnowflakeAccountError` (not yet defined).
 
-- [ ] **Step 3: Rename the error class in the service**
+- [ ] **Step 3: Rename the error class + narrow the detector in the service**
 
 In `apps/api/app/services/org_provisioning.py`, replace lines 10-11:
 
@@ -240,7 +233,18 @@ class DuplicateSnowflakeAccountError(OrgProvisioningError):
     """Raised when the Snowflake account is already connected to an org."""
 ```
 
-Rename the detector and its raise. Line 14 `def _is_one_org_conflict` → `def _is_duplicate_account_conflict` (keep the body identical), and line 57-58:
+Replace the detector (lines 14-21) — drop the bare `status_code == 409` shortcut so only a `23505` code counts:
+
+```python
+def _is_duplicate_account_conflict(response: httpx.Response) -> bool:
+    try:
+        body = response.json()
+    except ValueError:
+        return False
+    return isinstance(body, dict) and body.get("code") == "23505"
+```
+
+And the raise (lines 57-58):
 
 ```python
         if _is_duplicate_account_conflict(response):
@@ -288,96 +292,7 @@ git commit -m "feat(api): map duplicate snowflake account to 409 (#16)"
 
 ---
 
-## Task 3: Frontend — active-org localStorage helper
-
-**Files:**
-- Create: `apps/web/src/lib/active-organization.ts`
-- Create: `apps/web/src/lib/active-organization.test.ts`
-
-**Interfaces:**
-- Produces:
-  - `readActiveOrganizationId(): string | null`
-  - `writeActiveOrganizationId(id: string | null): void` — passing `null` clears the key.
-
-- [ ] **Step 1: Write the failing test**
-
-Create `apps/web/src/lib/active-organization.test.ts`:
-
-```ts
-import { afterEach, describe, expect, it } from "vitest";
-
-import {
-  readActiveOrganizationId,
-  writeActiveOrganizationId,
-} from "./active-organization";
-
-afterEach(() => {
-  window.localStorage.clear();
-});
-
-describe("active-organization storage", () => {
-  it("returns null when nothing is stored", () => {
-    expect(readActiveOrganizationId()).toBeNull();
-  });
-
-  it("round-trips a written id", () => {
-    writeActiveOrganizationId("org-1");
-    expect(readActiveOrganizationId()).toBe("org-1");
-  });
-
-  it("clears the stored id when written null", () => {
-    writeActiveOrganizationId("org-1");
-    writeActiveOrganizationId(null);
-    expect(readActiveOrganizationId()).toBeNull();
-  });
-});
-```
-
-- [ ] **Step 2: Run the test to verify it fails**
-
-Run: `cd apps/web && npm test -- src/lib/active-organization.test.ts`
-Expected: FAIL — module `./active-organization` not found.
-
-- [ ] **Step 3: Write the implementation**
-
-Create `apps/web/src/lib/active-organization.ts`:
-
-```ts
-// Per-browser persistence of the dashboard's active organization. Kept in
-// localStorage only (no backend column); SSR-safe via a typeof window guard.
-const STORAGE_KEY = "greysight.activeOrganizationId";
-
-export function readActiveOrganizationId(): string | null {
-  if (typeof window === "undefined") return null;
-  const value = window.localStorage.getItem(STORAGE_KEY);
-  return value && value.length > 0 ? value : null;
-}
-
-export function writeActiveOrganizationId(id: string | null): void {
-  if (typeof window === "undefined") return;
-  if (id && id.length > 0) {
-    window.localStorage.setItem(STORAGE_KEY, id);
-  } else {
-    window.localStorage.removeItem(STORAGE_KEY);
-  }
-}
-```
-
-- [ ] **Step 4: Run the test to verify it passes**
-
-Run: `cd apps/web && npm test -- src/lib/active-organization.test.ts`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add apps/web/src/lib/active-organization.ts apps/web/src/lib/active-organization.test.ts
-git commit -m "feat(web): persist active organization in localStorage (#16)"
-```
-
----
-
-## Task 4: Frontend — extend the account context
+## Task 3: Frontend — extend the account context
 
 **Files:**
 - Modify: `apps/web/src/lib/account-context.tsx:10-14`
@@ -423,23 +338,49 @@ export type AccountChrome = {
 - [ ] **Step 2: Typecheck (no test yet — consumers come next)**
 
 Run: `cd apps/web && npm run typecheck`
-Expected: FAIL — `OrgShell`'s provider value no longer satisfies `AccountChrome` (missing new fields). This is expected; Task 5 fixes it. Do not commit yet — commit at the end of Task 5 together, since the type and its sole provider must change atomically to keep the tree compiling.
+Expected: FAIL — `OrgShell`'s provider value no longer satisfies `AccountChrome` (missing new fields). This is expected; Task 4 fixes it. Do not commit yet — commit at the end of Task 4 together, since the type and its sole provider must change atomically to keep the tree compiling.
 
-> Note: Task 4 has no standalone commit. It is folded into Task 5's commit because the type change and the provider that satisfies it cannot compile independently.
+> Note: Task 3 has no standalone commit. It is folded into Task 4's commit because the type change and the provider that satisfies it cannot compile independently.
 
 ---
 
-## Task 5: Frontend — OrgShell owns active org + Add-Account modal
+## Task 4: Frontend — OrgShell owns active org + Add-Account modal
 
 **Files:**
+- Create: `apps/web/src/lib/active-organization.ts`
 - Modify: `apps/web/src/components/org/org-shell.tsx`
 - Test: `apps/web/src/components/org/org-shell.test.tsx` (extend)
 
 **Interfaces:**
-- Consumes: `readActiveOrganizationId`, `writeActiveOrganizationId` (Task 3); extended `AccountChrome` (Task 4); existing `ConnectWizard`, `fetchSessionMemberships`.
-- Produces: a provider value satisfying the extended `AccountChrome`; continues calling `onOrganizationChange` with the active org so `DashboardRuntimeShell` rebuilds its runtime.
+- Consumes: the active-org localStorage helper (created in Step 1 below); extended `AccountChrome` (Task 3); existing `ConnectWizard`, `fetchSessionMemberships`.
+- Produces: a provider value satisfying the extended `AccountChrome`; calls `onOrganizationChange` exactly once per active-org change so `DashboardRuntimeShell` rebuilds its runtime.
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Create the active-org localStorage helper**
+
+`localStorage`-only persistence of the active org id (no backend column). SSR-safe via a `typeof window` guard; trivial enough to need no dedicated test — it is exercised end-to-end through the OrgShell reconcile tests below. Create `apps/web/src/lib/active-organization.ts`:
+
+```ts
+// Per-browser persistence of the dashboard's active organization. Kept in
+// localStorage only (no backend column); SSR-safe via a typeof window guard.
+const STORAGE_KEY = "greysight.activeOrganizationId";
+
+export function readActiveOrganizationId(): string | null {
+  if (typeof window === "undefined") return null;
+  const value = window.localStorage.getItem(STORAGE_KEY);
+  return value && value.length > 0 ? value : null;
+}
+
+export function writeActiveOrganizationId(id: string | null): void {
+  if (typeof window === "undefined") return;
+  if (id && id.length > 0) {
+    window.localStorage.setItem(STORAGE_KEY, id);
+  } else {
+    window.localStorage.removeItem(STORAGE_KEY);
+  }
+}
+```
+
+- [ ] **Step 2: Write the failing tests**
 
 Add to `apps/web/src/components/org/org-shell.test.tsx`. These assume the file's existing helpers for rendering `OrgShell` with a fake auth client + `fetchMemberships`. Mirror the existing test setup in that file; the two new behaviors to assert:
 
@@ -479,12 +420,12 @@ it("falls back to the first org and clears a stale persisted id", async () => {
 
 > If the existing test file does not already expose a `renderSignedIn`-style helper with `memberships`, adapt these to the file's actual harness (a fake `authClient` that yields a session + a `fetchMemberships` returning the array). Keep to two tests — persisted-selection and stale-fallback — do not add more.
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [ ] **Step 3: Run the tests to verify they fail**
 
 Run: `cd apps/web && npm test -- src/components/org/org-shell.test.tsx`
 Expected: FAIL — selection still hardcodes `organizations[0]`, so the persisted-org test fails.
 
-- [ ] **Step 3: Replace the selection effect with active-org state**
+- [ ] **Step 4: Replace the selection effect with reconcile-and-notify**
 
 In `apps/web/src/components/org/org-shell.tsx`:
 
@@ -504,7 +445,7 @@ Add state next to the other `useState` hooks (after `signOutError`, ~line 66):
   const [addAccountOpen, setAddAccountOpen] = useState(false);
 ```
 
-Replace the selection effect (lines 156-159) with reconciliation + notification:
+Replace the existing selection effect (lines 156-159) with the derived active org + a single reconcile-and-notify effect + the switcher actions:
 
 ```tsx
   const organizations =
@@ -514,25 +455,33 @@ Replace the selection effect (lines 156-159) with reconciliation + notification:
     organizations[0] ??
     null;
 
-  // When memberships resolve, reconcile the active id from localStorage: keep a
-  // persisted choice if still a member, else fall back to the first org and clear
-  // the stale key. Derived-state sync, not a cascading loop.
+  // Reconcile the active org from localStorage AND notify the parent in ONE
+  // effect, so the dashboard runtime rebuilds exactly once with the correct org.
+  //   1. Keep the persisted id if it is still a member; otherwise fall back to
+  //      the first org and CLEAR the stale key (write null — we never persist the
+  //      implicit first-org fallback; persistence happens only on an explicit
+  //      selection via setActiveOrganization).
+  //   2. Settle activeOrgId first (return), then notify on the next pass once
+  //      activeOrgId equals the resolved selection. This avoids the transient
+  //      wrong-org notify that a separate [activeOrganization] effect would emit
+  //      (first org, then the persisted org) on the first resolved render.
   useEffect(() => {
     if (membership.status !== "resolved") return;
     const orgs = membership.organizations;
     const stored = readActiveOrganizationId();
-    const valid = stored && orgs.some((org) => org.id === stored) ? stored : null;
-    const next = valid ?? orgs[0]?.id ?? null;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setActiveOrgId(next);
-    if (stored !== valid) writeActiveOrganizationId(next);
-  }, [membership]);
-
-  // Notify the parent whenever the resolved active org changes (find returns the
-  // stable array element, so this only fires on real selection changes).
-  useEffect(() => {
-    onOrganizationChangeRef.current?.(activeOrganization);
-  }, [activeOrganization]);
+    const valid =
+      stored && orgs.some((org) => org.id === stored) ? stored : null;
+    if (stored && !valid) writeActiveOrganizationId(null);
+    const resolvedId = valid ?? orgs[0]?.id ?? null;
+    if (resolvedId !== activeOrgId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setActiveOrgId(resolvedId);
+      return;
+    }
+    onOrganizationChangeRef.current?.(
+      orgs.find((org) => org.id === resolvedId) ?? null,
+    );
+  }, [membership, activeOrgId]);
 
   const setActiveOrganization = useCallback((id: string) => {
     setActiveOrgId(id);
@@ -542,7 +491,9 @@ Replace the selection effect (lines 156-159) with reconciliation + notification:
   const openAddAccount = useCallback(() => setAddAccountOpen(true), []);
 ```
 
-- [ ] **Step 4: Extend the provider value and host the modal**
+> This single effect replaces both the old selection effect and the would-be separate notify effect. The stale-id branch writes `null` (clears the key) rather than persisting the fallback id, matching the "clears a stale persisted id" test. Because `activeOrgId` is never reset on sign-out, a sign-out → sign-in cycle lands directly on the equal-id pass and re-notifies the persisted org.
+
+- [ ] **Step 5: Extend the provider value and host the modal**
 
 Replace the final signed-in `return` (lines 300-310) with:
 
@@ -579,7 +530,11 @@ Replace the final signed-in `return` (lines 300-310) with:
             <ConnectWizard
               accessToken={accessToken}
               onConnected={(newOrgId) => {
-                setActiveOrganization(newOrgId);
+                // Persist the new org and reload memberships; once the reload
+                // includes it, the reconcile effect selects it (now a valid
+                // member) and notifies the dashboard. No setActiveOrganization
+                // call needed here.
+                writeActiveOrganizationId(newOrgId);
                 setAddAccountOpen(false);
                 if (accessToken) void loadMemberships(accessToken);
               }}
@@ -591,28 +546,27 @@ Replace the final signed-in `return` (lines 300-310) with:
   );
 ```
 
-> `setActiveOrganization(newOrgId)` is called before the membership reload finishes; once `loadMemberships` resolves and includes the new org, the reconciliation effect keeps it (it is now a valid member) and the notify effect switches the dashboard to it.
-
-- [ ] **Step 5: Run tests + typecheck to verify pass**
+- [ ] **Step 6: Run tests + typecheck to verify pass**
 
 Run: `cd apps/web && npm test -- src/components/org/org-shell.test.tsx && npm run typecheck`
-Expected: PASS, and typecheck clean (the provider now satisfies the extended `AccountChrome` from Task 4).
+Expected: PASS, and typecheck clean (the provider now satisfies the extended `AccountChrome` from Task 3).
 
-- [ ] **Step 6: Commit (includes Task 4)**
+- [ ] **Step 7: Commit (includes Task 3)**
 
 ```bash
-git add apps/web/src/lib/account-context.tsx apps/web/src/components/org/org-shell.tsx apps/web/src/components/org/org-shell.test.tsx
-git commit -m "feat(web): OrgShell owns active org + add-account modal (#16)"
+git add apps/web/src/lib/active-organization.ts apps/web/src/lib/account-context.tsx apps/web/src/components/org/org-shell.tsx apps/web/src/components/org/org-shell.test.tsx
+git commit -m "feat(web): active-org selection, persistence, and add-account modal (#16)"
 ```
 
 ---
 
-## Task 6: Frontend — AccountSwitcher dropdown in the header
+## Task 5: Frontend — AccountSwitcher dropdown in the header
 
 **Files:**
 - Create: `apps/web/src/components/dashboard/account-switcher.tsx`
 - Create: `apps/web/src/components/dashboard/account-switcher.test.tsx`
 - Modify: `apps/web/src/components/dashboard/dashboard-header.tsx:32-33,56-61`
+- Modify: `apps/web/src/components/dashboard/dashboard-header.test.tsx`
 
 **Interfaces:**
 - Consumes: `useAccountChrome()` (extended `AccountChrome`).
@@ -825,15 +779,25 @@ Remove the now-unused `locator` line (line 33) and the static `Account:` span (l
 
 > The `accountLocator` prop and `header?.accountLocator` fallback are no longer read by the header (the switcher sources the active org's locator from context). Leave the `DashboardHeaderProps.accountLocator` prop in place if other callers still pass it; just remove the unused `const locator = …` line to satisfy the linter. If `npm run typecheck`/`lint` flags `accountLocator` as unused in this file, prefix it `_accountLocator` or drop it from the destructure — do not chase removing it from callers in this task.
 
-- [ ] **Step 6: Run header tests + full web suite + typecheck**
+- [ ] **Step 6: Update the existing header test for the moved locator**
+
+The header no longer renders the `Account:`/locator span itself — `AccountSwitcher` sources the active org's locator from context and renders `null` when no provider wraps it. Three tests in `apps/web/src/components/dashboard/dashboard-header.test.tsx` assert the header-rendered locator and now break; update them:
+
+1. `shows the product and the account locator` (line 30) — the header still renders `Greybeam` and the Run button but no longer the locator. Drop the `screen.getByText("TU24199")` and `screen.getByText(/Account:/)` assertions (keep `Greybeam` + `Run analysis`) and rename it to `shows the product and run action`.
+2. `prefers the connection account locator over the run's view model` (line 46) — **delete** it. Locator precedence moved out of the header; `AccountSwitcher` owns locator display (covered by `account-switcher.test.tsx`).
+3. `shows the account locator before any run, without a view model` (line 60) — **delete** it, same reason.
+
+Leave the other header tests untouched.
+
+- [ ] **Step 7: Run header tests + full web suite + typecheck**
 
 Run: `cd apps/web && npm test && npm run typecheck && npm run lint`
-Expected: PASS. If a pre-existing `dashboard-header` test asserted the static `Account:` text, update it to query the switcher trigger instead (same `Account:` label is still rendered by `AccountSwitcher`).
+Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add apps/web/src/components/dashboard/account-switcher.tsx apps/web/src/components/dashboard/account-switcher.test.tsx apps/web/src/components/dashboard/dashboard-header.tsx
+git add apps/web/src/components/dashboard/account-switcher.tsx apps/web/src/components/dashboard/account-switcher.test.tsx apps/web/src/components/dashboard/dashboard-header.tsx apps/web/src/components/dashboard/dashboard-header.test.tsx
 git commit -m "feat(web): account switcher dropdown in dashboard header (#16)"
 ```
 
@@ -847,6 +811,6 @@ git commit -m "feat(web): account switcher dropdown in dashboard header (#16)"
 
 ## Spec self-review notes
 
-- **Coverage:** multi-org ownership (Task 1), duplicate blocking + 409 (Tasks 1-2), localStorage persistence (Task 3), context plumbing (Task 4), active-org selection + stale fallback + modal + auto-switch (Task 5), dropdown + Add Account (Task 6). All spec sections map to a task.
+- **Coverage:** multi-org ownership (Task 1), duplicate blocking + 409 (Tasks 1-2), context plumbing (Task 3), localStorage persistence + active-org selection + stale fallback + modal + auto-switch (Task 4), dropdown + Add Account + header wiring (Task 5). All spec sections map to a task.
 - **Disconnect edge (spec implementation-check):** resolved — disconnect keeps the row as `status='invalid'`, so the unique index is partial (`where status='active'`) to allow re-onboarding.
 - **Pre-existing duplicates (spec implementation-check):** resolved — migration preflight raises a clear error before building the index.
