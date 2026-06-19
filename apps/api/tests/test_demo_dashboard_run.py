@@ -5,7 +5,7 @@ from uuid import UUID
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.models import DashboardRunCreateRequest
+from app.models import REQUIRED_DATASET_KEYS, DashboardRunCreateRequest
 from app.routes.dashboard_runs import dashboard_run_repository
 from app.services.demo_data import DEMO_FETCH_DAYS, build_demo_dashboard_dataset
 
@@ -15,12 +15,17 @@ ORG_TWO = "00000000-0000-0000-0000-000000000002"
 
 def _complete_create_payload() -> dict[str, object]:
     demo_payload = build_demo_dashboard_dataset()
+    # Exclude deferred-source datasets (e.g. ai_consumption_daily) — the create
+    # endpoint only accepts the core REQUIRED_DATASET_KEYS.
+    core_datasets = {
+        k: v for k, v in demo_payload.datasets.items() if k in REQUIRED_DATASET_KEYS
+    }
     return {
         "organization_id": ORG_ONE,
         "source": "snowflake",
         "window_days": 30,
         "summary": demo_payload.summary.model_dump(mode="json"),
-        "datasets": deepcopy(demo_payload.datasets),
+        "datasets": deepcopy(core_datasets),
     }
 
 
@@ -650,3 +655,38 @@ def test_local_dashboard_origin_can_read_demo_datasets() -> None:
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+
+
+def test_demo_view_has_ai_summary() -> None:
+    client = TestClient(app)
+    body = client.get("/api/dashboard-runs/demo/view").json()
+    assert "ai_spend_summary" in body
+    assert body["ai_spend_summary"]["total"] > 0
+
+
+def test_demo_source_returns_404_for_unknown_source() -> None:
+    client = TestClient(app)
+    response = client.get("/api/dashboard-runs/demo/sources/nonexistent_source")
+    assert response.status_code == 404
+
+
+def test_demo_source_returns_completed_detail() -> None:
+    client = TestClient(app)
+    body = client.get(
+        "/api/dashboard-runs/demo/sources/ai_consumption_daily?window_days=30"
+    ).json()
+    assert body["status"] == "completed"
+    assert "daily_series" in body["view"]
+    assert len(body["view"]["daily_series"]) == 30
+
+
+def test_demo_source_rejects_out_of_bounds_range_with_422_not_500() -> None:
+    # Regression: the deferred-source GET route resolved the view range directly,
+    # so a bad range raised an unhandled 500 instead of the structured 422 the
+    # /view route returns. window_days=15 is below the supported minimum.
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get(
+        "/api/dashboard-runs/demo/sources/ai_consumption_daily?window_days=15"
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid_range"

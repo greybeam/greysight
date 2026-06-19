@@ -7,7 +7,11 @@ import math
 from typing import Any, Callable
 
 from app.models import DashboardDatasetMetadata, DashboardRun
+from app.services.ai_consumption import AI_KPI_SERVICE_TYPES
 from app.services.dashboard_view_models import (
+    AIConsumptionPoint,
+    AIDetailViewModel,
+    AISpendSummaryViewModel,
     BalancePoint,
     CapacityBalanceViewModel,
     DashboardProjectionRange,
@@ -111,6 +115,12 @@ class NamedAmount:
     name: str
     spend: float
     credits: float
+
+
+@dataclass(frozen=True)
+class _AIRatingMetadata:
+    currency: str | None
+    estimated_credit_price_usd: float
 
 
 def window_start_for(through_date: date, window_days: int) -> date:
@@ -301,6 +311,31 @@ def build_dashboard_view(
     )
 
 
+def _build_ai_spend_summary(
+    *,
+    rows: list[DatasetRow],
+    currency: str,
+    convert: ConvertCredits,
+) -> AISpendSummaryViewModel:
+    """KPI: dollars across AI service types from service_spend_daily.
+
+    Priced with the AI_COMPUTE rate (falling back to the estimated credit price
+    via convert()). Independent of the heavy detail query.
+    """
+    total = 0.0
+    for row in rows:
+        service_type = _string_field(row, "service_type", "Unknown service")
+        if service_type not in AI_KPI_SERVICE_TYPES:
+            continue
+        credits = _required_float_field(row, "service_spend_daily", "credits_used")
+        total += convert(credits, _as_date(row["usage_date"]), service_type, "AI_COMPUTE")
+    return AISpendSummaryViewModel(
+        total=total,
+        total_label=_format_currency(total, currency),
+        is_empty=total <= 0.0,
+    )
+
+
 def _build_dashboard_view_for_ranges(
     *,
     run: DashboardRun,
@@ -444,6 +479,11 @@ def _build_dashboard_view_for_ranges(
         currency=currency,
         forecast_daily_spend=forecast_daily_spend,
     )
+    ai_spend_summary = _build_ai_spend_summary(
+        rows=service_rows,
+        currency=currency,
+        convert=convert,
+    )
 
     return DashboardViewResponse(
         run=run,
@@ -472,6 +512,7 @@ def _build_dashboard_view_for_ranges(
             ),
             storage=_cap_detail_rows(storage_spend.databases),
         ),
+        ai_spend_summary=ai_spend_summary,
     )
 
 
@@ -661,6 +702,11 @@ def _empty_dashboard_view(
             warehouses=[],
             users=[],
             storage=[],
+        ),
+        ai_spend_summary=AISpendSummaryViewModel(
+            total=0.0,
+            total_label=_format_currency(0.0, currency),
+            is_empty=True,
         ),
     )
 
@@ -1717,3 +1763,76 @@ def _optional_string(value: object) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def build_ai_detail_view(
+    *,
+    ai_rows: list[DatasetRow],
+    rate_rows: list[DatasetRow],
+    currency: str,
+    estimated_credit_price_usd: float,
+    start_date: date,
+    end_date: date,
+    partial: bool,
+    skipped_branches: list[str],
+) -> AIDetailViewModel:
+    rates = _build_rate_index(rate_rows)
+    windowed = _rows_in_window(ai_rows, start_date, end_date)
+    dates = _date_range(start_date, end_date)
+
+    def _to_dollars(credits: float, usage_date: date, service_type: str) -> float:
+        return (
+            _credits_to_dollars(
+                credits=credits,
+                usage_date=usage_date,
+                service_type=service_type,
+                rates=rates,
+                metadata=_AIRatingMetadata(
+                    currency=currency,
+                    estimated_credit_price_usd=estimated_credit_price_usd,
+                ),
+                rating_type="AI_COMPUTE",
+            )
+            or 0.0
+        )
+
+    consumption_names = sorted(
+        {_string_field(row, "consumption_type", "Unknown") for row in windowed}
+    )
+    spend_by_date_and_type = {
+        (usage_date, name): 0.0 for usage_date in dates for name in consumption_names
+    }
+    named_amounts: list[NamedAmount] = []
+    for row in windowed:
+        usage_date = _as_date(row["usage_date"])
+        name = _string_field(row, "consumption_type", "Unknown")
+        service_type = _string_field(row, "service_type", "Unknown service")
+        credits = _required_float_field(row, "ai_consumption_daily", "credits_used")
+        dollars = _to_dollars(credits, usage_date, service_type)
+        key = (usage_date, name)
+        spend_by_date_and_type[key] = spend_by_date_and_type.get(key, 0.0) + dollars
+        named_amounts.append(NamedAmount(name=name, spend=dollars, credits=credits))
+
+    ranked = _rank_named_amounts(named_amounts, currency)
+
+    values_by_date = [
+        {name: spend_by_date_and_type[(usage_date, name)] for name in consumption_names}
+        for usage_date in dates
+    ]
+    bucketed_names, bucketed_values = _bucket_stacked_series(
+        consumption_names, values_by_date
+    )
+    daily_series = [
+        AIConsumptionPoint(date=usage_date.isoformat(), values=values)
+        for usage_date, values in zip(dates, bucketed_values, strict=True)
+    ]
+
+    return AIDetailViewModel(
+        daily_series=daily_series,
+        consumption_type_names=bucketed_names,
+        ranked_consumption_types=ranked,
+        consumption_bars=_build_ranked_bar_rows(ranked),
+        is_empty=len(ranked) == 0,
+        partial=partial,
+        skipped_branches=skipped_branches,
+    )

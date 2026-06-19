@@ -1,4 +1,5 @@
 from app.models import SAFE_DATASET_ROW_FIELDS, SCHEMA_VERSION
+from app.services.deferred_sources import DEFERRED_SOURCES
 from app.services.demo_data import (
     DEMO_ACCOUNT_LOCATOR,
     DEMO_ACCOUNT_USAGE_THROUGH,
@@ -6,6 +7,18 @@ from app.services.demo_data import (
     DEMO_FETCH_DAYS,
     build_demo_dashboard_dataset,
 )
+
+# Fields expected for the ai_consumption_daily deferred-source dataset.
+_AI_CONSUMPTION_DAILY_FIELDS = frozenset(
+    {"usage_date", "service_type", "consumption_type", "credits_used"}
+)
+# All datasets produced by the demo builder: core (sendable via create) + deferred.
+_DEMO_DATASET_KEYS = frozenset(SAFE_DATASET_ROW_FIELDS) | frozenset(DEFERRED_SOURCES)
+# Per-key field schema for ALL demo datasets (core + deferred).
+_DEMO_DATASET_ROW_FIELDS: dict[str, frozenset[str]] = {
+    **SAFE_DATASET_ROW_FIELDS,
+    "ai_consumption_daily": _AI_CONSUMPTION_DAILY_FIELDS,
+}
 
 
 def test_demo_dashboard_dataset_is_deterministic() -> None:
@@ -30,12 +43,15 @@ def test_demo_dashboard_dataset_matches_v0_contract() -> None:
     assert DEMO_ACCOUNT_USAGE_THROUGH == DEMO_BILLING_THROUGH
     assert payload.metadata.organization_usage.available is True
     assert payload.metadata.account_usage.available is True
-    assert set(payload.datasets) == set(SAFE_DATASET_ROW_FIELDS)
+    # Core datasets match the create-endpoint allowlist; deferred source datasets
+    # (e.g. ai_consumption_daily) are also present for the demo source route.
+    assert set(payload.datasets) == _DEMO_DATASET_KEYS
 
     for dataset_key, rows in payload.datasets.items():
         assert rows, f"{dataset_key} must not be empty"
+        expected_fields = _DEMO_DATASET_ROW_FIELDS[dataset_key]
         for row in rows:
-            assert set(row) == SAFE_DATASET_ROW_FIELDS[dataset_key]
+            assert set(row) == expected_fields
 
     assert payload.datasets["current_account"] == [
         {"account_locator": DEMO_ACCOUNT_LOCATOR}

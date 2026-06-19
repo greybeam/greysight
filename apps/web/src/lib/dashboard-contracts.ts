@@ -285,6 +285,27 @@ export type UnsupportedViewModel = {
   detail: string;
 };
 
+export type AIConsumptionPoint = {
+  date: string;
+  values: Record<string, number>;
+};
+
+export type AISpendSummaryViewModel = {
+  total: number;
+  totalLabel: string;
+  isEmpty: boolean;
+};
+
+export type AIDetailViewModel = {
+  dailySeries: AIConsumptionPoint[];
+  consumptionTypeNames: string[];
+  rankedConsumptionTypes: RankedSpendRow[];
+  consumptionBars: RankedBarRow[];
+  isEmpty: boolean;
+  partial: boolean;
+  skippedBranches: string[];
+};
+
 export type DashboardView = {
   schema_version: 1;
   run: DashboardRun;
@@ -298,6 +319,7 @@ export type DashboardView = {
   storageSpend: StorageSpendViewModel;
   serviceSpend: ServiceSpendViewModel;
   detailTables: DetailTablesViewModel;
+  aiSpendSummary: AISpendSummaryViewModel;
 };
 
 const REQUIRED_DATASET_KEYS = [
@@ -459,6 +481,11 @@ export function parseDashboardView(payload: unknown): DashboardView {
     detailTables: parseDetailTablesViewModel(
       readViewRecord(payload, "detail_tables", "detailTables"),
     ),
+    aiSpendSummary: hasViewValue(payload, "ai_spend_summary", "aiSpendSummary")
+      ? parseAISpendSummaryViewModel(
+          readViewRecord(payload, "ai_spend_summary", "aiSpendSummary"),
+        )
+      : { total: 0, totalLabel: "$0.00", isEmpty: true },
   };
 }
 
@@ -1227,6 +1254,47 @@ function readViewSpendBasis(
     throwInvalidDashboardView();
   }
   return value;
+}
+
+function parseAISpendSummaryViewModel(
+  payload: Record<string, unknown>,
+): AISpendSummaryViewModel {
+  return {
+    total: readViewNumber(payload, "total"),
+    totalLabel: readViewString(payload, "total_label", "totalLabel"),
+    isEmpty: readViewBoolean(payload, "is_empty", "isEmpty"),
+  };
+}
+
+export function parseAIDetailViewModel(payload: unknown): AIDetailViewModel {
+  const record = asViewRecord(payload);
+  return {
+    dailySeries: readViewArray(record, "daily_series", "dailySeries").map(
+      parseServicePoint,
+    ),
+    consumptionTypeNames: readViewArray(
+      record,
+      "consumption_type_names",
+      "consumptionTypeNames",
+    ).map(readViewArrayString),
+    rankedConsumptionTypes: readViewArray(
+      record,
+      "ranked_consumption_types",
+      "rankedConsumptionTypes",
+    ).map(parseRankedSpendRow),
+    consumptionBars: readViewArray(
+      record,
+      "consumption_bars",
+      "consumptionBars",
+    ).map(parseRankedBarRow),
+    isEmpty: readViewBoolean(record, "is_empty", "isEmpty"),
+    partial: readViewBoolean(record, "partial"),
+    skippedBranches: readViewArray(
+      record,
+      "skipped_branches",
+      "skippedBranches",
+    ).map(readViewArrayString),
+  };
 }
 
 function throwInvalidDashboardView(): never {

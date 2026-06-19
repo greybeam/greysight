@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import demoDashboardView from "../../lib/demo-dashboard-view";
 import {
+  AiSpendSection,
   OverviewSection,
   StorageSpendSection,
   WarehouseSpendSection,
@@ -611,6 +612,49 @@ describe("section skeletons", () => {
       "h-80",
     );
     expect(screen.getByTestId("detail-table-skeleton")).toBeInTheDocument();
+  });
+});
+
+describe("AiSpendSection", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  const summary = { total: 1234.5, totalLabel: "$1,234.50", isEmpty: false };
+
+  it("shows KPI immediately while detail is loading", () => {
+    render(
+      <AiSpendSection
+        currency="USD"
+        summary={summary}
+        detail={{ status: "loading" }}
+      />,
+    );
+    expect(screen.getByText("$1,234.50")).toBeInTheDocument();
+  });
+
+  it("renders chart + ranked card when detail is ready", () => {
+    render(
+      <AiSpendSection
+        currency="USD"
+        summary={summary}
+        detail={{
+          status: "ready",
+          viewModel: {
+            dailySeries: [{ date: "2026-06-01", values: { CORTEX_ANALYST: 4 } }],
+            consumptionTypeNames: ["CORTEX_ANALYST"],
+            rankedConsumptionTypes: [],
+            consumptionBars: [
+              { name: "CORTEX_ANALYST", spend: 4, spendLabel: "$4.00", credits: 2, barWidthPercent: 100 },
+            ],
+            isEmpty: false,
+            partial: true,
+            skippedBranches: ["cortex_code_cli"],
+          },
+        }}
+      />,
+    );
+    expect(screen.getByTestId("dashboard-section-ai-spend")).toBeInTheDocument();
   });
 });
 

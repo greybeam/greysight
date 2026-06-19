@@ -23,6 +23,16 @@ class SnowflakeQueryError(RuntimeError):
     """Raised with a user-safe Snowflake query message."""
 
 
+class SnowflakeObjectUnavailableError(SnowflakeQueryError):
+    """Raised when a queried object does not exist or is not authorized.
+
+    A specialization of SnowflakeQueryError so resilient per-branch fetches can
+    catch it explicitly to skip a missing/unauthorized table, while broader
+    ``except SnowflakeQueryError`` fallbacks (e.g. main-run source groups) still
+    treat it as a query failure and degrade gracefully to estimated data.
+    """
+
+
 class _SnowflakeConnectorProxy:
     def connect(self, **kwargs: Any) -> Any:
         import snowflake.connector as connector
@@ -146,7 +156,11 @@ def execute_source_query(
             cursor.execute(sql, bind_params)
             columns = [_column_name(column) for column in cursor.description or ()]
             return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
-    except Exception:
+    except Exception as exc:
+        if _is_object_unavailable(exc):
+            raise SnowflakeObjectUnavailableError(
+                "Snowflake object is unavailable for this account."
+            ) from None
         raise SnowflakeQueryError("Could not query Snowflake.") from None
     finally:
         connection.close()
@@ -212,6 +226,24 @@ def _validation_queries() -> tuple[str, ...]:
         "select 1 from SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY limit 1",
         "select 1 from SNOWFLAKE.ACCOUNT_USAGE.QUERY_ATTRIBUTION_HISTORY limit 1",
         "select 1 from SNOWFLAKE.ACCOUNT_USAGE.DATABASE_STORAGE_USAGE_HISTORY limit 1",
+    )
+
+
+# Snowflake error codes for "object does not exist" (2003) and
+# "insufficient privileges" (3001). These mean a branch table is unavailable
+# for this account rather than a real query failure.
+_OBJECT_UNAVAILABLE_ERRNOS = frozenset({2003, 3001})
+
+
+def _is_object_unavailable(exc: Exception) -> bool:
+    errno = getattr(exc, "errno", None)
+    if errno in _OBJECT_UNAVAILABLE_ERRNOS:
+        return True
+    message = str(exc).lower()
+    return (
+        ("does not exist" in message and "object" in message)
+        or "not authorized" in message
+        or "insufficient privileges" in message
     )
 
 

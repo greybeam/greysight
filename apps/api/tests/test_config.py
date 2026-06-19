@@ -15,7 +15,7 @@ def test_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.data_source == "demo"
     assert settings.auth_required is False
     assert settings.default_window_days == 30
-    assert settings.query_timeout_seconds == 60
+    assert settings.query_timeout_seconds == 180
 
 
 def test_greysight_window_and_timeout_env_aliases(

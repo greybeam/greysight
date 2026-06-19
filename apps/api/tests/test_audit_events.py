@@ -3,6 +3,7 @@ from copy import deepcopy
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.models import REQUIRED_DATASET_KEYS
 from app.routes.dashboard_runs import dashboard_run_repository
 from app.services.audit_events import audit_event_recorder
 from app.services.snowflake_client import SnowflakeValidationError
@@ -13,11 +14,16 @@ def _complete_create_payload(
     organization_id: str | None = "00000000-0000-0000-0000-000000000001",
 ) -> dict[str, object]:
     demo_payload = build_demo_dashboard_dataset()
+    # Exclude deferred-source datasets (e.g. ai_consumption_daily) — the create
+    # endpoint only accepts the core REQUIRED_DATASET_KEYS.
+    core_datasets = {
+        k: v for k, v in demo_payload.datasets.items() if k in REQUIRED_DATASET_KEYS
+    }
     payload: dict[str, object] = {
         "source": "snowflake",
         "window_days": 30,
         "summary": demo_payload.summary.model_dump(mode="json"),
-        "datasets": deepcopy(demo_payload.datasets),
+        "datasets": deepcopy(core_datasets),
     }
     if organization_id is not None:
         payload["organization_id"] = organization_id

@@ -1,7 +1,9 @@
 import resolveApiUrl from "./api-client";
 import parseDashboardDatasets, {
+  parseAIDetailViewModel,
   parseDashboardRun,
   parseDashboardView,
+  type AIDetailViewModel,
   type DashboardData,
   type DashboardRun,
   type DashboardView,
@@ -105,6 +107,87 @@ export async function pollDashboardRun(
   }
 
   throw new Error("Dashboard run polling timed out");
+}
+
+export type DashboardSourceStatus =
+  | "idle"
+  | "pending"
+  | "completed"
+  | "failed"
+  | "expired";
+
+export type DashboardSourceResult = {
+  status: DashboardSourceStatus;
+  view: AIDetailViewModel | null;
+};
+
+export async function triggerDashboardSource(
+  runId: string,
+  sourceId: string,
+  options: DashboardApiOptions = {},
+): Promise<void> {
+  await fetchJson(
+    `/api/dashboard-runs/${runId}/sources/${sourceId}`,
+    { method: "POST" },
+    options,
+  );
+}
+
+export async function fetchDashboardSource(
+  runId: string,
+  sourceId: string,
+  range: DashboardViewRangeRequest = { windowDays: 30 },
+  options: DashboardApiOptions = {},
+): Promise<DashboardSourceResult> {
+  const params = new URLSearchParams();
+  if ("windowDays" in range && range.windowDays !== undefined) {
+    params.set("window_days", String(range.windowDays));
+  }
+  if ("startDate" in range && range.startDate !== undefined && range.endDate !== undefined) {
+    params.set("start_date", range.startDate);
+    params.set("end_date", range.endDate);
+  }
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  const payload = await fetchJson(
+    `/api/dashboard-runs/${runId}/sources/${sourceId}${suffix}`,
+    {},
+    options,
+  );
+  const status = (payload as { status: DashboardSourceStatus }).status;
+  const rawView = (payload as { view?: unknown }).view;
+  return {
+    status,
+    view: status === "completed" && rawView != null ? parseAIDetailViewModel(rawView) : null,
+  };
+}
+
+// Headroom: the heavy AI source query can take ~1 min; poll well past the existing 30x2s cap.
+export async function pollDashboardSource(
+  runId: string,
+  sourceId: string,
+  range: DashboardViewRangeRequest,
+  { intervalMs = 3_000, maxAttempts = 40, accessToken }: PollOptions = {},
+): Promise<DashboardSourceResult> {
+  let last: DashboardSourceResult = { status: "pending", view: null };
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    last = await fetchDashboardSource(runId, sourceId, range, { accessToken });
+    if (
+      last.status === "completed" ||
+      last.status === "failed" ||
+      last.status === "expired"
+    ) {
+      return last;
+    }
+    if (intervalMs > 0) await delay(intervalMs);
+  }
+  return last;
+}
+
+export async function fetchDemoDashboardSource(
+  sourceId: string,
+  range: DashboardViewRangeRequest = { windowDays: 30 },
+): Promise<DashboardSourceResult> {
+  return fetchDashboardSource("demo", sourceId, range);
 }
 
 async function fetchDashboardDataPath(

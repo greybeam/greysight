@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import parseDashboardDatasets, {
   parseDashboardView,
+  parseAIDetailViewModel,
 } from "./dashboard-contracts";
 import demoDashboardDatasets from "./demo-dashboard-data";
 
@@ -549,5 +550,27 @@ describe("parseDashboardView", () => {
         },
       }),
     ).toThrow("Dashboard view response is invalid");
+  });
+});
+
+describe("parseAIDetailViewModel", () => {
+  it("parses snake_case detail payload", () => {
+    const view = parseAIDetailViewModel({
+      daily_series: [{ date: "2026-06-01", values: { CORTEX_ANALYST: 4 } }],
+      consumption_type_names: ["CORTEX_ANALYST"],
+      ranked_consumption_types: [
+        { name: "CORTEX_ANALYST", spend: 4, spend_label: "$4.00", credits: 2 },
+      ],
+      consumption_bars: [
+        { name: "CORTEX_ANALYST", spend: 4, spend_label: "$4.00", credits: 2, bar_width_percent: 100 },
+      ],
+      is_empty: false,
+      partial: true,
+      skipped_branches: ["cortex_code_cli"],
+    });
+    expect(view.consumptionTypeNames).toEqual(["CORTEX_ANALYST"]);
+    expect(view.partial).toBe(true);
+    expect(view.skippedBranches).toEqual(["cortex_code_cli"]);
+    expect(view.consumptionBars[0].barWidthPercent).toBe(100);
   });
 });
