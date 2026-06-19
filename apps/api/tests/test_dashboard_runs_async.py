@@ -422,6 +422,75 @@ def test_completed_snapshot_empty_window_group_available_yields_ready():
     )
 
 
+def test_completed_snapshot_metadata_none_empty_window_yields_ready():
+    """Regression: completed snapshot with metadata=None and all-empty
+    account-usage datasets must return all sections "ready", NOT "unavailable".
+
+    This covers the reconstructed-metadata (metadata=None) path specifically.
+    When stored metadata is None, get_view_inputs reconstructs it from dataset
+    rows with metadata_authoritative=False. The reconstructed metadata for
+    all-empty account-usage datasets yields account_usage.available=False —
+    which would incorrectly collapse every account-usage gating section to
+    "unavailable" if reconciliation ran on it. The fix NO-OPs reconciliation
+    for the authoritative=False (reconstructed) case, trusting the seeded
+    source states ("ready" for every present dataset key) instead.
+
+    Critically, ALL FOUR ACCOUNT_USAGE_DATASET_KEYS must be empty so the
+    reconstructed metadata has account_usage.available=False. Source bounds are
+    formed via org_spend_daily (which is NOT in ACCOUNT_USAGE_DATASET_KEYS),
+    keeping account_usage_rows empty. The guard is exercised when
+    authoritative=True would downgrade overview/warehouse to "unavailable"
+    because account_usage.available=False — the authoritative=False NO-OP
+    must keep them "ready".
+    """
+    dr.dashboard_run_repository.clear()
+    # All four ACCOUNT_USAGE_DATASET_KEYS are empty-but-present (the regression
+    # case). Use org_spend_daily (NOT in ACCOUNT_USAGE_DATASET_KEYS) to anchor
+    # source bounds so _source_bounds_for_dataset_rows produces a non-degenerate
+    # range matching the requested [2026-05-01, 2026-05-01] window.
+    datasets: dict = {key: [] for key in dr.BASE_RUN_SOURCE_KEYS}
+    datasets["org_spend_daily"] = [
+        {
+            "usage_date": "2026-05-01",
+            "service_type": "WAREHOUSE_METERING",
+            "rating_type": "COMPUTE",
+            "billing_type": "CONSUMPTION",
+            "is_adjustment": False,
+            "currency": "USD",
+            "spend": 10.0,
+        }
+    ]
+    run = dr.dashboard_run_repository.create_completed_snapshot(
+        organization_id=None,
+        source="snowflake",
+        window_days=30,
+        summary={},
+        datasets=datasets,
+        metadata=None,  # KEY: triggers reconstruction; metadata_authoritative=False
+        retention_days=7,
+    )
+    run_id = UUID(run.id)
+
+    payload = read_dashboard_run_view(
+        run_id, None, date(2026, 5, 1), date(2026, 5, 1), _anon()
+    )
+    assert payload["run"]["status"] == "completed"
+    section = payload["section_statuses"]
+    # All three gating sections are present (seeded "ready") despite empty
+    # account-usage datasets. The RECONSTRUCTED metadata has
+    # account_usage.available=False (no rows across all four
+    # ACCOUNT_USAGE_DATASET_KEYS). With authoritative=True this would downgrade
+    # overview and warehouse to "unavailable". The authoritative=False NO-OP must
+    # preserve the seeded "ready" states.
+    assert section["storage"] == "ready", section
+    assert section["overview"] == "ready", (
+        f"metadata=None empty window: overview must be ready, got {section['overview']!r}"
+    )
+    assert section["warehouse"] == "ready", (
+        f"metadata=None empty window: warehouse must be ready, got {section['warehouse']!r}"
+    )
+
+
 def test_deferred_source_completes_completed_while_base_run_running():
     """F-IMP-2: a deferred (non-base) source finishing while the base run is
     still "running" must be stamped "completed" (not "ready"), so its
