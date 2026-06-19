@@ -6,9 +6,11 @@ import {
   fetchDemoDashboardDatasets,
   fetchDemoDashboardView,
   pollDashboardRun,
+  pollUntilTerminal,
   startDashboardRun,
   triggerDashboardSource,
 } from "./dashboard-api";
+import * as contracts from "./dashboard-contracts";
 import demoDashboardDatasets from "./demo-dashboard-data";
 import demoDashboardView from "./demo-dashboard-view";
 
@@ -167,6 +169,66 @@ describe("dashboard-api", () => {
     ).rejects.toThrow("Dashboard run polling timed out");
   });
 });
+
+describe("pollUntilTerminal", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("polls until completed and reports every provisional view", async () => {
+    const running = makeView("running", { overview: "pending", warehouse: "ready", storage: "pending" });
+    const done = makeView("completed", { overview: "ready", warehouse: "ready", storage: "ready" });
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(running), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(done), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    vi.spyOn(contracts, "parseDashboardView").mockImplementation((p) => p as contracts.DashboardView);
+
+    const seen: string[] = [];
+    const result = await pollUntilTerminal(
+      () => fetchDashboardView("run-1", { windowDays: 30 }),
+      (view) => view.run.status === "completed",
+      { intervalMs: 0, onResult: (v) => seen.push(v.run.status) },
+    );
+
+    expect(seen).toEqual(["running", "completed"]);
+    expect(result.run.status).toBe("completed");
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws when maxAttempts is exhausted before terminal status", async () => {
+    const running = makeView("running", { overview: "pending", warehouse: "pending", storage: "pending" });
+    vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(running), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+    vi.spyOn(contracts, "parseDashboardView").mockImplementation((p) => p as contracts.DashboardView);
+
+    await expect(
+      pollUntilTerminal(
+        () => fetchDashboardView("run-1", { windowDays: 30 }),
+        (view) => view.run.status === "completed",
+        { intervalMs: 0, maxAttempts: 2 },
+      ),
+    ).rejects.toThrow(/timed out/i);
+  });
+});
+
+function makeView(status: string, sectionStatuses: Record<string, string>) {
+  return { run: { id: "run-1", status }, sectionStatuses } as unknown as contracts.DashboardView;
+}
 
 describe("dashboard source api", () => {
   afterEach(() => vi.restoreAllMocks());
