@@ -1,6 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 from threading import RLock
-from typing import Any
+from typing import Any, NamedTuple
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -41,6 +41,24 @@ ACCOUNT_USAGE_DATASET_KEYS = (
     "database_storage_daily",
 )
 
+# Base sources whose readiness gates the progressive view. AI stays deferred
+# (its own /sources poll); current_account, account_spend_daily, and
+# top_warehouses_table are synthesized/derived at finalize, not streamed.
+BASE_RUN_SOURCE_KEYS: tuple[str, ...] = (
+    "warehouse_spend_daily",
+    "service_spend_daily",
+    "query_compute_by_user_daily",
+    "database_storage_daily",
+    "org_spend_daily",
+    "rate_sheet_daily",
+    "capacity_balance_daily",
+)
+
+# Wall-clock ceiling for a run stuck in "running"; independent of dataset
+# retention. A worker that dies without finalizing can never leave a run
+# permanently running.
+RUNNING_RUN_TTL_SECONDS = 300
+
 
 class StoredDashboardDataset(BaseModel):
     aggregate_dataset: list[dict[str, Any]]
@@ -52,6 +70,13 @@ class StoredSourceBounds(BaseModel):
     source_end_date: date
 
 
+class SourceRecord(NamedTuple):
+    """Lightweight read view of a source state entry."""
+
+    status: str
+    meta: dict[str, Any]
+
+
 class InMemoryDashboardRunRepository:
     def __init__(self) -> None:
         self._lock = RLock()
@@ -61,6 +86,8 @@ class InMemoryDashboardRunRepository:
         self._metadata: dict[UUID, dict[str, Any] | None] = {}
         self._source_bounds: dict[UUID, StoredSourceBounds] = {}
         self._source_states: dict[UUID, dict[str, dict[str, Any]]] = {}
+        self._retention_days: dict[UUID, int] = {}
+        self._running_deadlines: dict[UUID, datetime] = {}
 
     def clear(self) -> None:
         with self._lock:
@@ -70,6 +97,8 @@ class InMemoryDashboardRunRepository:
             self._metadata.clear()
             self._source_bounds.clear()
             self._source_states.clear()
+            self._retention_days.clear()
+            self._running_deadlines.clear()
 
     def create_completed_run(self, request: DashboardRunCreateRequest) -> DashboardRun:
         return self.create_completed_snapshot(
@@ -118,12 +147,18 @@ class InMemoryDashboardRunRepository:
                 )
                 for dataset_key, rows in datasets.items()
             }
+            self._retention_days[run_id] = retention_days
             self._store_source_bounds(run_id, datasets)
         return run
 
     def get_run(self, run_id: UUID) -> DashboardRun | None:
         with self._lock:
-            return self._runs.get(run_id)
+            run = self._runs.get(run_id)
+            if run is not None and run.status == "running":
+                # Lazily apply wall-clock TTL expiry on read.
+                self._is_running_locked(run_id)
+                run = self._runs.get(run_id)
+            return run
 
     def get_source_bounds(self, run_id: UUID) -> StoredSourceBounds | None:
         with self._lock:
@@ -200,6 +235,8 @@ class InMemoryDashboardRunRepository:
         self._metadata.pop(run_id, None)
         self._source_bounds.pop(run_id, None)
         self._source_states.pop(run_id, None)
+        self._retention_days.pop(run_id, None)
+        self._running_deadlines.pop(run_id, None)
 
     def get_dataset_response(self, run_id: UUID) -> DashboardDatasetResponse | None:
         with self._lock:
@@ -254,24 +291,33 @@ class InMemoryDashboardRunRepository:
             self._metadata.pop(run_id, None)
             self._source_bounds.pop(run_id, None)
             self._source_states.pop(run_id, None)
+            self._retention_days.pop(run_id, None)
+            self._running_deadlines.pop(run_id, None)
             return deleted_run
 
     def claim_source(self, run_id: UUID, source_id: str) -> bool:
-        """Mark a deferred source in-flight. Returns False if the run is not
-        completed, is deleted/expired, or a fetch is already pending."""
+        """Mark a source in-flight. Returns False if the run is not completed or
+        running, is deleted/expired, or a fetch is already pending."""
         with self._lock:
             run = self._runs.get(run_id)
-            if run is None or run.status != "completed":
+            if run is None:
                 return False
-            datasets = self._datasets.get(run_id)
-            if datasets is None:
-                return False
-            # Expiry is lazy: a still-"completed" run whose datasets have aged out
-            # must not be claimed (it would trigger wasted Snowflake work and
-            # leave the source pending). Apply the same transition get_view_inputs
-            # uses, clearing the now-invalid in-memory state including source state.
-            if self._is_run_expired(datasets):
-                self._expire_run_locked(run_id, run)
+            if run.status == "running":
+                # Running run: use the wall-clock TTL guard instead of dataset expiry.
+                if not self._is_running_locked(run_id):
+                    return False
+            elif run.status == "completed":
+                datasets = self._datasets.get(run_id)
+                if datasets is None:
+                    return False
+                # Expiry is lazy: a still-"completed" run whose datasets have aged out
+                # must not be claimed (it would trigger wasted Snowflake work and
+                # leave the source pending). Apply the same transition get_view_inputs
+                # uses, clearing the now-invalid in-memory state including source state.
+                if self._is_run_expired(datasets):
+                    self._expire_run_locked(run_id, run)
+                    return False
+            else:
                 return False
             states = self._source_states.setdefault(run_id, {})
             current = states.get(source_id, {}).get("status")
@@ -289,37 +335,175 @@ class InMemoryDashboardRunRepository:
             state = self._source_states.get(run_id, {}).get(source_id)
             return dict(state) if state is not None else None
 
+    def get_source(self, run_id: UUID, source_id: str) -> SourceRecord:
+        """Return a SourceRecord for a source. Status is 'idle' if not yet set."""
+        with self._lock:
+            state = self._source_states.get(run_id, {}).get(source_id, {})
+            return SourceRecord(
+                status=state.get("status", "idle"),
+                meta={k: v for k, v in state.items() if k != "status"},
+            )
+
     def complete_source(
         self,
         run_id: UUID,
         source_id: str,
         *,
-        rows: list[dict[str, Any]],
-        partial: bool,
-        skipped_branches: list[str],
+        rows: list[dict[str, Any]] | None = None,
+        partial: bool = False,
+        skipped_branches: list[str] | None = None,
     ) -> None:
         with self._lock:
+            run = self._runs.get(run_id)
+            if run is None:
+                return
+            if run.status == "running":
+                # Staleness guard for running runs.
+                if not self._is_running_locked(run_id):
+                    return
             stored = self._datasets.get(run_id)
             if stored is None:
                 return
-            # Inherit the run's existing retention so the deferred dataset can
-            # never outlive — or prematurely expire — the run.
-            retention = next(
-                (d.retention_expires_at for d in stored.values()),
-                datetime.now(timezone.utc) + timedelta(days=7),
-            )
-            stored[source_id] = StoredDashboardDataset(
-                aggregate_dataset=rows, retention_expires_at=retention
-            )
+            # Only write dataset rows when provided (deferred AI sources always
+            # provide rows; base sources may call complete_source after set_dataset).
+            if rows is not None:
+                # Inherit the run's existing retention so the deferred dataset can
+                # never outlive — or prematurely expire — the run.
+                retention = next(
+                    (d.retention_expires_at for d in stored.values()),
+                    datetime.now(timezone.utc) + timedelta(days=7),
+                )
+                stored[source_id] = StoredDashboardDataset(
+                    aggregate_dataset=rows, retention_expires_at=retention
+                )
             self._source_states.setdefault(run_id, {})[source_id] = {
-                "status": "completed",
+                "status": "ready" if run.status == "running" else "completed",
                 "partial": partial,
-                "skipped_branches": list(skipped_branches),
+                "skipped_branches": list(skipped_branches or []),
             }
 
-    def fail_source(self, run_id: UUID, source_id: str) -> None:
+    def fail_source(
+        self, run_id: UUID, source_id: str, *, error: str | None = None
+    ) -> None:
         with self._lock:
-            self._source_states.setdefault(run_id, {})[source_id] = {"status": "failed"}
+            run = self._runs.get(run_id)
+            if run is not None and run.status == "running":
+                if not self._is_running_locked(run_id):
+                    return
+            state: dict[str, Any] = {
+                "status": "unavailable" if run is not None and run.status == "running" else "failed"
+            }
+            if error is not None:
+                state["error"] = error
+            self._source_states.setdefault(run_id, {})[source_id] = state
+
+
+    def create_running_run(
+        self,
+        *,
+        organization_id: UUID | None,
+        source: str,
+        window_days: int,
+        expected_sources: tuple[str, ...],
+        retention_days: int,
+    ) -> DashboardRun:
+        now = datetime.now(timezone.utc)
+        run_id = uuid4()
+        run = DashboardRun(
+            id=str(run_id),
+            organization_id=organization_id,
+            source=source,
+            status="running",
+            window_days=window_days,
+            started_at=now,
+            completed_at=None,
+            created_at=now,
+            updated_at=now,
+        )
+        with self._lock:
+            self._runs[run_id] = run
+            self._summaries[run_id] = {}
+            self._metadata[run_id] = None
+            self._datasets[run_id] = {}
+            self._source_bounds[run_id] = _source_bounds_for_dataset_rows({})
+            self._source_states[run_id] = {
+                key: {"status": "pending"} for key in expected_sources
+            }
+            self._retention_days[run_id] = retention_days
+            self._running_deadlines[run_id] = now + timedelta(
+                seconds=RUNNING_RUN_TTL_SECONDS
+            )
+        return run
+
+    def _is_running_locked(self, run_id: UUID) -> bool:
+        """Staleness guard: True only if the run is still actively running.
+
+        Callers must already hold ``self._lock``.
+        """
+        run = self._runs.get(run_id)
+        if run is None or run.status != "running":
+            return False
+        deadline = self._running_deadlines.get(run_id)
+        if deadline is not None and deadline <= datetime.now(timezone.utc):
+            self._expire_run_locked(run_id, run)
+            return False
+        return True
+
+    def set_dataset(
+        self, run_id: UUID, key: str, rows: list[dict[str, Any]]
+    ) -> None:
+        with self._lock:
+            if not self._is_running_locked(run_id):
+                return
+            retention_days = self._retention_days.get(run_id, 7)
+            expires_at = datetime.now(timezone.utc) + timedelta(days=retention_days)
+            stored = self._datasets.setdefault(run_id, {})
+            stored[key] = StoredDashboardDataset(
+                aggregate_dataset=rows, retention_expires_at=expires_at
+            )
+            # Recompute provisional bounds from everything landed so far.
+            self._store_source_bounds(
+                run_id,
+                {k: d.aggregate_dataset for k, d in stored.items()},
+            )
+
+    def finalize_run(
+        self,
+        run_id: UUID,
+        *,
+        status: str,
+        summary: dict[str, Any],
+        metadata: dict[str, Any] | None,
+        datasets: dict[str, list[dict[str, Any]]],
+        error: str | None = None,
+    ) -> None:
+        with self._lock:
+            # Only finalize a run that is still running; never resurrect a
+            # deleted/expired run or re-finalize a completed one.
+            if not self._is_running_locked(run_id):
+                return
+            run = self._runs[run_id]
+            now = datetime.now(timezone.utc)
+            self._runs[run_id] = run.model_copy(
+                update={
+                    "status": status,
+                    "completed_at": now,
+                    "updated_at": now,
+                    "error": error,
+                }
+            )
+            self._running_deadlines.pop(run_id, None)
+            retention_days = self._retention_days.get(run_id, 7)
+            expires_at = now + timedelta(days=retention_days)
+            self._summaries[run_id] = summary
+            self._metadata[run_id] = metadata
+            self._datasets[run_id] = {
+                key: StoredDashboardDataset(
+                    aggregate_dataset=rows, retention_expires_at=expires_at
+                )
+                for key, rows in datasets.items()
+            }
+            self._store_source_bounds(run_id, datasets)
 
 
 dashboard_run_repository = InMemoryDashboardRunRepository()
