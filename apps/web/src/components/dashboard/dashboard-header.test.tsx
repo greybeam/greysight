@@ -27,7 +27,7 @@ describe("DashboardHeader", () => {
     }
   });
 
-  it("shows the product and the account locator", () => {
+  it("shows the product and run action", () => {
     delete process.env.NEXT_PUBLIC_BRAND;
     render(
       <DashboardHeader
@@ -38,36 +38,6 @@ describe("DashboardHeader", () => {
     );
 
     expect(screen.getByText("Greybeam")).toBeInTheDocument();
-    expect(screen.getByText("TU24199")).toBeInTheDocument();
-    expect(screen.getByText(/Account:/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Run analysis" })).toBeInTheDocument();
-  });
-
-  it("prefers the connection account locator over the run's view model", () => {
-    render(
-      <DashboardHeader
-        header={headerViewModel}
-        accountLocator="IJ42635"
-        runDisabled={false}
-        onRun={vi.fn()}
-      />,
-    );
-
-    expect(screen.getByText("IJ42635")).toBeInTheDocument();
-    expect(screen.queryByText("TU24199")).not.toBeInTheDocument();
-  });
-
-  it("shows the account locator before any run, without a view model", () => {
-    render(
-      <DashboardHeader
-        header={null}
-        accountLocator="IJ42635"
-        runDisabled={false}
-        onRun={vi.fn()}
-      />,
-    );
-
-    expect(screen.getByText("IJ42635")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Run analysis" })).toBeInTheDocument();
   });
 

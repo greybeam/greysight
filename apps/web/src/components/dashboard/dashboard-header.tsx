@@ -4,6 +4,7 @@ import { useAccountChrome } from "../../lib/account-context";
 import { showBrandLogo } from "../../lib/brand";
 import type { HeaderViewModel } from "../../lib/dashboard-contracts";
 import Spinner from "../ui/spinner";
+import AccountSwitcher from "./account-switcher";
 
 export type DashboardModeLabel =
   | "Demo"
@@ -24,13 +25,11 @@ type DashboardHeaderProps = {
 
 export default function DashboardHeader({
   header,
-  accountLocator,
   runDisabled,
   running = false,
   onRun,
 }: DashboardHeaderProps) {
   const account = useAccountChrome();
-  const locator = accountLocator ?? header?.accountLocator ?? null;
   // The "Greybeam" wordmark renders in every build; the env flag only gates the
   // logo image (see brand.ts), not the brand name.
   const brandLogo = showBrandLogo();
@@ -53,12 +52,7 @@ export default function DashboardHeader({
           <h1 className="font-display text-lg font-semibold text-slate-50">
             Greybeam
           </h1>
-          {locator ? (
-            <span className="text-xs text-slate-400">
-              Account:{" "}
-              <span className="font-mono text-slate-200">{locator}</span>
-            </span>
-          ) : null}
+          <AccountSwitcher />
         </div>
         <div className="flex flex-wrap items-center justify-end gap-3">
           {header?.dataModeLabel === "Estimated" ? (
