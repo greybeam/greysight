@@ -1,3 +1,4 @@
+import time
 from datetime import date
 
 from app.services.ai_consumption import (
@@ -51,15 +52,39 @@ def test_skips_branch_when_table_unavailable():
     assert all(row["consumption_type"] != missing for row in rows)
 
 
-def test_real_error_propagates():
+def test_real_query_error_skips_branch():
+    """Any SnowflakeQueryError (not just object-unavailable) skips that branch.
+
+    The parallel runner collapses all SnowflakeQueryError subclasses to
+    available=False rather than propagating them, so a hard query error on one
+    branch should skip that branch rather than failing the entire AI source.
+    """
+
     def execute(sql, params):
         raise SnowflakeQueryError("boom")
 
-    try:
-        fetch_ai_consumption_daily(execute, window_days=30)
-        assert False, "expected SnowflakeQueryError"
-    except SnowflakeQueryError:
-        pass
+    rows, skipped = fetch_ai_consumption_daily(execute, window_days=30)
+
+    assert len(skipped) == len(AI_CONSUMPTION_BRANCHES)
+    assert rows == []
+
+
+def test_ai_branches_run_in_parallel_and_skip_unavailable():
+    calls = []
+
+    def execute(sql, params):
+        time.sleep(0.1)
+        calls.append(sql)
+        if "cortex_search" in sql:  # one unavailable branch
+            raise SnowflakeObjectUnavailableError("nope")
+        return [{"row": 1}]
+
+    start = time.monotonic()
+    rows, skipped = fetch_ai_consumption_daily(execute, window_days=30)
+    elapsed = time.monotonic() - start
+    assert elapsed < 0.5  # 10 branches * 0.1 serial = 1s
+    assert any("cortex_search" in s for s in skipped)
+    assert len(rows) > 0
 
 
 def test_every_branch_sql_has_window_filter():

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from app.services.snowflake_client import SnowflakeObjectUnavailableError
+from app.services.parallel_source_runner import SourceJob, run_sources_parallel
 
 ExecuteFn = Callable[[str, dict[str, Any]], list[dict[str, Any]]]
 
@@ -130,16 +130,21 @@ def fetch_ai_consumption_daily(
     *,
     window_days: int,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Run each branch independently; skip unavailable tables.
+    """Run each branch concurrently; skip branches that error.
 
-    Returns (rows, skipped_branch_ids). Real query errors propagate.
+    Returns (rows, skipped_branch_ids). Any SnowflakeQueryError on a single
+    branch marks that branch unavailable and is not propagated — the remaining
+    branches still complete. Rows are returned in deterministic branch order.
     """
     bind_params = {"window_days": window_days}
+    jobs = [SourceJob(branch.id, branch.sql, bind_params) for branch in AI_CONSUMPTION_BRANCHES]
+    outcomes = run_sources_parallel(jobs, execute)
     rows: list[dict[str, Any]] = []
     skipped: list[str] = []
-    for branch in AI_CONSUMPTION_BRANCHES:
-        try:
-            rows.extend(execute(branch.sql, bind_params))
-        except SnowflakeObjectUnavailableError:
+    for branch in AI_CONSUMPTION_BRANCHES:  # deterministic order
+        outcome = outcomes[branch.id]
+        if outcome.available and outcome.rows is not None:
+            rows.extend(outcome.rows)
+        else:
             skipped.append(branch.id)
     return rows, skipped
