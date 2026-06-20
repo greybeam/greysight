@@ -204,6 +204,43 @@ def test_running_view_clamps_to_default_30_day_window():
     assert (end - start).days <= 29  # 30-day window = 29-day span
 
 
+def test_running_view_rejects_unsupported_window_days():
+    """An unsupported window_days (e.g. 15) on a running run must 422,
+    matching the completed-view behaviour."""
+    import pytest
+    from fastapi import HTTPException
+
+    dr.dashboard_run_repository.clear()
+    run = dr.dashboard_run_repository.create_running_run(
+        organization_id=None,
+        source="snowflake",
+        window_days=100,
+        expected_sources=dr.BASE_RUN_SOURCE_KEYS,
+        retention_days=7,
+    )
+    run_id = UUID(run.id)
+    dr.dashboard_run_repository.set_dataset(
+        run_id,
+        "org_spend_daily",
+        [
+            {
+                "usage_date": "2026-06-19",
+                "service_type": "WAREHOUSE_METERING",
+                "rating_type": "COMPUTE",
+                "billing_type": "CONSUMPTION",
+                "is_adjustment": False,
+                "currency": "USD",
+                "spend": 8.0,
+            }
+        ],
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        read_dashboard_run_view(run_id, 15, None, None, _anon())
+
+    assert exc_info.value.status_code == 422
+
+
 def _wait_terminal(run_id: UUID, timeout: float = 2.0) -> str:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

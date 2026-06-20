@@ -26,6 +26,7 @@ from app.services.dashboard_view_builder import (
     DEFAULT_VIEW_WINDOW_DAYS,
     DashboardInvalidRangeError,
     DashboardRangeOutOfBoundsError,
+    SUPPORTED_VIEW_WINDOW_DAYS,
     _through_date_for,
     build_ai_detail_view,
     build_dashboard_view,
@@ -941,10 +942,20 @@ def read_dashboard_run_view(
                 end_date=source_bounds.source_end_date,
             )
         else:
+            # Validate before clamping — mirror the 422 the completed path
+            # raises for unsupported window values.
+            if window_days is not None and window_days not in SUPPORTED_VIEW_WINDOW_DAYS:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "code": "invalid_range",
+                        "message": "Unsupported dashboard window_days.",
+                    },
+                )
             # Clamp the requested (or default 30-day) window to available
             # provisional bounds so we never 409 on narrow data while still
             # honoring the caller's range preference.
-            wd = window_days or DEFAULT_VIEW_WINDOW_DAYS
+            wd = window_days if window_days is not None else DEFAULT_VIEW_WINDOW_DAYS
             effective_end = min(through_date, source_bounds.source_end_date)
             effective_start = max(
                 window_start_for(effective_end, wd),
