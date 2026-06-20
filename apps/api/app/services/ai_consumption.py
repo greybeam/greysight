@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.services.parallel_source_runner import SourceJob, run_sources_parallel
+from app.services.snowflake_client import SnowflakeObjectUnavailableError
 
 ExecuteFn = Callable[[str, dict[str, Any]], list[dict[str, Any]]]
 
@@ -130,17 +131,20 @@ def fetch_ai_consumption_daily(
     *,
     window_days: int,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Run each branch concurrently; skip branches that error.
+    """Run each branch concurrently; skip branches whose table is unavailable.
 
-    Returns (rows, skipped_branch_ids). Any SnowflakeQueryError raised by a
-    branch (including subclasses such as SnowflakeObjectUnavailableError) is
-    collapsed to a skipped branch — it is never propagated to the caller. All
-    other exceptions propagate normally. Rows are returned in deterministic
-    branch order.
+    Returns (rows, skipped_branch_ids). ONLY a SnowflakeObjectUnavailableError
+    (the table genuinely does not exist or is not authorized for this account)
+    is collapsed to a skipped branch. Any other SnowflakeQueryError (connection
+    failure, timeout, SQL regression) — and any other exception — PROPAGATES to
+    the caller so the deferred AI source fails loudly instead of reporting a
+    partial/empty success. Rows are returned in deterministic branch order.
     """
     bind_params = {"window_days": window_days}
     jobs = [SourceJob(branch.id, branch.sql, bind_params) for branch in AI_CONSUMPTION_BRANCHES]
-    outcomes = run_sources_parallel(jobs, execute)
+    outcomes = run_sources_parallel(
+        jobs, execute, unavailable_exc=SnowflakeObjectUnavailableError
+    )
     rows: list[dict[str, Any]] = []
     skipped: list[str] = []
     for branch in AI_CONSUMPTION_BRANCHES:  # deterministic order

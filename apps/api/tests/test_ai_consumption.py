@@ -2,6 +2,8 @@ import threading
 import time
 from datetime import date
 
+import pytest
+
 from app.services.ai_consumption import (
     AI_CONSUMPTION_BRANCHES,
     fetch_ai_consumption_daily,
@@ -53,21 +55,20 @@ def test_skips_branch_when_table_unavailable():
     assert all(row["consumption_type"] != missing for row in rows)
 
 
-def test_real_query_error_skips_branch():
-    """Any SnowflakeQueryError (not just object-unavailable) skips that branch.
+def test_real_query_error_propagates():
+    """A non-object-unavailable SnowflakeQueryError must PROPAGATE, not skip.
 
-    The parallel runner collapses all SnowflakeQueryError subclasses to
-    available=False rather than propagating them, so a hard query error on one
-    branch should skip that branch rather than failing the entire AI source.
+    Connection failures, timeouts, and SQL regressions raise the base
+    SnowflakeQueryError. These are real failures of the deferred AI source and
+    must surface to the caller (which fails the source) rather than masquerading
+    as "this account doesn't use that AI feature".
     """
 
     def execute(sql, params):
         raise SnowflakeQueryError("boom")
 
-    rows, skipped = fetch_ai_consumption_daily(execute, window_days=30)
-
-    assert len(skipped) == len(AI_CONSUMPTION_BRANCHES)
-    assert rows == []
+    with pytest.raises(SnowflakeQueryError):
+        fetch_ai_consumption_daily(execute, window_days=30)
 
 
 def test_ai_branches_run_in_parallel_and_skip_unavailable():

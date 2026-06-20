@@ -1,7 +1,12 @@
 import threading
 
+import pytest
+
 from app.services.parallel_source_runner import SourceJob, run_sources_parallel
-from app.services.snowflake_client import SnowflakeQueryError
+from app.services.snowflake_client import (
+    SnowflakeObjectUnavailableError,
+    SnowflakeQueryError,
+)
 from app.services import query_concurrency
 
 
@@ -51,6 +56,36 @@ def test_runs_concurrently():
     outcomes = run_sources_parallel(jobs, execute)
     assert all(o.available for o in outcomes.values())
     assert not barrier.broken
+
+
+def test_custom_unavailable_exc_propagates_base_error():
+    # With a narrowed unavailable_exc, only the subclass is swallowed; a base
+    # SnowflakeQueryError must surface (propagate) when results are consumed.
+    query_concurrency.configure(8)
+
+    def execute(sql, params):
+        raise SnowflakeQueryError("boom")
+
+    jobs = [SourceJob("bad", "s", {})]
+    with pytest.raises(SnowflakeQueryError):
+        run_sources_parallel(
+            jobs, execute, unavailable_exc=SnowflakeObjectUnavailableError
+        )
+
+
+def test_custom_unavailable_exc_still_swallows_subclass():
+    # The narrowed type still marks its own matches unavailable (not propagated).
+    query_concurrency.configure(8)
+
+    def execute(sql, params):
+        raise SnowflakeObjectUnavailableError("missing")
+
+    jobs = [SourceJob("bad", "s", {})]
+    outcomes = run_sources_parallel(
+        jobs, execute, unavailable_exc=SnowflakeObjectUnavailableError
+    )
+    assert outcomes["bad"].available is False
+    assert outcomes["bad"].rows is None
 
 
 def test_on_complete_called_per_job():
