@@ -213,3 +213,30 @@ def test_create_rpc_lifts_one_org_cap_and_dedupes_account() -> None:
     )[1].split(";", 1)[0]
     assert "to service_role" in block
     assert "authenticated" not in block
+
+
+def test_migration_defines_invite_rpc_locked_down() -> None:
+    sql = read_migration_sql()
+
+    assert "create or replace function add_org_member_by_email" in sql
+    assert "security definer" in sql
+    assert "set search_path = ''" in sql
+    # Idempotent membership insert.
+    assert "on conflict (organization_id, user_id) do nothing" in sql
+    # Locked-down grants.
+    assert (
+        "revoke all on function add_org_member_by_email(uuid, uuid, text) "
+        "from anon" in sql
+    )
+    assert (
+        "revoke all on function add_org_member_by_email(uuid, uuid, text) "
+        "from public" in sql
+    )
+    assert (
+        "revoke all on function add_org_member_by_email(uuid, uuid, text) "
+        "from authenticated" in sql
+    )
+    assert (
+        "grant execute on function add_org_member_by_email(uuid, uuid, text) "
+        "to service_role" in sql
+    )

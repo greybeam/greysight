@@ -1,8 +1,11 @@
 import resolveApiUrl from "./api-client";
 
+export type OrgRole = "owner" | "admin" | "member";
+
 export type MembershipOrganization = {
   id: string;
   name: string;
+  role: OrgRole;
   // Snowflake account locator from the org's persisted connection, when one
   // exists. Lets the dashboard show the account before any analysis run.
   accountLocator: string | null;
@@ -28,6 +31,7 @@ function parseOrganizations(payload: unknown): MembershipOrganization[] {
     const entry = item as {
       id: string;
       name: string;
+      role?: unknown;
       account_locator?: unknown;
       accountLocator?: unknown;
     };
@@ -40,7 +44,10 @@ function parseOrganizations(payload: unknown): MembershipOrganization[] {
       typeof rawLocator === "string" && rawLocator.trim().length > 0
         ? rawLocator
         : null;
-    return { id, name: entry.name, accountLocator };
+    const rawRole = (item as { role?: unknown }).role;
+    const role: OrgRole =
+      rawRole === "owner" || rawRole === "admin" ? rawRole : "member";
+    return { id, name: entry.name, role, accountLocator };
   });
 }
 

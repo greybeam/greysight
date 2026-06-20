@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { isWorkEmail } from "./work-email";
+import { FREE_EMAIL_DOMAINS, isWorkEmail } from "./work-email";
 
 describe("isWorkEmail", () => {
   it("accepts a company domain", () => {
@@ -60,5 +62,18 @@ describe("isWorkEmail", () => {
     ]) {
       expect(isWorkEmail(value)).toBe(false);
     }
+  });
+
+  it("stays in lockstep with the shared fixture", () => {
+    const thisFile = import.meta.url.startsWith("file:")
+      ? fileURLToPath(import.meta.url)
+      : import.meta.url;
+    const fixture = JSON.parse(
+      readFileSync(
+        new URL("../../../../shared/free-email-domains.json", `file://${thisFile}`).pathname,
+        "utf8",
+      ),
+    ) as string[];
+    expect(new Set(FREE_EMAIL_DOMAINS)).toEqual(new Set(fixture));
   });
 });

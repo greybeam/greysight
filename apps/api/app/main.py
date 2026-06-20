@@ -14,9 +14,15 @@ from app.config import Settings
 from app.routes.dashboard_runs import router as dashboard_runs_router
 from app.routes.health import router as health_router
 from app.routes.onboarding import router as onboarding_router
+from app.routes.organizations import router as organizations_router
 from app.routes.session import router as session_router
 from app.routes.snowflake import router as snowflake_router
 from app.services import query_concurrency
+from app.services.org_invitations import (
+    SupabaseMemberRpc,
+    SupabaseUserInviter,
+    configure_invitations,
+)
 from app.services.org_provisioning import (
     SupabaseOrgDisconnector,
     SupabaseOrgProvisioner,
@@ -51,11 +57,28 @@ def _configure_org_disconnector(settings: Settings) -> None:
         configure_org_disconnector(None)
 
 
+def _configure_invitations(settings: Settings) -> None:
+    if settings.supabase_url.strip() and settings.supabase_service_role_key.strip():
+        configure_invitations(
+            SupabaseMemberRpc(
+                supabase_url=settings.supabase_url,
+                service_role_key=settings.supabase_service_role_key,
+            ),
+            SupabaseUserInviter(
+                supabase_url=settings.supabase_url,
+                service_role_key=settings.supabase_service_role_key,
+            ),
+        )
+    else:
+        configure_invitations(None, None)
+
+
 settings = Settings()
 auth.configure_supabase_session_verifier(settings)
 auth.configure_membership_lookup(settings)
 _configure_org_provisioner(settings)
 _configure_org_disconnector(settings)
+_configure_invitations(settings)
 query_concurrency.configure(settings.query_concurrency)
 
 
@@ -130,3 +153,4 @@ app.include_router(snowflake_router)
 app.include_router(dashboard_runs_router)
 app.include_router(session_router)
 app.include_router(onboarding_router)
+app.include_router(organizations_router)

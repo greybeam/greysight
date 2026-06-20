@@ -44,7 +44,7 @@ def test_returns_organizations_for_user() -> None:
     )
     assert requests[0].url.params["user_id"] == "eq.user-123"
     assert (
-        "organizations(id,name,organization_snowflake_connections(account_locator))"
+        "organizations(id,name,organization_snowflake_connections(account,account_locator))"
         in requests[0].url.params["select"]
     )
     assert requests[0].headers["apikey"] == "service-role-key"

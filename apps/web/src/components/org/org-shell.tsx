@@ -352,6 +352,7 @@ export default function OrgShell({
         activeOrganizationId: activeOrganization?.id ?? null,
         setActiveOrganization,
         openAddAccount,
+        accessToken,
       }}
     >
       {children}

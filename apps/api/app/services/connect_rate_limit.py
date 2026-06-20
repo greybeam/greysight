@@ -79,3 +79,20 @@ def get_connect_limiter() -> InMemoryConnectLimiter:
             window_seconds=DEFAULT_WINDOW_SECONDS,
         )
     return _limiter
+
+
+_invite_limiter: InMemoryConnectLimiter | None = None
+
+DEFAULT_INVITE_MAX_ATTEMPTS = 20
+
+
+def get_invite_limiter() -> InMemoryConnectLimiter:
+    """Separate limiter so invites and Snowflake connects don't share in-flight
+    state for the same user."""
+    global _invite_limiter
+    if _invite_limiter is None:
+        _invite_limiter = InMemoryConnectLimiter(
+            max_attempts=DEFAULT_INVITE_MAX_ATTEMPTS,
+            window_seconds=DEFAULT_WINDOW_SECONDS,
+        )
+    return _invite_limiter
