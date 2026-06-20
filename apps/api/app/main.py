@@ -82,9 +82,12 @@ require_membership_lookup_when_auth_required(settings)
 async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Own the process-wide query executor across the app lifecycle.
 
-    The executor is configured at import time; tear it down on shutdown so
-    queued Snowflake query work does not outlive the process (e.g. on reload).
+    Reconfigure the executor on startup so a restarted app object (same
+    process) revives the singleton that the previous shutdown tore down, then
+    tear it down on shutdown so queued Snowflake query work does not outlive
+    the process (e.g. on reload).
     """
+    query_concurrency.configure(settings.query_concurrency)
     yield
     query_concurrency.shutdown(cancel_futures=True)
 

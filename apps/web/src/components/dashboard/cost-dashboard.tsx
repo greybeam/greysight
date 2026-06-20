@@ -102,6 +102,20 @@ function requestFromViewRange(
   return { windowDays: range.windowDays ?? DEFAULT_WINDOW_DAYS };
 }
 
+// The `sectionReadiness` value to apply for a Snowflake view: `undefined` when
+// every section is ready (drop to the timed all-ready reveal), otherwise the
+// server's per-section statuses so unavailable/pending sections are never
+// falsely revealed as ready. Shared by the completed-run and range-change
+// apply paths so both protect the same way.
+function readinessForView(
+  dashboardView: DashboardView,
+): DashboardViewSectionStatuses | undefined {
+  const allSectionsReady = Object.values(dashboardView.sectionStatuses).every(
+    (status) => status === "ready",
+  );
+  return allSectionsReady ? undefined : dashboardView.sectionStatuses;
+}
+
 export default function CostDashboard({
   data,
   demoMode,
@@ -321,24 +335,12 @@ function CostDashboardContent({
         return;
       }
 
-      // Completed but a section is still unavailable/pending: keep the server's
-      // section statuses as the source of truth rather than dropping to the
-      // timed all-ready reveal, which would falsely mark those sections ready.
-      const allSectionsReady = Object.values(finalView.sectionStatuses).every(
-        (status) => status === "ready",
-      );
-      if (!allSectionsReady) {
-        setSectionReadiness(finalView.sectionStatuses);
-        cacheView(finalView.run.id, DEFAULT_VIEW_RANGE, finalView);
-        applyDashboardView(finalView);
-        prefetchRelativeWindows(finalView.run.id, (range) =>
-          fetchDashboardView(finalView.run.id, range, options),
-        );
-        return;
-      }
-
-      // Completed → all sections ready; drop back to the standard reveal path.
-      setSectionReadiness(undefined);
+      // Completed: keep the server's section statuses as the source of truth
+      // when any section is still unavailable/pending, otherwise drop back to
+      // the standard timed reveal. readinessForView() returns undefined only
+      // when every section is ready, so unavailable sections are never falsely
+      // revealed as ready.
+      setSectionReadiness(readinessForView(finalView));
       cacheView(finalView.run.id, DEFAULT_VIEW_RANGE, finalView);
       applyDashboardView(finalView);
       prefetchRelativeWindows(finalView.run.id, (range) =>
@@ -428,6 +430,11 @@ function CostDashboardContent({
       const runGeneration = runGenerationRef.current;
       const cachedView = cacheRef.current.get(rangeKey(currentView.run.id, request));
       if (cachedView) {
+        // Reuse the cached view's per-section statuses so a completed Snowflake
+        // run with unavailable sections stays protected when switching ranges,
+        // rather than falling back to the timed all-ready reveal. Demo views
+        // always use the standard reveal.
+        setSectionReadiness(shouldUseDemo ? undefined : readinessForView(cachedView));
         applyDashboardView(cachedView);
         return;
       }
@@ -450,6 +457,11 @@ function CostDashboardContent({
         }
         cacheView(currentView.run.id, request, dashboardView);
         if (requestSeq === rangeRequestSeqRef.current) {
+          // Preserve non-all-ready section statuses for Snowflake range views so
+          // unavailable sections are not revealed as ready (see readinessForView).
+          setSectionReadiness(
+            shouldUseDemo ? undefined : readinessForView(dashboardView),
+          );
           applyDashboardView(dashboardView);
         }
       } catch {

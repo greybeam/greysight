@@ -698,6 +698,88 @@ describe("CostDashboard", () => {
     ).toBeInTheDocument();
   });
 
+  it("keeps unavailable sections skeletoned after changing range on a completed Snowflake run", async () => {
+    const runningRun: DashboardRun = {
+      ...demoDashboardView.run,
+      id: "run-range-unavailable",
+      source: "snowflake",
+      status: "running",
+    };
+    const completedRun: DashboardRun = {
+      ...runningRun,
+      status: "completed",
+    };
+    // Completed run where storage never landed: the section statuses are NOT
+    // all ready, so storage must stay skeletoned across range changes rather
+    // than falling back to the timed all-ready reveal.
+    const completedView: DashboardView = {
+      ...demoDashboardView,
+      run: completedRun,
+      sectionStatuses: {
+        overview: "ready",
+        warehouse: "ready",
+        storage: "unavailable",
+      },
+    };
+    vi.mocked(startDashboardRun).mockResolvedValue(runningRun);
+    // Every range returns the same completed-but-storage-unavailable view, with
+    // its range reflecting the requested window so the active-range chip tracks.
+    vi.mocked(fetchDashboardView).mockImplementation(async (_runId, request) => ({
+      ...completedView,
+      range: {
+        ...completedView.range,
+        mode: "relative" as const,
+        windowDays: request?.windowDays ?? 30,
+      },
+    }));
+    mockPollResolvesWith(completedView);
+
+    render(
+      <CostDashboard
+        demoMode={false}
+        runtime={{
+          accessToken: "test-access-token",
+          organizationId: "org-123",
+          organizationName: "Acme Analytics",
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+
+    // The completed view paints overview, but storage (unavailable) stays
+    // skeletoned. Wait for the relative-window prefetch so the 7-day view is
+    // cached before switching ranges.
+    expect(
+      await screen.findByText("Total Spend in Last 30 Days"),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(fetchDashboardView).toHaveBeenCalledTimes(3));
+    expect(
+      screen.getByTestId("storage-spend-skeleton-chart"),
+    ).toBeInTheDocument();
+
+    // Switch to the cached 7-day window: the cached view's section statuses
+    // must be reused so the unavailable storage section is not falsely revealed
+    // as ready. No additional fetch is issued for the cached range.
+    fireEvent.click(screen.getByRole("button", { name: "7 days" }));
+
+    expect(screen.getByRole("button", { name: "7 days" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(fetchDashboardView).toHaveBeenCalledTimes(3);
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("storage-spend-skeleton-chart"),
+      ).toBeInTheDocument(),
+    );
+    // The 7-day overview content still paints (it is ready); only the
+    // unavailable storage section stays skeletoned.
+    expect(
+      screen.getByText("Total Spend in Last 7 Days"),
+    ).toBeInTheDocument();
+  });
+
   it.each([["failed"], ["expired"]] as const)(
     "applies a %s terminal view without revealing all sections as ready",
     async (terminalStatus) => {

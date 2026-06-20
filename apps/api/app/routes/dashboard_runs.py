@@ -716,9 +716,20 @@ class InMemoryDashboardRunRepository:
             # deferred dataset whose source state is (correctly) "completed",
             # leaving its /sources poll serving an empty view. Base keys are
             # rebuilt from the final datasets below. Built immutably.
+            #
+            # Re-wrap preserved deferred datasets with the FINAL run expiry rather
+            # than their original retention. A deferred source that completed
+            # before any base dataset had landed got complete_source's hard-coded
+            # 7-day fallback expiry; keeping it would expire the whole run after 7
+            # days (expiry checks fail on ANY expired dataset) even when the run
+            # requested a longer retention. All datasets in a finalized run now
+            # share the same expiry, matching the base datasets rebuilt below.
             existing_datasets = self._datasets.get(run_id, {})
             preserved_deferred = {
-                key: dataset
+                key: StoredDashboardDataset(
+                    aggregate_dataset=dataset.aggregate_dataset,
+                    retention_expires_at=expires_at,
+                )
                 for key, dataset in existing_datasets.items()
                 if key not in BASE_RUN_SOURCE_KEYS and key not in datasets
             }
