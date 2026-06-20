@@ -226,6 +226,10 @@ def test_migration_defines_invite_rpc_locked_down() -> None:
     # Locked-down grants.
     assert (
         "revoke all on function add_org_member_by_email(uuid, uuid, text) "
+        "from anon" in sql
+    )
+    assert (
+        "revoke all on function add_org_member_by_email(uuid, uuid, text) "
         "from public" in sql
     )
     assert (
