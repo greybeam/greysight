@@ -10,7 +10,11 @@ def test_returns_caller_memberships(monkeypatch) -> None:
 
     async def lookup(user_id: str) -> tuple[Organization, ...]:
         assert user_id == "user_123"
-        return (Organization(id="org-1", name="Acme", account_locator="IJ42635"),)
+        return (
+            Organization(
+                id="org-1", name="Acme", role="owner", account_locator="IJ42635"
+            ),
+        )
 
     monkeypatch.setenv("AUTH_REQUIRED", "true")
     monkeypatch.setattr("app.auth.supabase_session_verifier", verifier)
@@ -23,7 +27,12 @@ def test_returns_caller_memberships(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json() == {
         "organizations": [
-            {"id": "org-1", "name": "Acme", "account_locator": "IJ42635"}
+            {
+                "id": "org-1",
+                "name": "Acme",
+                "role": "owner",
+                "account_locator": "IJ42635",
+            }
         ]
     }
 
