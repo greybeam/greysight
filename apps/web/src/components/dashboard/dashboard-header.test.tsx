@@ -20,33 +20,9 @@ describe("DashboardHeader", () => {
     cleanup();
   });
 
-  it("prefers the connection account locator over the run's view model", () => {
-    render(
-      <DashboardHeader
-        header={headerViewModel}
-        accountLocator="IJ42635"
-        runDisabled={false}
-        onRun={vi.fn()}
-      />,
-    );
-
-    expect(screen.getByText("IJ42635")).toBeInTheDocument();
-    expect(screen.queryByText("TU24199")).not.toBeInTheDocument();
-  });
-
-  it("shows the account locator before any run, without a view model", () => {
-    render(
-      <DashboardHeader
-        header={null}
-        accountLocator="IJ42635"
-        runDisabled={false}
-        onRun={vi.fn()}
-      />,
-    );
-
-    expect(screen.getByText("IJ42635")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Run analysis" })).toBeInTheDocument();
-  });
+  // "prefers connection account locator" and "shows locator before any run" were
+  // dropped: after #31 DashboardHeader no longer accepts/renders accountLocator —
+  // that responsibility moved to AccountSwitcher (covered in account-switcher.test.tsx).
 
   it("shows the estimated-rate assumption in estimated mode", () => {
     render(
