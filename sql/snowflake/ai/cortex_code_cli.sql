@@ -1,8 +1,11 @@
-select usage_time::date as usage_date,
+select usage_date,
        'CORTEX_CODE_CLI' as service_type,
        'CORTEX_CODE_CLI' as consumption_type,
-       sum(token_credits) as credits_used
-from snowflake.account_usage.cortex_code_cli_usage_history
-where usage_time >= dateadd(day, -%(window_days)s, convert_timezone('UTC', current_timestamp())::date)
-  and usage_time < convert_timezone('UTC', current_timestamp())::date
+       sum(credits_used) as credits_used
+from snowflake.account_usage.metering_daily_history
+where usage_date >= dateadd(day, -%(window_days)s, convert_timezone('UTC', current_timestamp())::date)
+  and usage_date < convert_timezone('UTC', current_timestamp())::date
+  and service_type = 'CORTEX_CODE_CLI'
 group by 1, 2, 3
+-- running against snowflake.account_usage.cortex_code_CLI_usage_history takes far too long with no added consumption_type depth
+;
