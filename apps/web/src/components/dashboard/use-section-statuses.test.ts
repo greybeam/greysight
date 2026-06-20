@@ -115,3 +115,25 @@ describe("useSectionStatuses", () => {
     expect(clearSpy).toHaveBeenCalled();
   });
 });
+
+describe("useSectionStatuses per-section readiness", () => {
+  it("reveals only sections marked ready when sectionReadiness is provided", () => {
+    const { result } = renderHook(() =>
+      useSectionStatuses({
+        dataReady: true,
+        instant: true,
+        revealGeneration: 1,
+        sectionReadiness: {
+          overview: "pending",
+          warehouse: "ready",
+          storage: "unavailable",
+        },
+      }),
+    );
+    expect(result.current).toEqual({
+      overview: "loading",
+      warehouse: "ready",
+      storage: "loading",
+    });
+  });
+});

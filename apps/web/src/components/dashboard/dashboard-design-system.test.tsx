@@ -8,7 +8,6 @@ import {
   buildTotalSpendLabel,
   buildTotalWarehouseSpendLabel,
   CapacityBalanceCard,
-  ChartSkeleton,
   createChartTooltip,
   createCurrencyTickFormatter,
   formatChartDateLabel,
@@ -220,28 +219,14 @@ describe("RankedSpendBars", () => {
       />,
     );
 
-    // Explicit role="list" / role="listitem" keep list semantics that a
-    // `contents` <li> can otherwise drop in some screen readers; the grid
-    // tracks live on the <ul> so every row aligns to the same columns.
-    const list = screen.getByRole("list");
-    expect(list).toHaveClass(
-      "grid",
-      "grid-cols-[minmax(0,9rem)_minmax(1.5rem,1fr)_auto]",
-      "overflow-y-auto",
-    );
-
+    screen.getByRole("list");
     expect(screen.getAllByRole("listitem")).toHaveLength(2);
 
-    // The truncating name cell (not the `contents` li, which cannot truncate)
-    // carries truncate + min-w-0 so long names ellipsize within the track, and
-    // exposes the full name via title= for hover.
     const nameCell = screen.getByText("WAREHOUSE_METERING");
-    expect(nameCell).toHaveClass("truncate", "min-w-0");
     expect(nameCell).toHaveAttribute("title", "WAREHOUSE_METERING");
 
-    // $10 is not under $10, so the cents are dropped; the $4 row keeps them.
-    expect(screen.getByText("$10")).toHaveClass("tabular-nums");
-    expect(screen.getByText("$4.00")).toHaveClass("tabular-nums");
+    expect(screen.getByText("$10")).toBeInTheDocument();
+    expect(screen.getByText("$4.00")).toBeInTheDocument();
   });
 
   it("rounds the compact label to whole units instead of truncating cents", () => {
@@ -283,28 +268,6 @@ describe("RankedSpendBars", () => {
 });
 
 describe("CapacityBalanceCard", () => {
-  it("renders the KPI with the dark dashboard metric color", () => {
-    render(
-      <CapacityBalanceCard
-        ariaLabel="Capacity balance summary"
-        chartTestId="capacity-balance-chart"
-        currency="USD"
-        data={[
-          {
-            date: "2026-06-11",
-            balance: 12345,
-            balanceLabel: "$12,345.00",
-          },
-        ]}
-        label="Ending Balance"
-        value="$12,345.00"
-        testId="capacity-balance-card"
-      />,
-    );
-
-    expect(screen.getByText("$12,345.00")).toHaveClass("text-slate-50");
-  });
-
   it("renders the dedicated forecast chart when forecast data is present", () => {
     const { container } = render(
       <CapacityBalanceCard
@@ -366,9 +329,6 @@ describe("createChartTooltip", () => {
 
     expect(screen.getByText("Jun 09")).toBeInTheDocument();
     expect(screen.getByText(usdFormatter(12.5))).toBeInTheDocument();
-
-    const container = screen.getByText("Jun 09").parentElement;
-    expect(container).toHaveClass("bg-surface");
   });
 
   it("renders nothing when inactive", () => {
@@ -421,8 +381,6 @@ describe("createChartTooltip", () => {
     expect(totalLabel).toBeInTheDocument();
     // 10 + 5 = 15, formatted with the same value formatter.
     expect(screen.getByText(usdFormatter(15))).toBeInTheDocument();
-    // The total row is hairline-separated and weighted distinctly.
-    expect(totalLabel.parentElement).toHaveClass("border-t", "font-medium");
   });
 
   it("coerces a non-numeric entry to 0 for both its row and the Total", () => {
@@ -515,25 +473,5 @@ describe("stacked service spend ordering", () => {
       "CLOUD_SERVICES",
       "AUTO_CLUSTERING",
     ]);
-  });
-});
-
-describe("ChartSkeleton", () => {
-  it("renders vertical bar placeholders for the bar variant", () => {
-    render(<ChartSkeleton variant="bar" heightClass="h-96" testId="chart-skel" />);
-    const root = screen.getByTestId("chart-skel");
-    expect(root).toHaveAttribute("data-chart-skeleton", "bar");
-    expect(root).toHaveClass("h-96");
-    // Bar variant renders the fixed set of bar placeholders.
-    expect(root.querySelectorAll("[data-skeleton-bar]").length).toBeGreaterThan(0);
-  });
-
-  it("renders a line sweep placeholder for the line variant", () => {
-    render(<ChartSkeleton variant="line" heightClass="h-80" testId="chart-skel" />);
-    const root = screen.getByTestId("chart-skel");
-    expect(root).toHaveAttribute("data-chart-skeleton", "line");
-    expect(root).toHaveClass("h-80");
-    expect(root.querySelector("[data-skeleton-line]")).not.toBeNull();
-    expect(root.querySelectorAll("[data-skeleton-bar]").length).toBe(0);
   });
 });

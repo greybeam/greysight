@@ -1,4 +1,6 @@
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.encoders import jsonable_encoder
@@ -14,6 +16,7 @@ from app.routes.health import router as health_router
 from app.routes.onboarding import router as onboarding_router
 from app.routes.session import router as session_router
 from app.routes.snowflake import router as snowflake_router
+from app.services import query_concurrency
 from app.services.org_provisioning import (
     SupabaseOrgDisconnector,
     SupabaseOrgProvisioner,
@@ -53,6 +56,7 @@ auth.configure_supabase_session_verifier(settings)
 auth.configure_membership_lookup(settings)
 _configure_org_provisioner(settings)
 _configure_org_disconnector(settings)
+query_concurrency.configure(settings.query_concurrency)
 
 
 def warn_when_auth_required_without_verifier(settings: Settings) -> None:
@@ -74,7 +78,21 @@ def require_membership_lookup_when_auth_required(settings: Settings) -> None:
 warn_when_auth_required_without_verifier(settings)
 require_membership_lookup_when_auth_required(settings)
 
-app = FastAPI(title="Greysight API")
+@asynccontextmanager
+async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
+    """Own the process-wide query executor across the app lifecycle.
+
+    Reconfigure the executor on startup so a restarted app object (same
+    process) revives the singleton that the previous shutdown tore down, then
+    tear it down on shutdown so queued Snowflake query work does not outlive
+    the process (e.g. on reload).
+    """
+    query_concurrency.configure(settings.query_concurrency)
+    yield
+    query_concurrency.shutdown(cancel_futures=True)
+
+
+app = FastAPI(title="Greysight API", lifespan=_lifespan)
 
 _SENSITIVE_FIELDS = {"private_key_pem", "passphrase"}
 

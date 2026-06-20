@@ -1,14 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { usePrefersReducedMotion } from "../../lib/use-prefers-reduced-motion";
 import {
   fetchDashboardView,
   fetchDemoDashboardView,
   fetchDemoDashboardSource,
-  pollDashboardRun,
   pollDashboardSource,
+  pollUntilTerminal,
   startDashboardRun,
   triggerDashboardSource,
   type DashboardViewRangeRequest,
@@ -18,6 +18,7 @@ import {
   type DashboardRunStatus,
   type DashboardView,
   type DashboardViewRange,
+  type DashboardViewSectionStatuses,
 } from "../../lib/dashboard-contracts";
 import DashboardHeader, {
   type DashboardModeLabel,
@@ -70,6 +71,15 @@ const DEFAULT_VIEW_RANGE = {
 } as const satisfies DashboardViewRangeRequest;
 const DEFAULT_WINDOW_DAYS = DEFAULT_VIEW_RANGE.windowDays;
 
+// Run statuses that end the progressive `/view` poll. Mirrors the lifecycle
+// terminal set used by `pollDashboardRun` in dashboard-api.
+const TERMINAL_RUN_STATUSES: ReadonlySet<DashboardRunStatus> = new Set([
+  "completed",
+  "failed",
+  "expired",
+  "deleted",
+]);
+
 function rangeKey(runId: string, range: DashboardViewRangeRequest): string {
   if (isCustomRangeRequest(range)) {
     return `${runId}:custom:${range.startDate}:${range.endDate}`;
@@ -90,6 +100,20 @@ function requestFromViewRange(
     return { startDate: range.startDate, endDate: range.endDate };
   }
   return { windowDays: range.windowDays ?? DEFAULT_WINDOW_DAYS };
+}
+
+// The `sectionReadiness` value to apply for a Snowflake view: `undefined` when
+// every section is ready (drop to the timed all-ready reveal), otherwise the
+// server's per-section statuses so unavailable/pending sections are never
+// falsely revealed as ready. Shared by the completed-run and range-change
+// apply paths so both protect the same way.
+function readinessForView(
+  dashboardView: DashboardView,
+): DashboardViewSectionStatuses | undefined {
+  const allSectionsReady = Object.values(dashboardView.sectionStatuses).every(
+    (status) => status === "ready",
+  );
+  return allSectionsReady ? undefined : dashboardView.sectionStatuses;
 }
 
 export default function CostDashboard({
@@ -134,6 +158,11 @@ function CostDashboardContent({
   const [runInFlight, setRunInFlight] = useState(false);
   const [rangeFetchesInFlight, setRangeFetchesInFlight] = useState(0);
   const [revealGeneration, setRevealGeneration] = useState(0);
+  // Per-section readiness from the server during a live Snowflake run. Undefined
+  // for demo/cached/range loads, which keep the timed-stagger reveal.
+  const [sectionReadiness, setSectionReadiness] = useState<
+    DashboardViewSectionStatuses | undefined
+  >(undefined);
   const [loadState, setLoadState] = useState<LoadState>({
     status: data?.run.status ?? (shouldUseDemo ? "loading" : "queued"),
     view: data,
@@ -194,6 +223,7 @@ function CostDashboardContent({
     setRevealGeneration((value) => value + 1);
     runGenerationRef.current += 1;
     setRunInFlight(true);
+    setSectionReadiness(undefined);
     setLoadState((current) => ({ ...current, status: "loading" }));
     try {
       const dashboardView = await fetchDemoDashboardView(DEFAULT_VIEW_RANGE);
@@ -230,7 +260,9 @@ function CostDashboardContent({
     const options = { accessToken: runtime.accessToken };
     setRevealGeneration((value) => value + 1);
     runGenerationRef.current += 1;
+    const runGeneration = runGenerationRef.current;
     setRunInFlight(true);
+    setSectionReadiness(undefined);
     setLoadState((current) => ({ ...current, status: "loading" }));
 
     try {
@@ -241,40 +273,91 @@ function CostDashboardContent({
         },
         options,
       );
+      if (runGeneration !== runGenerationRef.current) {
+        return;
+      }
       setLoadState((current) => ({
         ...current,
         status: run.status,
         message: run.error ?? run.user_safe_message,
       }));
 
-      const completedRun = await pollDashboardRun(run.id, options);
-      if (completedRun.status !== "completed") {
-        setLoadState((current) => ({
-          ...current,
-          status: completedRun.status,
-          message: completedRun.error ?? completedRun.user_safe_message,
-        }));
+      // Stop holding every section in the skeleton via `runInFlight` once the
+      // first provisional view lands; per-section readiness takes over from
+      // there. The `finally` clears it as a backstop for early returns/errors.
+      let firstViewApplied = false;
+
+      const isTerminal = (view: DashboardView) =>
+        TERMINAL_RUN_STATUSES.has(view.run.status);
+
+      const finalView = await pollUntilTerminal(
+        () => fetchDashboardView(run.id, DEFAULT_VIEW_RANGE, options),
+        isTerminal,
+        {
+          // Window must outlast the backend 120s query-execution timeout plus
+          // executor queueing. 120 × 1.5s = 180s leaves a ~60s queueing margin;
+          // 60 × 1.5s (90s) would time the client out before the backend did.
+          intervalMs: 1_500,
+          maxAttempts: 120,
+          onResult: (view) => {
+            // Ignore partial views from a superseded run before any state write.
+            if (runGeneration !== runGenerationRef.current) {
+              return;
+            }
+            // Skip terminal views here — the post-await block applies the final
+            // view and clears sectionReadiness, so painting it twice would cause
+            // a brief readiness churn with no benefit.
+            if (isTerminal(view)) {
+              return;
+            }
+            setSectionReadiness(view.sectionStatuses);
+            // Paints ready sections; pending/unavailable stay skeletoned.
+            applyDashboardView(view);
+            if (!firstViewApplied) {
+              firstViewApplied = true;
+              setRunInFlight(false);
+            }
+          },
+        },
+      );
+
+      if (runGeneration !== runGenerationRef.current) {
+        return;
+      }
+      if (finalView.run.status !== "completed") {
+        // Terminal failed/expired/deleted: apply the final view (so the last
+        // PROVISIONAL view isn't left on screen) but keep the server's section
+        // statuses as the source of truth. Crucially, do NOT clear
+        // sectionReadiness — that would drop to the timed-stagger reveal and
+        // misleadingly mark every section ready for a run that did not finish.
+        setSectionReadiness(finalView.sectionStatuses);
+        applyDashboardView(finalView);
         return;
       }
 
-      const dashboardView = await fetchDashboardView(
-        completedRun.id,
-        DEFAULT_VIEW_RANGE,
-        options,
-      );
-      runGenerationRef.current += 1;
-      cacheView(completedRun.id, DEFAULT_VIEW_RANGE, dashboardView);
-      applyDashboardView(dashboardView);
-      prefetchRelativeWindows(completedRun.id, (range) =>
-        fetchDashboardView(completedRun.id, range, options),
+      // Completed: keep the server's section statuses as the source of truth
+      // when any section is still unavailable/pending, otherwise drop back to
+      // the standard timed reveal. readinessForView() returns undefined only
+      // when every section is ready, so unavailable sections are never falsely
+      // revealed as ready.
+      setSectionReadiness(readinessForView(finalView));
+      cacheView(finalView.run.id, DEFAULT_VIEW_RANGE, finalView);
+      applyDashboardView(finalView);
+      prefetchRelativeWindows(finalView.run.id, (range) =>
+        fetchDashboardView(finalView.run.id, range, options),
       );
     } catch {
+      if (runGeneration !== runGenerationRef.current) {
+        return;
+      }
       setLoadState({
         status: "failed",
         message: "Could not load dashboard data.",
       });
     } finally {
-      setRunInFlight(false);
+      if (runGeneration === runGenerationRef.current) {
+        setRunInFlight(false);
+      }
     }
   }, [applyDashboardView, cacheView, prefetchRelativeWindows, runtime]);
 
@@ -296,6 +379,7 @@ function CostDashboardContent({
     async function fetchInitialDemoView() {
       setRevealGeneration((value) => value + 1);
       setRunInFlight(true);
+      setSectionReadiness(undefined);
       try {
         const dashboardView = await fetchDemoDashboardView(DEFAULT_VIEW_RANGE);
         if (isActive) {
@@ -340,11 +424,17 @@ function CostDashboardContent({
       }
 
       setRevealGeneration((value) => value + 1);
+      setSectionReadiness(undefined);
       rangeRequestSeqRef.current += 1;
       const requestSeq = rangeRequestSeqRef.current;
       const runGeneration = runGenerationRef.current;
       const cachedView = cacheRef.current.get(rangeKey(currentView.run.id, request));
       if (cachedView) {
+        // Reuse the cached view's per-section statuses so a completed Snowflake
+        // run with unavailable sections stays protected when switching ranges,
+        // rather than falling back to the timed all-ready reveal. Demo views
+        // always use the standard reveal.
+        setSectionReadiness(shouldUseDemo ? undefined : readinessForView(cachedView));
         applyDashboardView(cachedView);
         return;
       }
@@ -367,6 +457,11 @@ function CostDashboardContent({
         }
         cacheView(currentView.run.id, request, dashboardView);
         if (requestSeq === rangeRequestSeqRef.current) {
+          // Preserve non-all-ready section statuses for Snowflake range views so
+          // unavailable sections are not revealed as ready (see readinessForView).
+          setSectionReadiness(
+            shouldUseDemo ? undefined : readinessForView(dashboardView),
+          );
           applyDashboardView(dashboardView);
         }
       } catch {
@@ -412,12 +507,44 @@ function CostDashboardContent({
   const dataReady =
     viewModel != null && loadState.status !== "loading" && !runInFlight;
 
+  // Derive a stable source spec from primitive field values so that
+  // poll-driven reference churn (viewModel / activeRange get new object
+  // identities every 1.5 s) does not re-trigger the AI fetch.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const aiSource = useMemo(
+    () =>
+      dataReady && viewModel
+        ? {
+            runId: viewModel.run.id,
+            request: requestFromViewRange(activeRange ?? viewModel.range),
+          }
+        : null,
+    // Intentionally using primitive fields rather than the objects themselves —
+    // object identity changes on every poll even when the values are identical.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      dataReady,
+      viewModel?.run.id,
+      activeRange?.mode,
+      activeRange?.windowDays,
+      activeRange?.startDate,
+      activeRange?.endDate,
+      viewModel?.range.mode,
+      viewModel?.range.windowDays,
+      viewModel?.range.startDate,
+      viewModel?.range.endDate,
+    ],
+  );
+
   useEffect(() => {
-    if (!dataReady || !viewModel) return;
-    const runId = viewModel.run.id;
-    const request = requestFromViewRange(activeRange ?? viewModel.range);
+    if (!aiSource) return;
+    const { runId, request } = aiSource;
     aiSeqRef.current += 1;
     const seq = aiSeqRef.current;
+    // Intentional reset: when the active view/range changes, the AI detail must
+    // immediately fall back to its loading skeleton before the async refetch
+    // resolves. This is derived-state synchronization, not a cascading loop.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setAiDetail({ status: "loading" });
 
     void (async () => {
@@ -454,7 +581,7 @@ function CostDashboardContent({
         if (seq === aiSeqRef.current) setAiDetail({ status: "error" });
       }
     })();
-  }, [dataReady, viewModel, activeRange, shouldUseDemo, accessToken]);
+  }, [aiSource, shouldUseDemo, accessToken]);
 
   const isFailedWithoutView =
     !viewModel &&
@@ -465,6 +592,7 @@ function CostDashboardContent({
     dataReady,
     instant: reduceMotion,
     revealGeneration,
+    sectionReadiness,
   });
   const runDisabled =
     runInFlight ||

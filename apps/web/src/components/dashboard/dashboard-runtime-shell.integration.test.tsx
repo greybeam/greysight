@@ -3,18 +3,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   fetchDashboardView,
-  pollDashboardRun,
+  pollUntilTerminal,
   startDashboardRun,
 } from "../../lib/dashboard-api";
 import demoDashboardView from "../../lib/demo-dashboard-view";
-import { FETCH_WINDOW_DAYS } from "../../lib/dashboard-contracts";
+import {
+  FETCH_WINDOW_DAYS,
+  type DashboardView,
+} from "../../lib/dashboard-contracts";
 import type { AuthSession, SessionChangeCallback } from "../../lib/supabase-client";
 import DashboardRuntimeShell from "./dashboard-runtime-shell";
 
 vi.mock("../../lib/dashboard-api", () => ({
   fetchDashboardView: vi.fn(),
   fetchDemoDashboardView: vi.fn(),
-  pollDashboardRun: vi.fn(),
+  pollUntilTerminal: vi.fn(),
   startDashboardRun: vi.fn(),
 }));
 
@@ -60,13 +63,25 @@ describe("DashboardRuntimeShell integration", () => {
       status: "queued",
       window_days: FETCH_WINDOW_DAYS,
     });
-    vi.mocked(pollDashboardRun).mockResolvedValue({
-      id: "run-1",
-      source: "snowflake",
-      status: "completed",
-      window_days: FETCH_WINDOW_DAYS,
-    });
-    vi.mocked(fetchDashboardView).mockResolvedValue(demoDashboardView);
+    const completedView: DashboardView = {
+      ...demoDashboardView,
+      run: {
+        ...demoDashboardView.run,
+        id: "run-1",
+        source: "snowflake",
+        status: "completed",
+      },
+    };
+    vi.mocked(fetchDashboardView).mockResolvedValue(completedView);
+    // Drive the progressive `/view` poll: fetch once (so fetchDashboardView is
+    // invoked with run-1), surface it, then resolve as the terminal view.
+    vi.mocked(pollUntilTerminal).mockImplementation(
+      async (fetcher, _isTerminal, options) => {
+        const result = (await fetcher()) as DashboardView;
+        options?.onResult?.(result);
+        return completedView as never;
+      },
+    );
 
     render(<DashboardRuntimeShell authRequired dataSource="snowflake" />);
 

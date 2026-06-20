@@ -14,6 +14,7 @@ from app.services.dashboard_datasets import (
 )
 from app.services.dataset_bounds import TOP_USER_COUNT
 from app.services.snowflake_client import (
+    SnowflakeConnectionConfig,
     SnowflakeObjectUnavailableError,
     SnowflakeQueryError,
 )
@@ -110,10 +111,8 @@ def _fake_execute(
             assert bind_params == {}
             return [{"account_locator": account_locator}]
         if "remaining_balance_daily" in lowered:
-            assert bind_params == {
-                "window_days": FETCH_WINDOW_DAYS,
-                "account_locator": account_locator,
-            }
+            # capacity is org-scoped: window only, no account_locator.
+            assert bind_params == {"window_days": FETCH_WINDOW_DAYS}
             if capacity_fails:
                 raise SnowflakeQueryError("capacity balance unavailable")
             return org_datasets["capacity_balance_daily"]
@@ -137,6 +136,28 @@ def _fake_execute(
         raise AssertionError(f"unexpected SQL: {sql}")
 
     return execute
+
+
+def test_build_uses_config_locator_without_current_account_query() -> None:
+    executed: list[str] = []
+
+    def execute(sql: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+        executed.append(sql)
+        # Locator-scoped org queries (spend + rate sheet) must receive the
+        # stored locator, never a pre-query result. Capacity is org-scoped and
+        # intentionally carries no locator.
+        if "organization_usage" in sql and "remaining_balance_daily" not in sql:
+            assert params.get("account_locator") == "XY12345"
+        return []
+
+    data = build_snowflake_dashboard_data(
+        Settings(),
+        execute=execute,
+        connection_config=SnowflakeConnectionConfig(account_locator="XY12345"),
+    )
+    # current_account() is NOT run as a gating query when the locator is known
+    assert not any("current_account()" in sql.lower() for sql in executed)
+    assert data.datasets["current_account"] == [{"account_locator": "XY12345"}]
 
 
 def test_builds_billed_dashboard_data_with_metadata_and_bounded_rows() -> None:
@@ -256,7 +277,6 @@ def test_object_unavailable_in_main_run_group_falls_back_gracefully() -> None:
     # SnowflakeObjectUnavailableError. Because it is a SnowflakeQueryError, the
     # main-run source-group fallback must catch it and degrade to estimated data
     # rather than failing the whole run with DashboardSourcesUnavailableError.
-    org_datasets = _org_rows()
     account_datasets = _account_rows()
 
     def execute(sql: str, bind_params: dict[str, Any]) -> list[dict[str, Any]]:
@@ -279,6 +299,72 @@ def test_object_unavailable_in_main_run_group_falls_back_gracefully() -> None:
     assert data.metadata.account_usage.available is True
     assert data.datasets["org_spend_daily"] == []
     assert data.datasets["rate_sheet_daily"] == []
+
+
+def test_invalid_config_locator_skips_org_usage_via_config_path() -> None:
+    executed: list[str] = []
+
+    def execute(sql: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+        executed.append(sql)
+        lowered = sql.lower()
+        for dataset_key, rows in _account_rows().items():
+            if _known_account_sql_matches(dataset_key, lowered):
+                return rows
+        return []
+
+    data = build_snowflake_dashboard_data(
+        Settings(),
+        execute=execute,
+        connection_config=SnowflakeConnectionConfig(account_locator="BAD-DROP"),
+    )
+
+    # Config-path rejection: current_account() must NEVER be queried
+    assert not any("current_account()" in sql.lower() for sql in executed)
+    # Malformed locator degrades to estimated mode
+    assert data.metadata.data_mode == "estimated"
+    # account_locator is None because validation rejected the config value
+    assert data.metadata.account_locator is None
+    # Locator-scoped org jobs (spend + rate sheet) must have been skipped; the
+    # locator-free capacity job still runs (asserted in dedicated test below).
+    assert data.metadata.organization_usage.available is False
+    assert (
+        data.metadata.organization_usage.detail
+        == "Could not determine Snowflake account."
+    )
+    assert "BAD-DROP" not in data.metadata.organization_usage.detail
+    assert data.datasets["org_spend_daily"] == []
+    assert data.datasets["rate_sheet_daily"] == []
+
+
+def test_capacity_runs_even_when_locator_is_invalid() -> None:
+    # Capacity SQL is org-scoped and locator-free, so a failed/invalid locator
+    # resolution must NOT skip it. With a malformed config locator (estimated
+    # mode, no locator-scoped org jobs), capacity should still execute and yield
+    # its rows.
+    capacity_rows = _org_rows()["capacity_balance_daily"]
+
+    def execute(sql: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+        lowered = sql.lower()
+        if "remaining_balance_daily" in lowered:
+            assert params == {"window_days": FETCH_WINDOW_DAYS}
+            return capacity_rows
+        for dataset_key, rows in _account_rows().items():
+            if _known_account_sql_matches(dataset_key, lowered):
+                return rows
+        return []
+
+    data = build_snowflake_dashboard_data(
+        Settings(),
+        execute=execute,
+        connection_config=SnowflakeConnectionConfig(account_locator="BAD-DROP"),
+    )
+
+    assert data.metadata.account_locator is None
+    assert data.datasets["org_spend_daily"] == []
+    # Locator-free capacity ran despite the invalid locator.
+    assert data.datasets["capacity_balance_daily"] == [
+        {"usage_date": "2026-06-05", "currency": "USD", "balance": 15000}
+    ]
 
 
 def test_invalid_current_account_locator_skips_org_usage_with_safe_detail() -> None:

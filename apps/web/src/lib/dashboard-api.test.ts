@@ -6,9 +6,11 @@ import {
   fetchDemoDashboardDatasets,
   fetchDemoDashboardView,
   pollDashboardRun,
+  pollUntilTerminal,
   startDashboardRun,
   triggerDashboardSource,
 } from "./dashboard-api";
+import * as contracts from "./dashboard-contracts";
 import demoDashboardDatasets from "./demo-dashboard-data";
 import demoDashboardView from "./demo-dashboard-view";
 
@@ -166,7 +168,153 @@ describe("dashboard-api", () => {
       pollDashboardRun("run-123", { intervalMs: 0, maxAttempts: 1 }),
     ).rejects.toThrow("Dashboard run polling timed out");
   });
+
+  it("does not delay after the final attempt when pollDashboardRun exhausts maxAttempts", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({ ...demoDashboardDatasets.run, status: "running" }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+      ),
+    );
+    const timeoutSpy = spyOnImmediateSetTimeout();
+
+    await expect(
+      pollDashboardRun("run-123", { intervalMs: 5, maxAttempts: 3 }),
+    ).rejects.toThrow("Dashboard run polling timed out");
+
+    // One fetch per attempt, but a delay only BETWEEN attempts: maxAttempts - 1.
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(timeoutSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("never delays when pollDashboardRun reaches a terminal state on the first result", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ ...demoDashboardDatasets.run, status: "completed" }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const timeoutSpy = spyOnImmediateSetTimeout();
+
+    const run = await pollDashboardRun("run-123", {
+      intervalMs: 5,
+      maxAttempts: 3,
+    });
+
+    expect(run.status).toBe("completed");
+    expect(timeoutSpy).not.toHaveBeenCalled();
+  });
 });
+
+describe("pollUntilTerminal", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("polls until completed and reports every provisional view", async () => {
+    const running = makeView("running", { overview: "pending", warehouse: "ready", storage: "pending" });
+    const done = makeView("completed", { overview: "ready", warehouse: "ready", storage: "ready" });
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(running), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(done), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    vi.spyOn(contracts, "parseDashboardView").mockImplementation((p) => p as contracts.DashboardView);
+
+    const seen: string[] = [];
+    const result = await pollUntilTerminal(
+      () => fetchDashboardView("run-1", { windowDays: 30 }),
+      (view) => view.run.status === "completed",
+      { intervalMs: 0, onResult: (v) => seen.push(v.run.status) },
+    );
+
+    expect(seen).toEqual(["running", "completed"]);
+    expect(result.run.status).toBe("completed");
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws when maxAttempts is exhausted before terminal status", async () => {
+    const running = makeView("running", { overview: "pending", warehouse: "pending", storage: "pending" });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(running), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+    vi.spyOn(contracts, "parseDashboardView").mockImplementation((p) => p as contracts.DashboardView);
+    const timeoutSpy = spyOnImmediateSetTimeout();
+
+    await expect(
+      pollUntilTerminal(
+        () => fetchDashboardView("run-1", { windowDays: 30 }),
+        (view) => view.run.status === "completed",
+        { intervalMs: 5, maxAttempts: 3 },
+      ),
+    ).rejects.toThrow(/timed out/i);
+
+    // Polling must stop at exactly maxAttempts — one fetch per attempt, no more
+    // (no over-polling past the cap) and no fewer (no early bail).
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    // A delay only happens BETWEEN attempts; the final attempt must not sleep
+    // before throwing the timeout error: maxAttempts - 1 delays.
+    expect(timeoutSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("never delays when pollUntilTerminal reaches terminal on the first result", async () => {
+    const done = makeView("completed", { overview: "ready", warehouse: "ready", storage: "ready" });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify(done), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.spyOn(contracts, "parseDashboardView").mockImplementation((p) => p as contracts.DashboardView);
+    const timeoutSpy = spyOnImmediateSetTimeout();
+
+    const result = await pollUntilTerminal(
+      () => fetchDashboardView("run-1", { windowDays: 30 }),
+      (view) => view.run.status === "completed",
+      { intervalMs: 5, maxAttempts: 3 },
+    );
+
+    expect(result.run.status).toBe("completed");
+    expect(timeoutSpy).not.toHaveBeenCalled();
+  });
+});
+
+// Spies on setTimeout and invokes the scheduled callback synchronously so delay()
+// resolves immediately, letting us count delays without waiting on real timers.
+function spyOnImmediateSetTimeout() {
+  return vi
+    .spyOn(globalThis, "setTimeout")
+    .mockImplementation((handler: TimerHandler) => {
+      if (typeof handler === "function") {
+        handler();
+      }
+      return 0 as unknown as ReturnType<typeof globalThis.setTimeout>;
+    });
+}
+
+function makeView(status: string, sectionStatuses: Record<string, string>) {
+  return { run: { id: "run-1", status }, sectionStatuses } as unknown as contracts.DashboardView;
+}
 
 describe("dashboard source api", () => {
   afterEach(() => vi.restoreAllMocks());

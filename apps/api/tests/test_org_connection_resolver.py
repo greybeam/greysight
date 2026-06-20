@@ -209,6 +209,31 @@ def test_fetcher_raises_on_malformed_metadata() -> None:
         fetcher("org-1")
 
 
+def _row_with_locator(**over):
+    base = dict(
+        account="myorg-acct",
+        snowflake_user="u",
+        role="r",
+        warehouse="w",
+        database=None,
+        schema=None,
+        private_key_pem="pem",
+        passphrase=None,
+        status="active",
+        account_locator="XY12345",
+    )
+    base.update(over)
+    return OrgConnectionRow(**base)
+
+
+def test_resolver_threads_account_locator() -> None:
+    config = resolve_snowflake_config(
+        "org-1", Settings(), fetch_connection=lambda _id: _row_with_locator()
+    )
+    assert config.account == "myorg-acct"
+    assert config.account_locator == "XY12345"
+
+
 def test_fetcher_raises_on_multiple_secret_rows() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/organization_snowflake_connections"):

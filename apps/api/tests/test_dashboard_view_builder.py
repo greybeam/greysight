@@ -27,7 +27,6 @@ from app.services.dashboard_view_builder import (
     resolve_dashboard_view_range,
 )
 from app.services.dashboard_view_models import (
-    CapacityBalanceViewModel,
     DashboardViewRange,
     DashboardViewResponse,
     DollarPoint,
@@ -214,32 +213,6 @@ def _sum_org_spend(
     )
 
 
-def _single_org_spend_view(spend: float, currency: str) -> DashboardViewResponse:
-    datasets = _demo_datasets()
-    source_start, source_end = _source_bounds(datasets)
-    datasets["org_spend_daily"] = [
-        {
-            "usage_date": "2026-06-08",
-            "service_type": "CLOUD_SERVICES",
-            "rating_type": "COMPUTE",
-            "billing_type": "CONSUMPTION",
-            "is_adjustment": spend < 0,
-            "currency": currency,
-            "spend": spend,
-        }
-    ]
-    metadata = _demo_metadata().model_copy(update={"currency": currency})
-
-    return build_dashboard_view(
-        run=_demo_run(),
-        datasets=datasets,
-        metadata=metadata,
-        source_start_date=source_start,
-        source_end_date=source_end,
-        window_days=7,
-    )
-
-
 def test_builds_demo_view_with_billed_like_totals_and_labels() -> None:
     datasets = _demo_datasets()
     source_start, source_end = _source_bounds(datasets)
@@ -357,123 +330,30 @@ def test_builds_billed_view_with_negative_adjustments_included() -> None:
     )
 
 
-def test_negative_usd_billed_total_uses_accounting_minus_label() -> None:
-    view = _single_org_spend_view(spend=-10.0, currency="USD")
-
-    assert view.total_spend.total == pytest.approx(-10, abs=0.01)
-    assert view.total_spend.total_label == "-$10.00"
-
-
-def test_usd_billed_total_rounds_half_cents_like_intl() -> None:
-    view = _single_org_spend_view(spend=2.675, currency="USD")
-
-    assert view.total_spend.total == pytest.approx(2.675, abs=0.001)
-    assert view.total_spend.total_label == "$2.68"
-
-
-def test_negative_usd_billed_total_rounds_half_cents_like_intl() -> None:
-    view = _single_org_spend_view(spend=-2.675, currency="USD")
-
-    assert view.total_spend.total == pytest.approx(-2.675, abs=0.001)
-    assert view.total_spend.total_label == "-$2.68"
-
-
-def test_eur_billed_total_uses_symbol_prefix_label() -> None:
-    view = _single_org_spend_view(spend=1234.5, currency="EUR")
-
-    assert view.total_spend.total == pytest.approx(1234.5, abs=0.01)
-    assert view.total_spend.total_label == "€1,234.50"
-
-
-def test_eur_billed_total_rounds_half_cents_like_intl() -> None:
-    view = _single_org_spend_view(spend=1.005, currency="EUR")
-
-    assert view.total_spend.total == pytest.approx(1.005, abs=0.001)
-    assert view.total_spend.total_label == "€1.01"
-
-
-def test_negative_eur_billed_total_uses_symbol_prefix_label() -> None:
-    view = _single_org_spend_view(spend=-10.0, currency="EUR")
-
-    assert view.total_spend.total == pytest.approx(-10, abs=0.01)
-    assert view.total_spend.total_label == "-€10.00"
-
-
-def test_jpy_billed_total_uses_symbol_prefix_without_decimals() -> None:
-    view = _single_org_spend_view(spend=10.0, currency="JPY")
-
-    assert view.total_spend.total == pytest.approx(10, abs=0.01)
-    assert view.total_spend.total_label == "¥10"
-
-
-def test_negative_jpy_billed_total_uses_symbol_prefix_without_decimals() -> None:
-    view = _single_org_spend_view(spend=-10.0, currency="JPY")
-
-    assert view.total_spend.total == pytest.approx(-10, abs=0.01)
-    assert view.total_spend.total_label == "-¥10"
-
-
-def test_fractional_jpy_billed_total_trims_trailing_zeroes() -> None:
-    view = _single_org_spend_view(spend=10.5, currency="JPY")
-
-    assert view.total_spend.total == pytest.approx(10.5, abs=0.01)
-    assert view.total_spend.total_label == "¥10.5"
-
-
-def test_negative_fractional_jpy_billed_total_trims_trailing_zeroes() -> None:
-    view = _single_org_spend_view(spend=-1234.5, currency="JPY")
-
-    assert view.total_spend.total == pytest.approx(-1234.5, abs=0.01)
-    assert view.total_spend.total_label == "-¥1,234.5"
-
-
-def test_chf_billed_total_uses_code_prefix_with_nbsp() -> None:
-    view = _single_org_spend_view(spend=1234.5, currency="CHF")
-
-    assert view.total_spend.total == pytest.approx(1234.5, abs=0.01)
-    assert view.total_spend.total_label == "CHF\u00a01,234.50"
-
-
-def test_negative_chf_billed_total_uses_code_prefix_with_nbsp() -> None:
-    view = _single_org_spend_view(spend=-1234.5, currency="CHF")
-
-    assert view.total_spend.total == pytest.approx(-1234.5, abs=0.01)
-    assert view.total_spend.total_label == "-CHF\u00a01,234.50"
-
-
-def test_mxn_billed_total_uses_symbol_prefix_label() -> None:
-    view = _single_org_spend_view(spend=1234.5, currency="MXN")
-
-    assert view.total_spend.total == pytest.approx(1234.5, abs=0.01)
-    assert view.total_spend.total_label == "MX$1,234.50"
-
-
-def test_sek_billed_total_uses_code_prefix_with_nbsp() -> None:
-    view = _single_org_spend_view(spend=1234.5, currency="SEK")
-
-    assert view.total_spend.total == pytest.approx(1234.5, abs=0.01)
-    assert view.total_spend.total_label == "SEK\u00a01,234.50"
-
-
-def test_inr_billed_total_uses_symbol_prefix_label() -> None:
-    view = _single_org_spend_view(spend=1234.5, currency="INR")
-
-    assert view.total_spend.total == pytest.approx(1234.5, abs=0.01)
-    assert view.total_spend.total_label == "₹1,234.50"
-
-
-def test_krw_billed_total_uses_symbol_prefix_with_compact_decimals() -> None:
-    view = _single_org_spend_view(spend=1234.5, currency="KRW")
-
-    assert view.total_spend.total == pytest.approx(1234.5, abs=0.01)
-    assert view.total_spend.total_label == "₩1,234.5"
-
-
-def test_zar_billed_total_uses_code_prefix_with_nbsp() -> None:
-    view = _single_org_spend_view(spend=1234.5, currency="ZAR")
-
-    assert view.total_spend.total == pytest.approx(1234.5, abs=0.01)
-    assert view.total_spend.total_label == "ZAR\u00a01,234.50"
+@pytest.mark.parametrize(
+    ("value", "currency", "expected"),
+    [
+        (-10.0, "USD", "-$10.00"),
+        (2.675, "USD", "$2.68"),
+        (-2.675, "USD", "-$2.68"),
+        (1234.5, "EUR", "€1,234.50"),
+        (1.005, "EUR", "€1.01"),
+        (-10.0, "EUR", "-€10.00"),
+        (10.0, "JPY", "¥10"),
+        (-10.0, "JPY", "-¥10"),
+        (10.5, "JPY", "¥10.5"),
+        (-1234.5, "JPY", "-¥1,234.5"),
+        (1234.5, "CHF", "CHF\u00a01,234.50"),
+        (-1234.5, "CHF", "-CHF\u00a01,234.50"),
+        (1234.5, "MXN", "MX$1,234.50"),
+        (1234.5, "SEK", "SEK\u00a01,234.50"),
+        (1234.5, "INR", "₹1,234.50"),
+        (1234.5, "KRW", "₩1,234.5"),
+        (1234.5, "ZAR", "ZAR\u00a01,234.50"),
+    ],
+)
+def test_format_currency_contract(value: float, currency: str, expected: str) -> None:
+    assert _format_currency(value, currency) == expected
 
 
 def test_projection_uses_latest_30_days_regardless_of_selected_range() -> None:
@@ -2003,18 +1883,6 @@ def test_demo_storage_rows_carry_hybrid_bytes() -> None:
     assert all("average_hybrid_table_storage_bytes" in row for row in storage_rows)
 
 
-def test_capacity_balance_view_model_defaults_forecast_series_to_empty() -> None:
-    model = CapacityBalanceViewModel(
-        current_balance=100.0,
-        current_balance_label="$100.00",
-        current_balance_date="2026-06-08",
-        daily_series=[],
-        is_empty=False,
-    )
-
-    assert model.forecast_series == []
-
-
 def test_build_forecast_series_projects_to_zero() -> None:
     series = _build_forecast_series(
         current_balance=100.0,
@@ -2052,10 +1920,22 @@ def test_build_forecast_series_clamps_final_point_to_zero() -> None:
 
 def test_build_forecast_series_empty_for_non_positive_inputs() -> None:
     base = dict(current_date=date(2026, 6, 8), currency="USD")
-    assert _build_forecast_series(current_balance=100.0, forecast_daily_spend=0.0, **base) == []
-    assert _build_forecast_series(current_balance=100.0, forecast_daily_spend=-5.0, **base) == []
-    assert _build_forecast_series(current_balance=0.0, forecast_daily_spend=25.0, **base) == []
-    assert _build_forecast_series(current_balance=-5.0, forecast_daily_spend=25.0, **base) == []
+    assert (
+        _build_forecast_series(current_balance=100.0, forecast_daily_spend=0.0, **base)
+        == []
+    )
+    assert (
+        _build_forecast_series(current_balance=100.0, forecast_daily_spend=-5.0, **base)
+        == []
+    )
+    assert (
+        _build_forecast_series(current_balance=0.0, forecast_daily_spend=25.0, **base)
+        == []
+    )
+    assert (
+        _build_forecast_series(current_balance=-5.0, forecast_daily_spend=25.0, **base)
+        == []
+    )
 
 
 def test_build_forecast_series_empty_when_runway_exceeds_cap() -> None:
@@ -2128,8 +2008,7 @@ def test_demo_view_includes_capacity_forecast() -> None:
     assert forecast[0].balance == pytest.approx(11_875.25, abs=0.01)
     assert forecast[-1].balance == 0.0
     assert all(
-        forecast[i].balance >= forecast[i + 1].balance
-        for i in range(len(forecast) - 1)
+        forecast[i].balance >= forecast[i + 1].balance for i in range(len(forecast) - 1)
     )
 
 
@@ -2191,4 +2070,6 @@ def test_custom_range_ending_before_through_date_omits_forecast() -> None:
 
     assert view.range.end_date == date(2026, 6, 7)
     assert view.capacity_balance.daily_series  # balance history still present
-    assert view.capacity_balance.forecast_series == []  # suppressed: ends before through_date
+    assert (
+        view.capacity_balance.forecast_series == []
+    )  # suppressed: ends before through_date

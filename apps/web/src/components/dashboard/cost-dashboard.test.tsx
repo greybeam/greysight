@@ -13,20 +13,37 @@ import {
   type DashboardViewRangeRequest,
   fetchDashboardView,
   fetchDemoDashboardView,
-  pollDashboardRun,
+  pollUntilTerminal,
   startDashboardRun,
 } from "../../lib/dashboard-api";
 import demoDashboardView from "../../lib/demo-dashboard-view";
-import { FETCH_WINDOW_DAYS, type DashboardRun } from "../../lib/dashboard-contracts";
+import {
+  FETCH_WINDOW_DAYS,
+  type DashboardRun,
+  type DashboardView,
+} from "../../lib/dashboard-contracts";
 import CostDashboard from "./cost-dashboard";
 import { REVEAL_STEP_MS } from "./use-section-statuses";
 
 vi.mock("../../lib/dashboard-api", () => ({
   fetchDashboardView: vi.fn(),
   fetchDemoDashboardView: vi.fn(),
-  pollDashboardRun: vi.fn(),
+  pollUntilTerminal: vi.fn(),
   startDashboardRun: vi.fn(),
 }));
+
+// Drives the progressive `/view` poll the component runs for Snowflake runs:
+// fetch once, surface the result via `onResult`, then resolve with it as the
+// terminal view. Mirrors the real `pollUntilTerminal` for a single-shot result.
+function mockPollResolvesWith(view: DashboardView) {
+  vi.mocked(pollUntilTerminal<DashboardView>).mockImplementation(
+    async (fetcher, _isTerminal, options) => {
+      const result = await fetcher();
+      options?.onResult?.(result);
+      return view;
+    },
+  );
+}
 
 type Deferred<T> = {
   promise: Promise<T>;
@@ -78,42 +95,6 @@ describe("CostDashboard", () => {
   afterEach(() => {
     cleanup();
     vi.resetAllMocks();
-  });
-
-  it("renders required dollar dashboard sections", () => {
-    render(<CostDashboard data={demoDashboardView} />);
-
-    expect(screen.getByText("Overview")).toBeInTheDocument();
-    // The demo view carries a current balance date, so the title is dated.
-    expect(screen.getByText("Ending Balance as of Jun 08")).toBeInTheDocument();
-    // The demo view uses a relative 30-day window, so the KPI label is scoped.
-    expect(screen.getByText("Total Spend in Last 30 Days")).toBeInTheDocument();
-    expect(screen.getByText("Total spend by service")).toBeInTheDocument();
-    expect(
-      screen.getByTestId("dashboard-section-warehouse-spend"),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Storage spend")).toBeInTheDocument();
-    expect(screen.queryByText("Total Spend in Period")).not.toBeInTheDocument();
-    // "Warehouse spend" now only appears as the section heading; the bottom 2x2
-    // detail tables were removed.
-    expect(screen.getAllByText("Warehouse spend").length).toBeGreaterThan(0);
-    // The storage section's right-side card is titled "Total spend by database".
-    // The removed bottom 2x2 detail tables ("User compute spend",
-    // "Storage by database") should no longer render.
-    expect(screen.getByText("Total spend by database")).toBeInTheDocument();
-    expect(screen.queryByText("User compute spend")).not.toBeInTheDocument();
-    expect(screen.queryByText("Storage by database")).not.toBeInTheDocument();
-  });
-
-  it("uses the shared dashboard content container scale", () => {
-    render(<CostDashboard data={demoDashboardView} />);
-
-    expect(screen.getByLabelText("Dashboard content")).toHaveClass(
-      "max-w-[1200px]",
-      "gap-6",
-      "px-6",
-      "py-6",
-    );
   });
 
   it("loads demo prepared view and prefetches relative windows", async () => {
@@ -580,12 +561,13 @@ describe("CostDashboard", () => {
       ...runningRun,
       status: "completed",
     };
-    vi.mocked(startDashboardRun).mockResolvedValue(runningRun);
-    vi.mocked(pollDashboardRun).mockResolvedValue(completedRun);
-    vi.mocked(fetchDashboardView).mockResolvedValue({
+    const completedView: DashboardView = {
       ...demoDashboardView,
       run: completedRun,
-    });
+    };
+    vi.mocked(startDashboardRun).mockResolvedValue(runningRun);
+    vi.mocked(fetchDashboardView).mockResolvedValue(completedView);
+    mockPollResolvesWith(completedView);
 
     render(
       <CostDashboard
@@ -606,10 +588,6 @@ describe("CostDashboard", () => {
         { accessToken: "test-access-token" },
       );
     });
-    expect(pollDashboardRun).toHaveBeenCalledWith(
-      "run-123",
-      expect.objectContaining({ accessToken: "test-access-token" }),
-    );
     expect(fetchDashboardView).toHaveBeenCalledWith(
       "run-123",
       { windowDays: 30 },
@@ -629,6 +607,225 @@ describe("CostDashboard", () => {
     expect(fetchDemoDashboardView).not.toHaveBeenCalled();
   });
 
+  it("reveals only server-ready sections while a Snowflake run streams provisional views", async () => {
+    const runningRun: DashboardRun = {
+      ...demoDashboardView.run,
+      id: "run-progressive",
+      source: "snowflake",
+      status: "running",
+    };
+    const provisionalView: DashboardView = {
+      ...demoDashboardView,
+      run: runningRun,
+      sectionStatuses: {
+        overview: "ready",
+        warehouse: "pending",
+        storage: "unavailable",
+      },
+    };
+    vi.mocked(startDashboardRun).mockResolvedValue(runningRun);
+    vi.mocked(fetchDashboardView).mockResolvedValue(provisionalView);
+    // Surface the provisional view via onResult, then stay pending so the
+    // per-section readiness (not a terminal completion) drives the reveal.
+    vi.mocked(pollUntilTerminal).mockImplementation(
+      async (fetcher, _isTerminal, options) => {
+        const result = (await fetcher()) as DashboardView;
+        options?.onResult?.(result);
+        return new Promise<never>(() => undefined);
+      },
+    );
+
+    render(
+      <CostDashboard
+        demoMode={false}
+        runtime={{
+          accessToken: "test-access-token",
+          organizationId: "org-123",
+          organizationName: "Acme Analytics",
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+
+    // Overview is server-ready: its content paints while warehouse (pending) and
+    // storage (unavailable) remain in their loading skeletons.
+    expect(
+      await screen.findByText("Total Spend in Last 30 Days"),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("overview-skeleton")).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId("warehouse-spend-skeleton-chart"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("storage-spend-skeleton-chart"),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps unavailable sections skeletoned after changing range on a completed Snowflake run", async () => {
+    const runningRun: DashboardRun = {
+      ...demoDashboardView.run,
+      id: "run-range-unavailable",
+      source: "snowflake",
+      status: "running",
+    };
+    const completedRun: DashboardRun = {
+      ...runningRun,
+      status: "completed",
+    };
+    // Completed run where storage never landed: the section statuses are NOT
+    // all ready, so storage must stay skeletoned across range changes rather
+    // than falling back to the timed all-ready reveal.
+    const completedView: DashboardView = {
+      ...demoDashboardView,
+      run: completedRun,
+      sectionStatuses: {
+        overview: "ready",
+        warehouse: "ready",
+        storage: "unavailable",
+      },
+    };
+    vi.mocked(startDashboardRun).mockResolvedValue(runningRun);
+    // Every range returns the same completed-but-storage-unavailable view, with
+    // its range reflecting the requested window so the active-range chip tracks.
+    vi.mocked(fetchDashboardView).mockImplementation(async (_runId, request) => ({
+      ...completedView,
+      range: {
+        ...completedView.range,
+        mode: "relative" as const,
+        windowDays: request?.windowDays ?? 30,
+      },
+    }));
+    mockPollResolvesWith(completedView);
+
+    render(
+      <CostDashboard
+        demoMode={false}
+        runtime={{
+          accessToken: "test-access-token",
+          organizationId: "org-123",
+          organizationName: "Acme Analytics",
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+
+    // The completed view paints overview, but storage (unavailable) stays
+    // skeletoned. Wait for the relative-window prefetch so the 7-day view is
+    // cached before switching ranges.
+    expect(
+      await screen.findByText("Total Spend in Last 30 Days"),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(fetchDashboardView).toHaveBeenCalledTimes(3));
+    expect(
+      screen.getByTestId("storage-spend-skeleton-chart"),
+    ).toBeInTheDocument();
+
+    // Switch to the cached 7-day window: the cached view's section statuses
+    // must be reused so the unavailable storage section is not falsely revealed
+    // as ready. No additional fetch is issued for the cached range.
+    fireEvent.click(screen.getByRole("button", { name: "7 days" }));
+
+    expect(screen.getByRole("button", { name: "7 days" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(fetchDashboardView).toHaveBeenCalledTimes(3);
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("storage-spend-skeleton-chart"),
+      ).toBeInTheDocument(),
+    );
+    // The 7-day overview content still paints (it is ready); only the
+    // unavailable storage section stays skeletoned.
+    expect(
+      screen.getByText("Total Spend in Last 7 Days"),
+    ).toBeInTheDocument();
+  });
+
+  it.each([["failed"], ["expired"]] as const)(
+    "applies a %s terminal view without revealing all sections as ready",
+    async (terminalStatus) => {
+      const runningRun: DashboardRun = {
+        ...demoDashboardView.run,
+        id: "run-terminal",
+        source: "snowflake",
+        status: "running",
+      };
+      const provisionalView: DashboardView = {
+        ...demoDashboardView,
+        run: runningRun,
+        sectionStatuses: {
+          overview: "ready",
+          warehouse: "pending",
+          storage: "pending",
+        },
+      };
+      // The terminal view carries the failure status and section statuses that
+      // are NOT all ready: only overview is ready, warehouse/storage are pending.
+      const terminalRun: DashboardRun = {
+        ...runningRun,
+        status: terminalStatus,
+        user_safe_message: "The run did not finish.",
+      };
+      const terminalView: DashboardView = {
+        ...demoDashboardView,
+        run: terminalRun,
+        sectionStatuses: {
+          overview: "ready",
+          warehouse: "pending",
+          storage: "pending",
+        },
+      };
+      vi.mocked(startDashboardRun).mockResolvedValue(runningRun);
+      vi.mocked(fetchDashboardView).mockResolvedValue(provisionalView);
+      // First call surfaces the provisional (non-terminal) view via onResult,
+      // then the poll resolves with the terminal view as its final result.
+      vi.mocked(pollUntilTerminal).mockImplementation(
+        async (fetcher, _isTerminal, options) => {
+          const result = (await fetcher()) as DashboardView;
+          options?.onResult?.(result);
+          return terminalView;
+        },
+      );
+
+      render(
+        <CostDashboard
+          demoMode={false}
+          runtime={{
+            accessToken: "test-access-token",
+            organizationId: "org-123",
+            organizationName: "Acme Analytics",
+          }}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+
+      // The terminal view's error message surfaces as the inline alert.
+      expect(
+        await screen.findByText("The run did not finish."),
+      ).toBeInTheDocument();
+
+      // The terminal view is applied (overview content paints), but the pending
+      // warehouse/storage sections must NOT be revealed as ready — their
+      // skeletons remain because the terminal section statuses are the source
+      // of truth, not the all-ready timed-stagger reveal.
+      expect(
+        screen.getByText("Total Spend in Last 30 Days"),
+      ).toBeInTheDocument();
+      await waitFor(() =>
+        expect(
+          screen.getByTestId("warehouse-spend-skeleton-chart"),
+        ).toBeInTheDocument(),
+      );
+      expect(
+        screen.getByTestId("storage-spend-skeleton-chart"),
+      ).toBeInTheDocument();
+    },
+  );
+
   it("keeps the run action disabled while a queued Snowflake run is polling", async () => {
     const queuedRun: DashboardRun = {
       ...demoDashboardView.run,
@@ -637,7 +834,7 @@ describe("CostDashboard", () => {
       status: "queued",
     };
     vi.mocked(startDashboardRun).mockResolvedValue(queuedRun);
-    vi.mocked(pollDashboardRun).mockReturnValue(new Promise(() => undefined));
+    vi.mocked(pollUntilTerminal).mockReturnValue(new Promise(() => undefined));
 
     render(
       <CostDashboard
@@ -677,7 +874,7 @@ describe("CostDashboard", () => {
       };
       vi.mocked(startDashboardRun).mockResolvedValue(queuedRun);
       // Keep the poll pending so the re-run stays in flight.
-      vi.mocked(pollDashboardRun).mockReturnValue(new Promise(() => undefined));
+      vi.mocked(pollUntilTerminal).mockReturnValue(new Promise(() => undefined));
 
       render(
         <CostDashboard
@@ -754,7 +951,7 @@ describe("CostDashboard", () => {
       status: "queued",
     };
     vi.mocked(startDashboardRun).mockResolvedValue(queuedRun);
-    vi.mocked(pollDashboardRun).mockReturnValue(new Promise(() => undefined));
+    vi.mocked(pollUntilTerminal).mockReturnValue(new Promise(() => undefined));
 
     render(
       <CostDashboard

@@ -1,4 +1,8 @@
+import threading
+import time
 from datetime import date
+
+import pytest
 
 from app.services.ai_consumption import (
     AI_CONSUMPTION_BRANCHES,
@@ -51,15 +55,48 @@ def test_skips_branch_when_table_unavailable():
     assert all(row["consumption_type"] != missing for row in rows)
 
 
-def test_real_error_propagates():
+def test_real_query_error_propagates():
+    """A non-object-unavailable SnowflakeQueryError must PROPAGATE, not skip.
+
+    Connection failures, timeouts, and SQL regressions raise the base
+    SnowflakeQueryError. These are real failures of the deferred AI source and
+    must surface to the caller (which fails the source) rather than masquerading
+    as "this account doesn't use that AI feature".
+    """
+
     def execute(sql, params):
         raise SnowflakeQueryError("boom")
 
-    try:
+    with pytest.raises(SnowflakeQueryError):
         fetch_ai_consumption_daily(execute, window_days=30)
-        assert False, "expected SnowflakeQueryError"
-    except SnowflakeQueryError:
-        pass
+
+
+def test_ai_branches_run_in_parallel_and_skip_unavailable():
+    # Peak-concurrency proof instead of a tight wall-clock bound (latent CI
+    # flake): track how many branches are simultaneously in-flight. A sequential
+    # runner would never exceed peak==1; true parallelism drives it above 1.
+    lock = threading.Lock()
+    active = 0
+    peak = 0
+
+    def execute(sql, params):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            time.sleep(0.05)  # widen the overlap window without racing a deadline
+        finally:
+            with lock:
+                active -= 1
+        if "cortex_search" in sql:  # one unavailable branch
+            raise SnowflakeObjectUnavailableError("nope")
+        return [{"row": 1}]
+
+    rows, skipped = fetch_ai_consumption_daily(execute, window_days=30)
+    assert peak > 1  # branches genuinely overlapped (ran concurrently)
+    assert any("cortex_search" in s for s in skipped)
+    assert len(rows) > 0
 
 
 def test_every_branch_sql_has_window_filter():

@@ -58,7 +58,8 @@ class SnowflakeConnectionConfig:
     private_key_path: Path | None = None
     private_key_pem: str | None = field(default=None, repr=False)
     private_key_passphrase: str | None = field(default=None, repr=False)
-    query_timeout_seconds: int = 60
+    query_timeout_seconds: int = 120
+    account_locator: str | None = None
 
     @classmethod
     def from_environment(cls) -> SnowflakeConnectionConfig:
@@ -75,8 +76,9 @@ class SnowflakeConnectionConfig:
             else None,
             private_key_passphrase=os.environ.get("SNOWFLAKE_PRIVATE_KEY_PASSPHRASE"),
             query_timeout_seconds=int(
-                os.environ.get("GREYSIGHT_QUERY_TIMEOUT_SECONDS", "60")
+                os.environ.get("GREYSIGHT_QUERY_TIMEOUT_SECONDS", "120")
             ),
+            account_locator=os.environ.get("SNOWFLAKE_ACCOUNT_LOCATOR"),
         )
 
     def connector_kwargs(self) -> dict[str, Any]:
@@ -168,12 +170,16 @@ def execute_source_query(
 
 def validate_snowflake_connection(
     config: SnowflakeConnectionConfig | None = None,
-) -> None:
+) -> str | None:
+    """Validate access and return the account locator (current_account())."""
     connection = _connect(config)
     try:
         with connection.cursor() as cursor:
             for sql in _validation_queries():
                 cursor.execute(sql)
+            cursor.execute("select current_account()")
+            row = cursor.fetchone()
+            return str(row[0]) if row and row[0] is not None else None
     except Exception as exc:
         raise SnowflakeValidationError(_user_safe_message(exc)) from None
     finally:

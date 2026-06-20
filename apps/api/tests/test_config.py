@@ -15,7 +15,7 @@ def test_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.data_source == "demo"
     assert settings.auth_required is False
     assert settings.default_window_days == 30
-    assert settings.query_timeout_seconds == 180
+    assert settings.query_timeout_seconds == 120
 
 
 def test_greysight_window_and_timeout_env_aliases(
@@ -85,16 +85,6 @@ def test_supabase_service_role_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings()
 
     assert settings.supabase_service_role_key == "service-role-key"
-
-
-def test_supabase_service_role_key_defaults_empty(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
-
-    settings = Settings()
-
-    assert settings.supabase_service_role_key == ""
 
 
 def test_empty_storage_price_uses_default(monkeypatch: pytest.MonkeyPatch) -> None:

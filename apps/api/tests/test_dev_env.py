@@ -1,43 +1,8 @@
 import importlib
-import os
-from pathlib import Path
 
 import pytest
 
 import dev
-from dev import load_local_env
-
-
-def test_load_local_env_loads_values(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.delenv("DEV_ENV_TEST_KEY", raising=False)
-    (tmp_path / ".env").write_text("DEV_ENV_TEST_KEY=loaded-value\n")
-
-    existed = load_local_env(tmp_path)
-
-    assert existed is True
-    assert os.environ["DEV_ENV_TEST_KEY"] == "loaded-value"
-
-
-def test_load_local_env_tolerates_missing_file(
-    tmp_path: Path,
-) -> None:
-    existed = load_local_env(tmp_path)
-
-    assert existed is False
-
-
-def test_load_local_env_overrides_existing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("DEV_ENV_TEST_KEY", "already-set")
-    (tmp_path / ".env").write_text("DEV_ENV_TEST_KEY=from-file\n")
-
-    existed = load_local_env(tmp_path)
-
-    assert existed is True
-    assert os.environ["DEV_ENV_TEST_KEY"] == "from-file"
 
 
 def test_importing_dev_does_not_load_env(

@@ -10,6 +10,11 @@ from app.models import DashboardRun, SCHEMA_VERSION
 DashboardRangeMode = Literal["relative", "custom"]
 DashboardDataModeLabel = Literal["Billed", "Estimated", "Demo"]
 SpendBasis = Literal["billed", "estimated"]
+SectionStatus = Literal["pending", "ready", "unavailable"]
+
+
+def _all_ready_section_statuses() -> dict[str, SectionStatus]:
+    return {"overview": "ready", "warehouse": "ready", "storage": "ready"}
 
 
 class DashboardViewRange(BaseModel):
@@ -198,4 +203,7 @@ class DashboardViewResponse(BaseModel):
     detail_tables: DetailTablesViewModel
     ai_spend_summary: AISpendSummaryViewModel = AISpendSummaryViewModel(
         total=0.0, total_label="$0.00", is_empty=True
+    )
+    section_statuses: dict[str, SectionStatus] = Field(
+        default_factory=_all_ready_section_statuses
     )

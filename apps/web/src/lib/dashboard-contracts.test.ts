@@ -551,6 +551,38 @@ describe("parseDashboardView", () => {
       }),
     ).toThrow("Dashboard view response is invalid");
   });
+
+  describe("section_statuses", () => {
+    it("defaults to all-ready when absent", () => {
+      const view = parseDashboardView(preparedViewPayload);
+      expect(view.sectionStatuses).toEqual({
+        overview: "ready",
+        warehouse: "ready",
+        storage: "ready",
+      });
+    });
+
+    it("reads a provisional running payload", () => {
+      const view = parseDashboardView({
+        ...preparedViewPayload,
+        section_statuses: { overview: "pending", warehouse: "ready", storage: "unavailable" },
+      });
+      expect(view.sectionStatuses).toEqual({
+        overview: "pending",
+        warehouse: "ready",
+        storage: "unavailable",
+      });
+    });
+
+    it("throws on an invalid section status value", () => {
+      expect(() =>
+        parseDashboardView({
+          ...preparedViewPayload,
+          section_statuses: { overview: "bogus", warehouse: "ready", storage: "ready" },
+        }),
+      ).toThrow("Dashboard view response is invalid");
+    });
+  });
 });
 
 describe("parseAIDetailViewModel", () => {

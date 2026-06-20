@@ -550,9 +550,6 @@ export function AiSpendSection({
               <Text>Total AI spend by consumption type</Text>
               {/* Data-consistency note: KPI = billed metering; chart = per-feature
                   breakdown. Small differences between the two are expected. */}
-              <Text className="mb-2 text-xs opacity-60">
-                KPI reflects billed metering; chart shows per-feature breakdown
-              </Text>
               <div className="flex min-h-0 flex-1 flex-col">
                 {ready ? (
                   <RankedSpendBars rows={ready.consumptionBars} />

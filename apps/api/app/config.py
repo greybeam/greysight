@@ -34,7 +34,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("GREYSIGHT_DEFAULT_WINDOW_DAYS"),
     )
     query_timeout_seconds: int = Field(
-        default=180,
+        default=120,
         gt=0,
         validation_alias=AliasChoices("GREYSIGHT_QUERY_TIMEOUT_SECONDS"),
     )
@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     cors_allowed_origins: tuple[str, ...] = Field(
         default=("http://localhost:3000",),
         validation_alias=AliasChoices("GREYSIGHT_CORS_ALLOWED_ORIGINS"),
+    )
+    query_concurrency: int = Field(
+        default=8, gt=0, le=64,
+        validation_alias=AliasChoices("GREYSIGHT_QUERY_CONCURRENCY"),
     )
 
     @field_validator(
