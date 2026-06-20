@@ -21,6 +21,7 @@ RUN uv sync --frozen --no-install-project
 # plus the repo-root SQL assets the dashboard registry reads at runtime.
 COPY apps/api/ ./
 COPY sql/ /app/sql/
+COPY shared/ /app/shared/
 
 # Run the venv's executables directly (no uv resolution at container start).
 ENV PATH="/app/apps/api/.venv/bin:$PATH"
