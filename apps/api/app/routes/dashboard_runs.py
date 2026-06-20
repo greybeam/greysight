@@ -23,14 +23,16 @@ from app.services.dashboard_datasets import (
     build_snowflake_dashboard_data,
 )
 from app.services.dashboard_view_builder import (
+    DEFAULT_VIEW_WINDOW_DAYS,
     DashboardInvalidRangeError,
     DashboardRangeOutOfBoundsError,
     _through_date_for,
     build_ai_detail_view,
     build_dashboard_view,
     resolve_dashboard_view_range,
+    window_start_for,
 )
-from app.services.dashboard_view_models import DashboardViewResponse
+from app.services.dashboard_view_models import DashboardViewRange, DashboardViewResponse
 from app.services.deferred_sources import DEFERRED_SOURCES
 from app.services.demo_data import build_demo_dashboard_dataset
 from app.services.parallel_source_runner import SourceOutcome
@@ -924,20 +926,49 @@ def read_dashboard_run_view(
         **datasets,
     }
     if run.status == "running":
-        # Provisional view: span whatever has landed; the date axis is
-        # provisional until finalize_run. Section gating drives rendering. We
-        # ignore the caller's range here — a finalize-era range would 409 against
-        # the narrow provisional bounds. [source_start, source_end] always
-        # satisfies resolve_dashboard_view_range's bounds check.
-        view = _prepared_view_or_http_error(
-            run=run,
-            datasets=datasets,
-            metadata=metadata,
-            source_bounds=source_bounds,
-            window_days=None,
-            start_date=source_bounds.source_start_date,
-            end_date=source_bounds.source_end_date,
-        )
+        through_date = _through_date_for(metadata)
+        if through_date is None:
+            # No through_date yet — fall back to spanning all landed data.
+            # Passing explicit start/end bypasses the bounds check in
+            # resolve_dashboard_view_range so this never 409s.
+            view = _prepared_view_or_http_error(
+                run=run,
+                datasets=datasets,
+                metadata=metadata,
+                source_bounds=source_bounds,
+                window_days=None,
+                start_date=source_bounds.source_start_date,
+                end_date=source_bounds.source_end_date,
+            )
+        else:
+            # Clamp the requested (or default 30-day) window to available
+            # provisional bounds so we never 409 on narrow data while still
+            # honoring the caller's range preference.
+            wd = window_days or DEFAULT_VIEW_WINDOW_DAYS
+            effective_end = min(through_date, source_bounds.source_end_date)
+            effective_start = max(
+                window_start_for(effective_end, wd),
+                source_bounds.source_start_date,
+            )
+            view = _prepared_view_or_http_error(
+                run=run,
+                datasets=datasets,
+                metadata=metadata,
+                source_bounds=source_bounds,
+                window_days=None,
+                start_date=effective_start,
+                end_date=effective_end,
+            )
+            view = view.model_copy(
+                update={
+                    "range": DashboardViewRange(
+                        mode="relative",
+                        window_days=wd,
+                        start_date=effective_start,
+                        end_date=effective_end,
+                    )
+                }
+            )
         view = view.model_copy(
             update={
                 "section_statuses": compute_section_statuses(source_statuses or {})

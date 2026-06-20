@@ -153,6 +153,57 @@ def test_running_view_with_no_landed_data_keeps_all_pending():
     }
 
 
+def test_running_view_clamps_to_default_30_day_window():
+    """Provisional /view for a running run with wide data must return a 30-day
+    relative range, not the full source span — previously it returned all ~100
+    days until finalize_run snapped it back."""
+    dr.dashboard_run_repository.clear()
+    run = dr.dashboard_run_repository.create_running_run(
+        organization_id=None,
+        source="snowflake",
+        window_days=100,
+        expected_sources=dr.BASE_RUN_SOURCE_KEYS,
+        retention_days=7,
+    )
+    run_id = UUID(run.id)
+    # Seed org_spend_daily spanning ~100 days so source bounds are wide and
+    # billing_through_date is populated (drives _through_date_for in billed mode).
+    dr.dashboard_run_repository.set_dataset(
+        run_id,
+        "org_spend_daily",
+        [
+            {
+                "usage_date": "2026-03-11",
+                "service_type": "WAREHOUSE_METERING",
+                "rating_type": "COMPUTE",
+                "billing_type": "CONSUMPTION",
+                "is_adjustment": False,
+                "currency": "USD",
+                "spend": 5.0,
+            },
+            {
+                "usage_date": "2026-06-19",
+                "service_type": "WAREHOUSE_METERING",
+                "rating_type": "COMPUTE",
+                "billing_type": "CONSUMPTION",
+                "is_adjustment": False,
+                "currency": "USD",
+                "spend": 8.0,
+            },
+        ],
+    )
+
+    payload = read_dashboard_run_view(run_id, None, None, None, _anon())
+
+    assert payload["run"]["status"] == "running"
+    r = payload["range"]
+    assert r["mode"] == "relative"
+    assert r["window_days"] == 30
+    start = date.fromisoformat(r["start_date"])
+    end = date.fromisoformat(r["end_date"])
+    assert (end - start).days <= 29  # 30-day window = 29-day span
+
+
 def _wait_terminal(run_id: UUID, timeout: float = 2.0) -> str:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
