@@ -104,4 +104,47 @@ describe("InviteUser", () => {
       ).toBeInTheDocument(),
     );
   });
+
+  it("renders the heading without parentheses when there is no account locator", () => {
+    renderWith({
+      organizations: [
+        { id: "org-1", name: "Acme", role: "owner", accountLocator: null },
+      ],
+    });
+    fireEvent.click(screen.getByRole("button", { name: /invite/i }));
+    expect(screen.getByText("Add user to Acme")).toBeInTheDocument();
+    expect(screen.queryByText(/Add user to Acme \(/)).toBeNull();
+  });
+
+  it("shows the generic message on an unclassified error", async () => {
+    vi.spyOn(api, "inviteUser").mockRejectedValue(new Error("network boom"));
+    renderWith({});
+    fireEvent.click(screen.getByRole("button", { name: /invite/i }));
+    fireEvent.change(screen.getByPlaceholderText(/work-email/i), {
+      target: { value: "new@acme.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^invite$/i }));
+    await waitFor(() =>
+      expect(
+        screen.getByText("Something went wrong. Please try again."),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("shows the validation message on InviteValidationError", async () => {
+    vi.spyOn(api, "inviteUser").mockRejectedValue(
+      new api.InviteValidationError("Please use a valid work email."),
+    );
+    renderWith({});
+    fireEvent.click(screen.getByRole("button", { name: /invite/i }));
+    fireEvent.change(screen.getByPlaceholderText(/work-email/i), {
+      target: { value: "new@acme.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^invite$/i }));
+    await waitFor(() =>
+      expect(
+        screen.getByText("Please use a valid work email."),
+      ).toBeInTheDocument(),
+    );
+  });
 });
