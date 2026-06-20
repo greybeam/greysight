@@ -36,11 +36,12 @@
 - `apps/api/tests/test_organizations_route.py` — endpoint tests.
 - `apps/web/src/lib/org-invitations-api.ts` — web invite API client.
 - `apps/web/src/lib/org-invitations-api.test.ts` — client tests.
-- `apps/web/src/lib/work-email.test.ts` — TS↔fixture parity test.
 - `apps/web/src/components/dashboard/invite-user.tsx` — icon button + popover.
 - `apps/web/src/components/dashboard/invite-user.test.tsx` — component tests.
 
 **Modify**
+- `apps/api/Dockerfile` — copy `shared/` into the image so the validator's fixture exists at runtime (the build context is the repo root).
+- `apps/web/src/lib/work-email.test.ts` — **already exists**; add the shared-fixture parity case without deleting its current malformed-input/blocklist coverage.
 - `apps/api/app/services/connect_rate_limit.py` — add `get_invite_limiter()`.
 - `apps/api/app/routes/session.py` — add `role` to `SessionOrganization`.
 - `apps/api/tests/test_session_route.py` — expect `role`.
@@ -59,6 +60,8 @@
 - Web tests: `cd apps/web && npm test -- <path>` (vitest).
 - Web typecheck: `cd apps/web && npm run typecheck`.
 
+> Commands are shown unprefixed for readability; the repo's `rtk` hook rewrites them transparently (`git`/`npm`/etc.), so run them as written.
+
 ---
 
 ### Task 1: Shared free-email fixture + Python work-email validator
@@ -67,7 +70,8 @@
 - Create: `shared/free-email-domains.json`
 - Create: `apps/api/app/services/work_email.py`
 - Test: `apps/api/tests/test_work_email.py`
-- Create (later-used): `apps/web/src/lib/work-email.test.ts`
+- Modify: `apps/api/Dockerfile` (copy `shared/` into the image)
+- Modify (later-used, already exists): `apps/web/src/lib/work-email.test.ts`
 
 **Interfaces:**
 - Consumes: nothing.
@@ -101,6 +105,16 @@
   "163.com"
 ]
 ```
+
+- [ ] **Step 1b: Ship the fixture inside the API image**
+
+The deployed image (`apps/api/Dockerfile`) builds from the repo root and currently copies only `apps/api/` and `sql/`, so `shared/` would be absent and the validator's `read_text()` would crash on first import in production. Add the copy next to the existing `COPY sql/ /app/sql/`:
+
+```dockerfile
+COPY shared/ /app/shared/
+```
+
+Path note: the validator resolves the fixture via `parents[4]` and the test via `parents[3]` — these match the existing `app/services/dashboard_registry.py` (`parents[4]` → `/app/sql`) convention. In the image `work_email.py` lives at `/app/apps/api/app/services/work_email.py`, so `parents[4]` is `/app` and `/app/shared/free-email-domains.json` resolves correctly; in the dev tree the same indices land on the repo root. No path-index change is needed — only the missing `COPY`.
 
 - [ ] **Step 2: Write the failing Python test**
 
@@ -185,34 +199,40 @@ def is_work_email(email: str) -> bool:
 Run: `cd apps/api && uv run pytest tests/test_work_email.py -v`
 Expected: PASS (5 tests).
 
-- [ ] **Step 6: Add the TS parity test**
+- [ ] **Step 6: Add the TS parity test to the *existing* file**
 
-`apps/web/src/lib/work-email.test.ts`:
+`apps/web/src/lib/work-email.test.ts` **already exists** with malformed-input and blocklist coverage — do **not** overwrite it. Add `FREE_EMAIL_DOMAINS` to the existing import and append one new `it` block for the shared-fixture parity check. Use the codebase's ESM-safe path idiom (`fileURLToPath(new URL(...))`, as in `dashboard-imports.test.ts`) rather than `__dirname`, which is unreliable under the vitest ESM runner.
+
+Add to the top of the file:
 
 ```ts
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { fileURLToPath } from "node:url";
+```
 
+Change the existing `import { isWorkEmail } from "./work-email";` to:
+
+```ts
 import { FREE_EMAIL_DOMAINS, isWorkEmail } from "./work-email";
+```
 
-describe("isWorkEmail", () => {
-  it("accepts a work email and rejects a free provider", () => {
-    expect(isWorkEmail("kyle@greybeam.ai")).toBe(true);
-    expect(isWorkEmail("kyle@gmail.com")).toBe(false);
-  });
+Append inside the existing `describe("isWorkEmail", ...)` block:
 
+```ts
   it("stays in lockstep with the shared fixture", () => {
     const fixture = JSON.parse(
       readFileSync(
-        resolve(__dirname, "../../../../shared/free-email-domains.json"),
+        fileURLToPath(
+          new URL("../../../../shared/free-email-domains.json", import.meta.url),
+        ),
         "utf8",
       ),
     ) as string[];
     expect(new Set(FREE_EMAIL_DOMAINS)).toEqual(new Set(fixture));
   });
-});
 ```
+
+(If `work-email.ts` does not already export `FREE_EMAIL_DOMAINS`, export it — the existing test at line 33 already references the constant by name in a comment-equivalent loop, so confirm the export exists.)
 
 - [ ] **Step 7: Run the TS parity test**
 
@@ -222,7 +242,7 @@ Expected: PASS. (If the path `../../../../shared/...` does not resolve, adjust t
 - [ ] **Step 8: Commit**
 
 ```bash
-git add shared/free-email-domains.json apps/api/app/services/work_email.py apps/api/tests/test_work_email.py apps/web/src/lib/work-email.test.ts
+git add shared/free-email-domains.json apps/api/app/services/work_email.py apps/api/tests/test_work_email.py apps/api/Dockerfile apps/web/src/lib/work-email.test.ts
 git commit -m "feat: shared work-email fixture + python validator"
 ```
 
@@ -761,7 +781,7 @@ git commit -m "feat: invitations service (gotrue + rpc orchestration)"
 - Test: `apps/api/tests/test_organizations_route.py`
 
 **Interfaces:**
-- Consumes: `invite_member_to_org`, the invite errors (Task 3); `require_org_admin`, `require_auth_context`, `AuthContext` (auth.py); `Organization` (membership_directory); `get_invite_limiter`, `ConnectInFlightError`, `ConnectRateLimitedError` (connect_rate_limit).
+- Consumes: `invite_member_to_org`, the invite errors (Task 3); `require_org_admin`, `require_auth_context`, `AuthContext` (auth.py); `Organization` (membership_directory); `get_invite_limiter`, `ConnectInFlightError`, `ConnectRateLimitedError` (connect_rate_limit); `audit_event_recorder` (audit_events).
 - Produces: `POST /api/organizations/{organization_id}/invitations` returning `200 {"email": ...}`; the route-level seam `organizations.invite_member_to_org(**kwargs)` for monkeypatching.
 
 - [ ] **Step 1: Add the invite limiter (no new test needed — covered by route tests)**
@@ -798,6 +818,7 @@ import app.services.connect_rate_limit as connect_rate_limit
 from app.auth import AuthContext, require_auth_context
 from app.main import app
 from app.routes import organizations
+from app.services.audit_events import audit_event_recorder
 from app.services.connect_rate_limit import InMemoryConnectLimiter
 from app.services.membership_directory import Organization
 from app.services.org_invitations import AlreadyMemberError, InviteProvisioningError
@@ -808,6 +829,13 @@ def fresh_invite_limiter(monkeypatch):
     limiter = InMemoryConnectLimiter(max_attempts=100, window_seconds=300)
     monkeypatch.setattr(connect_rate_limit, "_invite_limiter", limiter)
     return limiter
+
+
+@pytest.fixture(autouse=True)
+def clear_audit_events():
+    audit_event_recorder.clear()
+    yield
+    audit_event_recorder.clear()
 
 
 def _admin_ctx() -> AuthContext:
@@ -926,6 +954,42 @@ def test_invite_rate_limited_returns_429(monkeypatch) -> None:
     app.dependency_overrides.clear()
     assert statuses[0] == 200
     assert statuses[1] == 429
+
+
+def test_invite_records_audit_event(monkeypatch) -> None:
+    app.dependency_overrides[require_auth_context] = _admin_ctx
+    monkeypatch.setattr(
+        organizations, "invite_member_to_org", lambda **kw: kw["email"]
+    )
+    client = TestClient(app)
+    response = client.post(
+        "/api/organizations/org-1/invitations", json={"email": "new@acme.com"}
+    )
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    events = audit_event_recorder.list_events()
+    assert len(events) == 1
+    assert events[0]["event_name"] == "organization.member_invited"
+    assert events[0]["organization_id"] == "org-1"
+    assert events[0]["payload"]["email"] == "new@acme.com"
+    assert events[0]["payload"]["actor_user_id"] == "actor-1"
+
+
+def test_invite_unauthenticated_returns_401(monkeypatch) -> None:
+    # No require_auth_context override: exercise the real guard with auth enabled
+    # and no bearer token. The invite service must never be reached.
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
+    calls = []
+    monkeypatch.setattr(
+        organizations, "invite_member_to_org", lambda **kw: calls.append(kw)
+    )
+    client = TestClient(app)
+    response = client.post(
+        "/api/organizations/org-1/invitations", json={"email": "new@acme.com"}
+    )
+    assert response.status_code == 401
+    assert calls == []
+    assert audit_event_recorder.list_events() == []
 ```
 
 - [ ] **Step 3: Run it to verify it fails**
@@ -1013,6 +1077,17 @@ def invite_user(
         raise HTTPException(
             status_code=502, detail="Could not send the invite."
         ) from None
+
+    from app.services.audit_events import audit_event_recorder
+
+    # Org-scoped audit trail for a membership-mutating action. Payload mirrors the
+    # sanitized style of dashboard_runs/snowflake call sites — actor + invitee,
+    # no upstream/provider detail.
+    audit_event_recorder.record_org_event(
+        "organization.member_invited",
+        organization_id=organization_id,
+        payload={"actor_user_id": auth_context.user_id, "email": email},
+    )
 
     return InviteResponse(email=email)
 ```
@@ -1238,17 +1313,24 @@ Inside `parseOrganizations`'s `.map`, after computing `accountLocator`, add:
 
 (Update the `entry` cast to also allow `role?: unknown` if needed for TS.)
 
-- [ ] **Step 4: Run to verify pass + typecheck**
+- [ ] **Step 4: Run to verify pass + typecheck — fix *every* flagged literal**
 
 Run: `cd apps/web && npm test -- src/lib/session-memberships.test.ts`
 Expected: PASS.
 Run: `cd apps/web && npm run typecheck`
-Expected: PASS.
+
+⚠️ Making `role` **required** on `MembershipOrganization` is a breaking type change. `tsconfig.json` includes `**/*.ts` and `**/*.tsx`, so `tsc` type-checks every test file too, and any `MembershipOrganization` / `AccountChrome.organizations` object literal missing `role` is now a compile error — not just the files this plan names. Tasks 7 and 9 add `accessToken` and the new component literals; this step is where the type first becomes required, so:
+
+- Run `npm run typecheck` and fix **every** `Property 'role' is missing` error it reports, adding `role: "member"` (or the intended role) to each literal.
+- Known offenders include `account-switcher.test.tsx`, `dashboard-header.test.tsx`, and `org-shell.test.tsx`, but treat the `tsc` output — not this list — as authoritative. Do not move on until typecheck is green.
+
+Expected (after fixes): PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/lib/session-memberships.ts apps/web/src/lib/session-memberships.test.ts
+# plus any test files tsc flagged for the missing `role` literal
 git commit -m "feat: parse per-org role on the web membership type"
 ```
 
@@ -1780,11 +1862,12 @@ Expected: PASS.
 
 - [ ] **Step 3: Manual smoke (against deployed Supabase) — record results**
 
-Verify the two items the static tests can't cover:
+Verify the items the static tests can't cover:
 1. `auth.users.email_confirmed_at` exists on the deployed GoTrue version (else adjust the migration's `select`).
-2. `POST /auth/v1/admin/generate_link` with `{"type":"invite", ...}` returns 200 for an existing unconfirmed user (the resend path). If the deployed version differs, adjust `SupabaseUserInviter.resend`.
+2. **Resend actually delivers an email — not just HTTP 200.** `POST /auth/v1/admin/generate_link` with `{"type":"invite", ...}` *generates* a link; on many GoTrue configs it does **not** send mail (unlike `/auth/v1/invite`). Confirm an existing unconfirmed invitee receives a real email on the `pending_resend` path. If `generate_link` does not send, change `SupabaseUserInviter.resend` to either (a) re-call `/auth/v1/invite` (which sends) where the GoTrue version allows re-inviting an unconfirmed user, or (b) deliver the returned `action_link` through an actual mail path. Treat a silent no-op as a bug, not a pass.
+3. **Exercise the real RPC states.** The migration tests are static SQL text only and Task 3 stubs RPC statuses, so the live function is otherwise unverified. Against the deployed/local Supabase, drive `add_org_member_by_email` through each branch and confirm the returned status: non-admin actor → `unauthorized`; brand-new email → `invite_needed`; existing non-member confirmed user → `added` (and a membership row appears, idempotent on repeat); existing unconfirmed member → `pending_resend`; existing confirmed member → `already_member`.
 
-Smoke the happy path: as an org owner, invite a brand-new work email → invitee receives an email and, after accepting, appears in the org; invite an existing user from another org → added silently; invite an existing member → 409 "already a member".
+Smoke the happy path (end to end through the UI): as an org owner, invite a brand-new work email → invitee receives an email and, after accepting, appears in the org; invite an existing user from another org → added silently (no email); invite an existing member → 409 "already a member". Confirm an `organization.member_invited` audit event is recorded for the successful cases.
 
 - [ ] **Step 4: Final commit (if any smoke fixes were needed)**
 
@@ -1808,6 +1891,14 @@ git add -A && git commit -m "fix: invite flow adjustments from smoke test"
 - Shared work-email fixture parity (TS + Python) → Task 1. ✅
 - 409 vs 200 contract → Tasks 3, 4, 9. ✅
 - Implementation-time verifications (confirmation column, resend primitive) → Task 10. ✅
+
+**Plan-review hardening (Codex, 2026-06-19):**
+- Dockerfile copies `shared/` so the validator's fixture exists in the deployed image → Task 1, Step 1b. ✅
+- `work-email.test.ts` treated as **Modify** (preserves existing coverage), ESM-safe fixture path → Task 1, Step 6. ✅
+- `role`-required type change ripples across all `**/*.tsx`; fix every `tsc`-flagged literal → Task 6, Step 4. ✅
+- Org audit event on successful invite via `audit_event_recorder` → Task 4 (route + test). ✅
+- Unauthenticated (no-bearer, `AUTH_REQUIRED=true`) → 401, service not called → Task 4 test. ✅
+- Resend delivery (200 ≠ delivered) + live RPC-state verification → Task 10, Step 3. ✅
 
 **Placeholder scan:** No TBD/TODO/"handle edge cases"; every code step has full code. ✅
 
