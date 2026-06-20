@@ -58,7 +58,7 @@ class SnowflakeConnectionConfig:
     private_key_path: Path | None = None
     private_key_pem: str | None = field(default=None, repr=False)
     private_key_passphrase: str | None = field(default=None, repr=False)
-    query_timeout_seconds: int = 60
+    query_timeout_seconds: int = 120
     account_locator: str | None = None
 
     @classmethod
@@ -76,7 +76,7 @@ class SnowflakeConnectionConfig:
             else None,
             private_key_passphrase=os.environ.get("SNOWFLAKE_PRIVATE_KEY_PASSPHRASE"),
             query_timeout_seconds=int(
-                os.environ.get("GREYSIGHT_QUERY_TIMEOUT_SECONDS", "60")
+                os.environ.get("GREYSIGHT_QUERY_TIMEOUT_SECONDS", "120")
             ),
             account_locator=os.environ.get("SNOWFLAKE_ACCOUNT_LOCATOR"),
         )
