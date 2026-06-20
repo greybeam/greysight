@@ -96,13 +96,14 @@ class SupabaseUserInviter:
             "content-type": "application/json",
         }
 
-    def invite(self, email: str) -> None:
+    def invite(self, email: str, *, data: dict | None = None) -> None:
+        body = {"email": email, **({"data": data} if data else {})}
         try:
             with httpx.Client(
                 timeout=self._timeout, transport=self._transport
             ) as client:
                 response = client.post(
-                    self._invite_url, json={"email": email}, headers=self._headers()
+                    self._invite_url, json=body, headers=self._headers()
                 )
         except httpx.HTTPError:
             raise InviteProvisioningError("Could not send the invite.") from None
@@ -114,14 +115,15 @@ class SupabaseUserInviter:
             return
         raise InviteProvisioningError("Could not send the invite.")
 
-    def resend(self, email: str) -> None:
+    def resend(self, email: str, *, data: dict | None = None) -> None:
+        body = {"type": "invite", "email": email, **({"data": data} if data else {})}
         try:
             with httpx.Client(
                 timeout=self._timeout, transport=self._transport
             ) as client:
                 response = client.post(
                     self._generate_link_url,
-                    json={"type": "invite", "email": email},
+                    json=body,
                     headers=self._headers(),
                 )
         except httpx.HTTPError:
@@ -158,6 +160,8 @@ def invite_member_to_org(
     actor_user_id: str,
     organization_id: str,
     email: str,
+    org_name: str | None = None,
+    account_locator: str | None = None,
     rpc: object | None = None,
     inviter: object | None = None,
 ) -> str:
@@ -165,6 +169,13 @@ def invite_member_to_org(
     selected_inviter = inviter if inviter is not None else _inviter
     if selected_rpc is None or selected_inviter is None:
         raise InviteProvisioningError("Invitations are not configured.")
+
+    metadata = {
+        k: v
+        for k, v in (("org_name", org_name), ("account_locator", account_locator))
+        if v is not None
+    }
+    data = metadata or None
 
     status = selected_rpc(actor_user_id, organization_id, email)
     if status == STATUS_ALREADY_MEMBER:
@@ -174,10 +185,10 @@ def invite_member_to_org(
     if status == STATUS_ADDED:
         return email
     if status == STATUS_PENDING_RESEND:
-        selected_inviter.resend(email)
+        selected_inviter.resend(email, data=data)
         return email
     if status == STATUS_INVITE_NEEDED:
-        selected_inviter.invite(email)
+        selected_inviter.invite(email, data=data)
         status2 = selected_rpc(actor_user_id, organization_id, email)
         if status2 not in _TERMINAL_OK:
             raise InviteProvisioningError("Could not send the invite.")

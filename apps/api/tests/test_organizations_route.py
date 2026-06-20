@@ -60,6 +60,8 @@ def test_invite_succeeds_for_admin(monkeypatch) -> None:
     assert response.json() == {"email": "new@acme.com"}
     assert seen["actor_user_id"] == "actor-1"
     assert seen["organization_id"] == "org-1"
+    assert seen["org_name"] == "Acme"
+    assert seen.get("account_locator") is None
 
 
 def test_invite_forbidden_for_member(monkeypatch) -> None:

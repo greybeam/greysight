@@ -35,6 +35,11 @@ def invite_user(
     if not is_work_email(email):
         raise HTTPException(status_code=422, detail="Please use your work email.")
 
+    active_org = next(
+        (o for o in auth_context.organizations if o.id == organization_id),
+        None,
+    )
+
     from app.services.connect_rate_limit import (
         ConnectInFlightError,
         ConnectRateLimitedError,
@@ -52,6 +57,8 @@ def invite_user(
                 actor_user_id=auth_context.user_id,
                 organization_id=organization_id,
                 email=email,
+                org_name=active_org.name if active_org else None,
+                account_locator=active_org.account_locator if active_org else None,
             )
     except ConnectInFlightError:
         raise HTTPException(

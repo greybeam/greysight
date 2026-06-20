@@ -15,12 +15,16 @@ class FakeInviter:
     def __init__(self) -> None:
         self.invited: list[str] = []
         self.resent: list[str] = []
+        self.invited_data: list[dict | None] = []
+        self.resent_data: list[dict | None] = []
 
-    def invite(self, email: str) -> None:
+    def invite(self, email: str, *, data: dict | None = None) -> None:
         self.invited.append(email)
+        self.invited_data.append(data)
 
-    def resend(self, email: str) -> None:
+    def resend(self, email: str, *, data: dict | None = None) -> None:
         self.resent.append(email)
+        self.resent_data.append(data)
 
 
 def _rpc(*statuses: str):
@@ -156,3 +160,101 @@ def test_inviter_resend_hits_generate_link() -> None:
     inviter.resend("new@acme.com")
     assert seen["path"].endswith("/auth/v1/admin/generate_link")
     assert '"invite"' in seen["body"]
+
+
+# ---------------------------------------------------------------------------
+# Task 11: metadata threading tests
+# ---------------------------------------------------------------------------
+
+
+def _invite_with_meta(rpc, inviter, **kwargs):
+    return invite_member_to_org(
+        actor_user_id="actor-1",
+        organization_id="org-1",
+        email="new@acme.com",
+        rpc=rpc,
+        inviter=inviter,
+        **kwargs,
+    )
+
+
+def test_metadata_threaded_to_invite_on_invite_needed_path() -> None:
+    inviter = FakeInviter()
+    _invite_with_meta(
+        _rpc("invite_needed", "added"),
+        inviter,
+        org_name="Acme",
+        account_locator="IJ42635",
+    )
+    assert inviter.invited_data[0] == {"org_name": "Acme", "account_locator": "IJ42635"}
+
+
+def test_metadata_threaded_to_resend_on_pending_resend_path() -> None:
+    inviter = FakeInviter()
+    _invite_with_meta(
+        _rpc("pending_resend"),
+        inviter,
+        org_name="Acme",
+        account_locator="IJ42635",
+    )
+    assert inviter.resent_data[0] == {"org_name": "Acme", "account_locator": "IJ42635"}
+
+
+def test_no_metadata_passes_none_not_empty_dict() -> None:
+    inviter = FakeInviter()
+    _invite_with_meta(_rpc("invite_needed", "added"), inviter)
+    assert inviter.invited_data[0] is None
+
+
+def test_inviter_invite_with_data_includes_data_in_body() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.read().decode()
+        return httpx.Response(200, json={"id": "u1"})
+
+    inviter = SupabaseUserInviter(
+        supabase_url="https://example.supabase.co",
+        service_role_key="svc",
+        transport=httpx.MockTransport(handler),
+    )
+    inviter.invite("new@acme.com", data={"org_name": "Acme"})
+    assert "Acme" in seen["body"]
+    assert "data" in seen["body"]
+
+
+def test_inviter_resend_with_data_includes_data_and_type_in_body() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.read().decode()
+        return httpx.Response(200, json={"action_link": "https://x"})
+
+    inviter = SupabaseUserInviter(
+        supabase_url="https://example.supabase.co",
+        service_role_key="svc",
+        transport=httpx.MockTransport(handler),
+    )
+    inviter.resend("new@acme.com", data={"org_name": "Acme"})
+    assert "Acme" in seen["body"]
+    assert "data" in seen["body"]
+    assert '"invite"' in seen["body"]
+
+
+def test_inviter_invite_without_data_omits_data_key() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.read().decode()
+        return httpx.Response(200, json={"id": "u1"})
+
+    inviter = SupabaseUserInviter(
+        supabase_url="https://example.supabase.co",
+        service_role_key="svc",
+        transport=httpx.MockTransport(handler),
+    )
+    inviter.invite("new@acme.com")
+    import json
+
+    body = json.loads(seen["body"])
+    assert "data" not in body
