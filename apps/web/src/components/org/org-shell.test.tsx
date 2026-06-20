@@ -283,6 +283,7 @@ describe("OrgShell", () => {
       expect(onOrganizationChange).toHaveBeenCalledWith({
         id: "org-b",
         name: "Bravo",
+        role: "member",
         accountLocator: null,
       }),
     );

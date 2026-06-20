@@ -13,6 +13,7 @@ function renderWith(overrides: Partial<AccountChrome>) {
     activeOrganizationId: null,
     setActiveOrganization: vi.fn(),
     openAddAccount: vi.fn(),
+    accessToken: null,
     ...overrides,
   };
   render(
@@ -77,6 +78,7 @@ describe("AccountSwitcher", () => {
           activeOrganizationId: null,
           setActiveOrganization: vi.fn(),
           openAddAccount: vi.fn(),
+          accessToken: null,
         }}
       >
         <AccountSwitcher />

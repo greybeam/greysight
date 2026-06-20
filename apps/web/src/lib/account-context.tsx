@@ -20,6 +20,8 @@ export type AccountChrome = {
   activeOrganizationId: string | null;
   setActiveOrganization: (id: string) => void;
   openAddAccount: () => void;
+  // Bearer token for authenticated calls the header makes (e.g. inviting users).
+  accessToken: string | null;
 };
 
 const AccountChromeContext = createContext<AccountChrome | null>(null);
