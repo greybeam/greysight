@@ -5,6 +5,7 @@ import { showBrandLogo } from "../../lib/brand";
 import type { HeaderViewModel } from "../../lib/dashboard-contracts";
 import Spinner from "../ui/spinner";
 import AccountSwitcher from "./account-switcher";
+import InviteUser from "./invite-user";
 
 export type DashboardModeLabel =
   | "Demo"
@@ -61,6 +62,7 @@ export default function DashboardHeader({
               unavailable
             </span>
           ) : null}
+          <InviteUser />
           <button
             aria-busy={running}
             className="flex h-9 items-center gap-2 rounded-md bg-chart-purple px-3 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:bg-surface disabled:text-slate-500 disabled:opacity-100"
