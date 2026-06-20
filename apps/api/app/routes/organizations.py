@@ -27,8 +27,6 @@ def invite_user(
     request: InviteRequest,
     auth_context: AuthContext = Depends(require_auth_context),
 ) -> InviteResponse:
-    if not auth_context.auth_required or not auth_context.user_id:
-        raise HTTPException(status_code=403, detail="Authentication required")
     require_org_admin(auth_context, organization_id)
 
     from app.services.work_email import is_work_email
