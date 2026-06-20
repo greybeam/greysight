@@ -596,8 +596,19 @@ class InMemoryDashboardRunRepository:
             if run is not None and run.status == "running":
                 if not self._is_running_locked(run_id):
                     return
+            # "unavailable" is reserved for a BASE source whose readiness gates the
+            # progressive view while the base run is still running. A DEFERRED
+            # (non-base) source — fetched via /sources/{id} — must fail terminally
+            # as "failed": the frontend's source poll treats only
+            # completed/failed/expired as terminal, so "unavailable" would leave it
+            # polling until timeout and then surfacing a generic error.
+            is_running_base = (
+                run is not None
+                and run.status == "running"
+                and source_id in BASE_RUN_SOURCE_KEYS
+            )
             state: dict[str, Any] = {
-                "status": "unavailable" if run is not None and run.status == "running" else "failed"
+                "status": "unavailable" if is_running_base else "failed"
             }
             if error is not None:
                 state["error"] = error
@@ -699,12 +710,30 @@ class InMemoryDashboardRunRepository:
             # is NOT no-opped by the _is_running_locked guard above — the run can
             # still reach a terminal state instead of being stranded
             # half-finalized.
-            stored_datasets = {
-                key: StoredDashboardDataset(
-                    aggregate_dataset=rows, retention_expires_at=expires_at
-                )
-                for key, rows in datasets.items()
+            # Preserve any NON-BASE stored datasets (e.g. an AI deferred source
+            # that completed while the base run was still running) — finalize only
+            # carries the base run's datasets, so a naive replace would wipe a
+            # deferred dataset whose source state is (correctly) "completed",
+            # leaving its /sources poll serving an empty view. Base keys are
+            # rebuilt from the final datasets below. Built immutably.
+            existing_datasets = self._datasets.get(run_id, {})
+            preserved_deferred = {
+                key: dataset
+                for key, dataset in existing_datasets.items()
+                if key not in BASE_RUN_SOURCE_KEYS and key not in datasets
             }
+            stored_datasets = {
+                **preserved_deferred,
+                **{
+                    key: StoredDashboardDataset(
+                        aggregate_dataset=rows, retention_expires_at=expires_at
+                    )
+                    for key, rows in datasets.items()
+                },
+            }
+            # Bounds derive from the FINAL base datasets only (the deferred AI
+            # source spans the same fetch window and uses the run's own bounds via
+            # _through_date_for at read time), preserving existing behavior.
             source_bounds = _source_bounds_for_dataset_rows(datasets)
             # Re-seed base source states from the FINAL datasets so per-source
             # states reflect reality. A base key present in the final datasets is

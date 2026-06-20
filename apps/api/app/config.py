@@ -34,7 +34,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("GREYSIGHT_DEFAULT_WINDOW_DAYS"),
     )
     query_timeout_seconds: int = Field(
-        default=180,
+        default=120,
         gt=0,
         validation_alias=AliasChoices("GREYSIGHT_QUERY_TIMEOUT_SECONDS"),
     )

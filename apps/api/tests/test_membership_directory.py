@@ -44,7 +44,7 @@ def test_returns_organizations_for_user() -> None:
     )
     assert requests[0].url.params["user_id"] == "eq.user-123"
     assert (
-        "organizations(id,name,organization_snowflake_connections(account))"
+        "organizations(id,name,organization_snowflake_connections(account_locator))"
         in requests[0].url.params["select"]
     )
     assert requests[0].headers["apikey"] == "service-role-key"
@@ -109,7 +109,9 @@ def test_parses_account_locator_from_embedded_object() -> None:
             "organizations": {
                 "id": "org-1",
                 "name": "Acme",
-                "organization_snowflake_connections": {"account": "IJ42635"},
+                "organization_snowflake_connections": {
+                    "account_locator": "IJ42635"
+                },
             },
         }
     )
@@ -124,7 +126,9 @@ def test_parses_account_locator_from_embedded_list() -> None:
             "organizations": {
                 "id": "org-1",
                 "name": "Acme",
-                "organization_snowflake_connections": [{"account": "TU24199"}],
+                "organization_snowflake_connections": [
+                    {"account_locator": "TU24199"}
+                ],
             },
         }
     )

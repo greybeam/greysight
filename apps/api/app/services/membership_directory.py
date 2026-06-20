@@ -53,7 +53,8 @@ class SupabaseServiceRoleMembershipLookup:
                         "user_id": f"eq.{user_id}",
                         "select": (
                             "role,organization_id,organizations"
-                            "(id,name,organization_snowflake_connections(account))"
+                            "(id,name,organization_snowflake_connections"
+                            "(account_locator))"
                         ),
                         "limit": str(self._max_memberships + 1),
                     },
@@ -124,7 +125,7 @@ def _extract_account_locator(connection: object) -> str | None:
 def _account_from_row(row: object) -> str | None:
     if not isinstance(row, Mapping):
         return None
-    account = row.get("account")
-    if isinstance(account, str) and account.strip():
-        return account.strip()
+    account_locator = row.get("account_locator")
+    if isinstance(account_locator, str) and account_locator.strip():
+        return account_locator.strip()
     return None

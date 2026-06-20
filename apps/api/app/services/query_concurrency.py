@@ -26,3 +26,15 @@ def configure(max_workers: int) -> None:
 def get_query_executor() -> ThreadPoolExecutor:
     with _lock:
         return _executor
+
+
+def shutdown(cancel_futures: bool = True) -> None:
+    """Shut down the process-wide query executor.
+
+    Call once during app shutdown so queued query work does not outlive the
+    process (e.g. on reload). Guarded by ``_lock`` to stay consistent with
+    ``configure``/``get_query_executor``.
+    """
+    with _lock:
+        executor = _executor
+    executor.shutdown(wait=False, cancel_futures=cancel_futures)

@@ -1,4 +1,6 @@
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.encoders import jsonable_encoder
@@ -76,7 +78,18 @@ def require_membership_lookup_when_auth_required(settings: Settings) -> None:
 warn_when_auth_required_without_verifier(settings)
 require_membership_lookup_when_auth_required(settings)
 
-app = FastAPI(title="Greysight API")
+@asynccontextmanager
+async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
+    """Own the process-wide query executor across the app lifecycle.
+
+    The executor is configured at import time; tear it down on shutdown so
+    queued Snowflake query work does not outlive the process (e.g. on reload).
+    """
+    yield
+    query_concurrency.shutdown(cancel_futures=True)
+
+
+app = FastAPI(title="Greysight API", lifespan=_lifespan)
 
 _SENSITIVE_FIELDS = {"private_key_pem", "passphrase"}
 

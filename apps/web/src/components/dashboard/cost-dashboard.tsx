@@ -280,8 +280,11 @@ function CostDashboardContent({
         () => fetchDashboardView(run.id, DEFAULT_VIEW_RANGE, options),
         isTerminal,
         {
+          // Window must outlast the backend 120s query-execution timeout plus
+          // executor queueing. 120 × 1.5s = 180s leaves a ~60s queueing margin;
+          // 60 × 1.5s (90s) would time the client out before the backend did.
           intervalMs: 1_500,
-          maxAttempts: 60,
+          maxAttempts: 120,
           onResult: (view) => {
             // Ignore partial views from a superseded run before any state write.
             if (runGeneration !== runGenerationRef.current) {
@@ -315,6 +318,22 @@ function CostDashboardContent({
         // misleadingly mark every section ready for a run that did not finish.
         setSectionReadiness(finalView.sectionStatuses);
         applyDashboardView(finalView);
+        return;
+      }
+
+      // Completed but a section is still unavailable/pending: keep the server's
+      // section statuses as the source of truth rather than dropping to the
+      // timed all-ready reveal, which would falsely mark those sections ready.
+      const allSectionsReady = Object.values(finalView.sectionStatuses).every(
+        (status) => status === "ready",
+      );
+      if (!allSectionsReady) {
+        setSectionReadiness(finalView.sectionStatuses);
+        cacheView(finalView.run.id, DEFAULT_VIEW_RANGE, finalView);
+        applyDashboardView(finalView);
+        prefetchRelativeWindows(finalView.run.id, (range) =>
+          fetchDashboardView(finalView.run.id, range, options),
+        );
         return;
       }
 
