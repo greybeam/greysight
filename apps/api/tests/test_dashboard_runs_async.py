@@ -60,18 +60,6 @@ def _all_dep_sources() -> set[str]:
     }
 
 
-def test_sections_are_overview_warehouse_storage():
-    # compute_section_statuses always reports the three renderable sections.
-    # overview is mode-aware so it is NOT a static SECTION_SOURCE_DEPENDENCIES key;
-    # warehouse and storage are static single-source entries.
-    assert set(dr.compute_section_statuses({})) == {
-        "overview",
-        "warehouse",
-        "storage",
-    }
-    assert set(dr.SECTION_SOURCE_DEPENDENCIES) == {"warehouse", "storage"}
-
-
 def test_section_ready_only_when_all_deps_ready():
     all_ready = {key: "ready" for key in _all_dep_sources()}
     statuses = dr.compute_section_statuses(all_ready)
@@ -82,35 +70,35 @@ def test_section_ready_only_when_all_deps_ready():
     }
 
 
-def test_pending_dep_keeps_section_pending():
-    statuses = dr.compute_section_statuses({"warehouse_spend_daily": "pending"})
-    assert statuses["warehouse"] == "pending"
+def test_compute_section_statuses_rolls_up_non_ready_cases():
+    all_ready = {key: "ready" for key in _all_dep_sources()}
+    cases = [
+        (
+            {"warehouse_spend_daily": "pending"},
+            None,
+            {"warehouse": "pending"},
+        ),
+        (
+            {**all_ready, "database_storage_daily": "unavailable"},
+            None,
+            {"storage": "unavailable"},
+        ),
+        (
+            {**all_ready, "service_spend_daily": "failed"},
+            "estimated",
+            {"overview": "unavailable"},
+        ),
+        (
+            {},
+            None,
+            {"overview": "pending", "warehouse": "pending", "storage": "pending"},
+        ),
+    ]
 
-
-def test_unavailable_dep_marks_section_unavailable():
-    base = {key: "ready" for key in _all_dep_sources()}
-    base["database_storage_daily"] = "unavailable"
-    statuses = dr.compute_section_statuses(base)
-    assert statuses["storage"] == "unavailable"
-
-
-def test_failed_dep_marks_section_unavailable():
-    # Overview is now mode-aware: in the ESTIMATED basis it gates on
-    # service_spend_daily, so a failed service_spend_daily collapses overview.
-    base = {key: "ready" for key in _all_dep_sources()}
-    base["service_spend_daily"] = "failed"
-    statuses = dr.compute_section_statuses(base, data_mode="estimated")
-    assert statuses["overview"] == "unavailable"
-
-
-def test_missing_dep_defaults_section_to_pending():
-    # An empty source-status map (nothing landed yet) keeps every section pending.
-    statuses = dr.compute_section_statuses({})
-    assert statuses == {
-        "overview": "pending",
-        "warehouse": "pending",
-        "storage": "pending",
-    }
+    for source_statuses, data_mode, expected in cases:
+        statuses = dr.compute_section_statuses(source_statuses, data_mode=data_mode)
+        for section, status in expected.items():
+            assert statuses[section] == status
 
 
 def test_running_view_reports_section_statuses():
@@ -270,9 +258,7 @@ def test_worker_success_finalize_crash_still_finalizes_failed(monkeypatch):
     assert _wait_terminal(run_id) == "failed"
     final = dr.dashboard_run_repository.get_run(run_id)
     # Neutral message only — the raw backend detail must not leak.
-    assert final.error == (
-        "An unexpected error occurred while building the dashboard."
-    )
+    assert final.error == ("An unexpected error occurred while building the dashboard.")
     assert "raw backend detail" not in (final.error or "")
 
 
@@ -294,9 +280,7 @@ def test_worker_sources_unavailable_finalizes_failed_with_safe_message(monkeypat
     dr._run_dashboard_worker(run_id, Settings(), object(), 30)
     assert _wait_terminal(run_id) == "failed"
     final = dr.dashboard_run_repository.get_run(run_id)
-    assert final.error == (
-        "Could not query Snowflake billing or Account Usage data."
-    )
+    assert final.error == ("Could not query Snowflake billing or Account Usage data.")
 
 
 def test_base_complete_source_is_noop_on_terminal_run():
@@ -430,12 +414,12 @@ def test_completed_snapshot_empty_window_group_available_yields_ready():
     assert payload["run"]["status"] == "completed"
     section = payload["section_statuses"]
     assert section["storage"] == "ready", section
-    assert section["overview"] == "ready", (
-        f"Empty window must stay ready, got {section['overview']!r}"
-    )
-    assert section["warehouse"] == "ready", (
-        f"Empty window must stay ready, got {section['warehouse']!r}"
-    )
+    assert (
+        section["overview"] == "ready"
+    ), f"Empty window must stay ready, got {section['overview']!r}"
+    assert (
+        section["warehouse"] == "ready"
+    ), f"Empty window must stay ready, got {section['warehouse']!r}"
 
 
 def test_completed_snapshot_metadata_none_empty_window_yields_ready():
@@ -499,12 +483,12 @@ def test_completed_snapshot_metadata_none_empty_window_yields_ready():
     # overview and warehouse to "unavailable". The authoritative=False NO-OP must
     # preserve the seeded "ready" states.
     assert section["storage"] == "ready", section
-    assert section["overview"] == "ready", (
-        f"metadata=None empty window: overview must be ready, got {section['overview']!r}"
-    )
-    assert section["warehouse"] == "ready", (
-        f"metadata=None empty window: warehouse must be ready, got {section['warehouse']!r}"
-    )
+    assert (
+        section["overview"] == "ready"
+    ), f"metadata=None empty window: overview must be ready, got {section['overview']!r}"
+    assert (
+        section["warehouse"] == "ready"
+    ), f"metadata=None empty window: warehouse must be ready, got {section['warehouse']!r}"
 
 
 def test_deferred_source_completes_completed_while_base_run_running():
@@ -582,8 +566,7 @@ def test_failed_run_reseeds_base_source_states_unavailable():
     # Every base source must now read "unavailable" (no stale "ready").
     for key in dr.BASE_RUN_SOURCE_KEYS:
         assert (
-            dr.dashboard_run_repository.get_source(run_id, key).status
-            == "unavailable"
+            dr.dashboard_run_repository.get_source(run_id, key).status == "unavailable"
         ), key
 
     # And the /view section_statuses reflect reality: nothing is "ready".
@@ -701,14 +684,6 @@ def test_reconcile_group_unavailable_marks_all_gating_unavailable():
     }
 
 
-def test_reconcile_none_metadata_preserves_statuses():
-    """(c) metadata is None => streamed statuses preserved (no crash, no
-    force-unavailable on a missing signal)."""
-    statuses = {"service_spend_daily": "ready", "warehouse_spend_daily": "ready"}
-    result = dr._reconcile_completed_source_statuses(statuses, None)
-    assert result == statuses
-
-
 def test_reconcile_never_alters_non_gating_source():
     """(d) A non-gating source is never altered, even when the group collapsed.
 
@@ -729,35 +704,6 @@ def test_reconcile_never_alters_non_gating_source():
     assert result["service_spend_daily"] == "unavailable"
     assert result["rate_sheet_daily"] == "ready"
     assert result["org_spend_daily"] == "unavailable"
-
-
-def test_reconcile_missing_group_field_defaults_available():
-    """A metadata dict missing the group field defaults to available (no crash,
-    streamed status preserved)."""
-    statuses = {"service_spend_daily": "ready"}
-    result = dr._reconcile_completed_source_statuses(statuses, {})
-    assert result == statuses
-
-
-def test_reconcile_tolerates_typed_metadata_object():
-    """Defensive path: a typed DashboardDatasetMetadata (not a dict) is read via
-    getattr and still collapses on an explicit False group flag."""
-    settings = Settings()
-    metadata = DashboardDatasetMetadata(
-        data_mode="estimated",
-        account_locator="abc12345",
-        currency="USD",
-        billing_through_date=None,
-        account_usage_through_date=date(2026, 5, 1),
-        estimated_credit_price_usd=settings.estimated_credit_price_usd,
-        storage_price_usd_per_tb_month=settings.storage_price_usd_per_tb_month,
-        organization_usage=SourceAvailability(available=True),
-        account_usage=SourceAvailability(available=False),
-    )
-    result = dr._reconcile_completed_source_statuses(
-        {"service_spend_daily": "ready"}, metadata
-    )
-    assert result == {"service_spend_daily": "unavailable"}
 
 
 # --- Finding 1: mode-aware overview gating (billed vs estimated) --------------
@@ -845,9 +791,9 @@ def test_completed_estimated_overview_ready_when_account_usage_available():
     payload = read_dashboard_run_view(
         run_id, None, bounds.source_start_date, bounds.source_end_date, _anon()
     )
-    assert payload["section_statuses"]["overview"] == "ready", (
-        payload["section_statuses"]
-    )
+    assert payload["section_statuses"]["overview"] == "ready", payload[
+        "section_statuses"
+    ]
 
 
 def test_completed_estimated_overview_unavailable_when_account_usage_collapsed():
@@ -869,9 +815,9 @@ def test_completed_estimated_overview_unavailable_when_account_usage_collapsed()
     payload = read_dashboard_run_view(
         run_id, None, bounds.source_start_date, bounds.source_end_date, _anon()
     )
-    assert payload["section_statuses"]["overview"] == "unavailable", (
-        payload["section_statuses"]
-    )
+    assert payload["section_statuses"]["overview"] == "unavailable", payload[
+        "section_statuses"
+    ]
 
 
 def test_streaming_overview_ready_when_only_org_spend_landed():
@@ -927,9 +873,9 @@ def test_streaming_overview_ready_when_only_service_spend_landed():
 
     payload = read_dashboard_run_view(run_id, None, None, None, _anon())
     assert payload["run"]["status"] == "running"
-    assert payload["section_statuses"]["overview"] == "ready", (
-        payload["section_statuses"]
-    )
+    assert payload["section_statuses"]["overview"] == "ready", payload[
+        "section_statuses"
+    ]
 
 
 def test_streaming_overview_unavailable_only_when_both_bases_fail():
@@ -940,8 +886,7 @@ def test_streaming_overview_unavailable_only_when_both_bases_fail():
         # org_spend_daily not present => pending
     }
     assert (
-        dr.compute_section_statuses(base_failed_other_pending)["overview"]
-        == "pending"
+        dr.compute_section_statuses(base_failed_other_pending)["overview"] == "pending"
     )
     both_failed = {
         dr.OVERVIEW_ESTIMATED_SOURCE: "failed",

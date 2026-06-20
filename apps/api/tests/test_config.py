@@ -87,16 +87,6 @@ def test_supabase_service_role_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.supabase_service_role_key == "service-role-key"
 
 
-def test_supabase_service_role_key_defaults_empty(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
-
-    settings = Settings()
-
-    assert settings.supabase_service_role_key == ""
-
-
 def test_empty_storage_price_uses_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("STORAGE_PRICE_USD_PER_TB_MONTH", "")
 

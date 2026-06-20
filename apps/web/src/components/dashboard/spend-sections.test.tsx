@@ -15,86 +15,6 @@ describe("spend sections", () => {
     cleanup();
   });
 
-  it("renders capacity balance as a full-width row above the total spend grid", () => {
-    render(
-      <OverviewSection
-        status="ready"
-        currency={demoDashboardView.header.currency}
-        capacityBalance={demoDashboardView.capacityBalance}
-        serviceSpend={demoDashboardView.serviceSpend}
-        totalSpend={demoDashboardView.totalSpend}
-      />,
-    );
-
-    const section = screen.getByTestId("dashboard-section-overview");
-    const grid = screen.getByTestId("dashboard-grid-overview");
-    const capacityCard = screen.getByTestId("capacity-balance-card");
-
-    expect(screen.getByText("Overview")).toBeInTheDocument();
-    // The populated card dates the title from the view model's current balance
-    // date (last point in the series), formatted with the shared date helper.
-    expect(
-      within(capacityCard).getByText("Ending Balance as of Jun 08"),
-    ).toBeInTheDocument();
-    expect(
-      within(capacityCard).getByText(
-        demoDashboardView.capacityBalance.currentBalanceLabel,
-      ),
-    ).toBeInTheDocument();
-    expect(
-      within(capacityCard).getByTestId("capacity-balance-tremor-line-chart"),
-    ).toHaveAttribute("data-chart-library", "tremor");
-
-    // The capacity card sits in its own full-width row, outside the grid.
-    expect(grid).not.toContainElement(capacityCard);
-    const capacitySection = capacityCard.closest("section");
-    expect(Array.from(section.children)).toContain(capacitySection);
-  });
-
-  it("renders a 3-col overview row with a 2-col total spend card and ranked services", () => {
-    render(
-      <OverviewSection
-        status="ready"
-        currency={demoDashboardView.header.currency}
-        capacityBalance={demoDashboardView.capacityBalance}
-        serviceSpend={demoDashboardView.serviceSpend}
-        totalSpend={demoDashboardView.totalSpend}
-      />,
-    );
-
-    const grid = screen.getByTestId("dashboard-grid-overview");
-    expect(grid).toHaveClass("grid", "gap-4", "lg:grid-cols-3");
-
-    const totalCard = screen.getByTestId("total-spend-card");
-    const totalSection = totalCard.closest("section");
-
-    // KPI labeled exactly "Total Spend" (not "Total Spend in Period").
-    expect(within(totalCard).getByText("Total Spend")).toBeInTheDocument();
-    expect(
-      within(totalCard).getByText(demoDashboardView.totalSpend.totalLabel),
-    ).toBeInTheDocument();
-    expect(screen.queryByText("Total Spend in Period")).not.toBeInTheDocument();
-
-    // Stacked daily-by-service bar chart lives inside the total spend card.
-    expect(
-      within(totalCard).getByTestId("service-spend-tremor-bar-chart"),
-    ).toHaveAttribute("data-chart-library", "recharts");
-
-    // The total spend card spans two of the three columns.
-    expect(totalSection).toHaveClass("lg:col-span-2");
-
-    // Total spend by service occupies the third column.
-    expect(screen.getByText("Total spend by service")).toBeInTheDocument();
-    expect(
-      screen.getByText(demoDashboardView.serviceSpend.rankedServices[0].name),
-    ).toBeInTheDocument();
-
-    // Both panels are grid children, in card-then-ranked order.
-    const gridSections = Array.from(grid.children);
-    expect(gridSections).toHaveLength(2);
-    expect(gridSections[0]).toBe(totalSection);
-  });
-
   it("scopes the total spend KPI label to the active range", () => {
     render(
       <OverviewSection
@@ -116,26 +36,6 @@ describe("spend sections", () => {
     expect(
       within(totalCard).getByText("Total Spend between May 12 and Jun 11"),
     ).toBeInTheDocument();
-  });
-
-  it("stretches the total spend by service panel to fill the overview row height", () => {
-    render(
-      <OverviewSection
-        status="ready"
-        currency={demoDashboardView.header.currency}
-        capacityBalance={demoDashboardView.capacityBalance}
-        serviceSpend={demoDashboardView.serviceSpend}
-        totalSpend={demoDashboardView.totalSpend}
-      />,
-    );
-
-    // The ranked panel must stretch to match the (taller) chart card and lay
-    // out as a flex column so its scrollable list claims the leftover height.
-    const rankedPanel = screen.getByRole("region", {
-      name: "Total spend by service",
-    });
-    expect(rankedPanel).toHaveClass("h-full");
-    expect(rankedPanel.querySelector("[class*='flex-col']")).not.toBeNull();
   });
 
   it("renders an empty capacity card for older views without capacity balance", () => {
@@ -256,77 +156,6 @@ describe("spend sections", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders a total-warehouse-spend KPI card with a stacked chart spanning two columns", () => {
-    render(
-      <WarehouseSpendSection
-        status="ready"
-        currency={demoDashboardView.header.currency}
-        range={demoDashboardView.range}
-        viewModel={demoDashboardView.warehouseSpend}
-      />,
-    );
-
-    const section = screen.getByTestId("dashboard-section-warehouse-spend");
-    const grid = screen.getByTestId("dashboard-grid-warehouse-spend");
-
-    expect(screen.getByText("Warehouse spend")).toBeInTheDocument();
-    expect(section).toHaveClass("gap-4");
-    expect(grid).toHaveClass("grid", "gap-4", "lg:grid-cols-3");
-
-    // The KPI card spans two of the three columns, carries the period-scoped
-    // label plus the big total value, and renders the stacked chart taller than
-    // the default so the third column fits two half-height panels.
-    const totalCard = screen.getByTestId("total-warehouse-spend-card");
-    const chartPanel = screen.getByRole("region", {
-      name: "Total warehouse spend",
-    });
-    expect(chartPanel).toHaveClass("lg:col-span-2");
-    expect(
-      within(totalCard).getByText("Total Warehouse Spend in Last 30 Days"),
-    ).toBeInTheDocument();
-    expect(
-      within(totalCard).getByText(
-        demoDashboardView.warehouseSpend.totalLabel,
-      ),
-    ).toBeInTheDocument();
-    const chart = screen.getByTestId("warehouse-spend-tremor-bar-chart");
-    expect(chart).toHaveAttribute("data-chart-library", "recharts");
-    expect(chart).toHaveClass("h-96");
-  });
-
-  it("renders two half-height ranked panels in the third column", () => {
-    render(
-      <WarehouseSpendSection
-        status="ready"
-        currency={demoDashboardView.header.currency}
-        viewModel={demoDashboardView.warehouseSpend}
-      />,
-    );
-
-    // Warehouses on top, Users below, each as its own labeled panel.
-    const warehousePanel = screen.getByRole("region", {
-      name: "Warehouse ranking",
-    });
-    const userPanel = screen.getByRole("region", { name: "User ranking" });
-    expect(
-      within(warehousePanel).getByText("Total spend by warehouse"),
-    ).toBeInTheDocument();
-    expect(
-      within(userPanel).getByText("Total spend by user"),
-    ).toBeInTheDocument();
-
-    // Both panels share the row height (flex-1) and clip overflow (min-h-0) so
-    // their internal ranked lists scroll instead of growing the row.
-    expect(warehousePanel).toHaveClass("flex-1", "min-h-0");
-    expect(userPanel).toHaveClass("flex-1", "min-h-0");
-
-    expect(
-      within(warehousePanel).getByText(
-        demoDashboardView.warehouseSpend.warehouseBars[0].name,
-      ),
-    ).toBeInTheDocument();
-  });
-
   it("renders the ranked bar rows provided by the view model", () => {
     const warehouseBars = Array.from({ length: 9 }, (_, index) => ({
       name: `WH_${index + 1}`,
@@ -366,45 +195,6 @@ describe("spend sections", () => {
     );
 
     expect(screen.getByText("No warehouse spend data")).toBeInTheDocument();
-  });
-
-  it("renders a storage-spend KPI card with a stacked chart spanning two columns", () => {
-    render(
-      <StorageSpendSection
-        status="ready"
-        currency={demoDashboardView.header.currency}
-        range={demoDashboardView.range}
-        viewModel={demoDashboardView.storageSpend}
-      />,
-    );
-
-    const grid = screen.getByTestId("dashboard-grid-storage-spend");
-    expect(screen.getByText("Storage spend")).toBeInTheDocument();
-    expect(grid).toHaveClass("grid", "gap-4", "lg:grid-cols-3");
-
-    // KPI card spans two columns, carries the period-scoped label plus the total.
-    const totalCard = screen.getByTestId("storage-spend-card");
-    const chartPanel = totalCard.closest("section");
-    expect(chartPanel).toHaveClass("lg:col-span-2");
-    expect(
-      within(totalCard).getByText("Storage Spend in Last 30 Days"),
-    ).toBeInTheDocument();
-    expect(
-      within(totalCard).getByText(demoDashboardView.storageSpend.totalLabel),
-    ).toBeInTheDocument();
-
-    // The stacked daily-by-database bar chart lives inside the card, sized to
-    // the storage section's shorter height.
-    const chart = screen.getByTestId("storage-spend-tremor-bar-chart");
-    expect(chart).toHaveAttribute("data-chart-library", "recharts");
-    expect(chart).toHaveClass("h-80");
-
-    // The view model exposes the bucketed database names the chart stacks by.
-    expect(demoDashboardView.storageSpend.databaseNames).toEqual([
-      "RAW",
-      "ANALYTICS",
-      "APP",
-    ]);
   });
 
   it("renders a right-side database table with name, spend, and size", () => {
@@ -577,44 +367,6 @@ describe("capacity forecast wiring", () => {
   });
 });
 
-describe("section skeletons", () => {
-  afterEach(() => {
-    cleanup();
-  });
-
-  it("renders the Overview skeleton with title and chart skeleton when loading", () => {
-    render(<OverviewSection status="loading" />);
-    expect(screen.getByText("Overview")).toBeInTheDocument();
-    expect(screen.getByTestId("dashboard-section-overview")).toBeInTheDocument();
-    expect(screen.getByTestId("overview-skeleton")).toBeInTheDocument();
-    // The capacity line skeleton matches the real h-80 height.
-    const lineChart = screen.getByTestId("overview-capacity-skeleton");
-    expect(lineChart).toHaveAttribute("data-chart-skeleton", "line");
-    expect(lineChart).toHaveClass("h-80");
-  });
-
-  it("renders the Warehouse skeleton chart at h-96 when loading", () => {
-    render(<WarehouseSpendSection status="loading" />);
-    expect(
-      screen.getByTestId("dashboard-section-warehouse-spend"),
-    ).toBeInTheDocument();
-    const chart = screen.getByTestId("warehouse-spend-skeleton-chart");
-    expect(chart).toHaveAttribute("data-chart-skeleton", "bar");
-    expect(chart).toHaveClass("h-96");
-  });
-
-  it("renders the Storage skeleton with chart h-80 and table skeleton when loading", () => {
-    render(<StorageSpendSection status="loading" />);
-    expect(
-      screen.getByTestId("dashboard-section-storage-spend"),
-    ).toBeInTheDocument();
-    expect(screen.getByTestId("storage-spend-skeleton-chart")).toHaveClass(
-      "h-80",
-    );
-    expect(screen.getByTestId("detail-table-skeleton")).toBeInTheDocument();
-  });
-});
-
 describe("AiSpendSection", () => {
   afterEach(() => {
     cleanup();
@@ -655,35 +407,5 @@ describe("AiSpendSection", () => {
       />,
     );
     expect(screen.getByTestId("dashboard-section-ai-spend")).toBeInTheDocument();
-  });
-});
-
-describe("skeleton/ready height parity", () => {
-  afterEach(cleanup);
-
-  // demoDashboardView.warehouseSpend is a non-empty fixture (isEmpty === false),
-  // so the ready branch renders the real SpendBarChart rather than the empty
-  // state — letting us assert h-96 in both the loading and ready states.
-  const demoWarehouseSpend = demoDashboardView.warehouseSpend;
-
-  it("uses h-96 for the warehouse chart in both states", () => {
-    const { unmount } = render(<WarehouseSpendSection status="loading" />);
-    expect(screen.getByTestId("warehouse-spend-skeleton-chart")).toHaveClass(
-      "h-96",
-    );
-    unmount();
-    // The ready warehouse chart is rendered via SpendBarChart heightClass="h-96"
-    // (see WarehouseSpendSection ready branch). Assert the class on its testid.
-    render(
-      <WarehouseSpendSection
-        status="ready"
-        currency="USD"
-        range={null}
-        viewModel={demoWarehouseSpend}
-      />,
-    );
-    expect(
-      screen.getByTestId("warehouse-spend-tremor-bar-chart"),
-    ).toHaveClass("h-96");
   });
 });

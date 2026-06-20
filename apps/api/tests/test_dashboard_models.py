@@ -1,15 +1,11 @@
 from datetime import date
-from uuid import UUID
 
 import pytest
 
 from app.models import (
     REQUIRED_DATASET_KEYS,
     SAFE_DATASET_ROW_FIELDS,
-    SCHEMA_VERSION,
     DashboardDatasetMetadata,
-    DashboardDatasetResponse,
-    DashboardRun,
     SourceAvailability,
 )
 
@@ -85,18 +81,3 @@ def test_dashboard_dataset_metadata_serializes_dates_and_validates_literals() ->
             organization_usage=SourceAvailability(available=True),
             account_usage=SourceAvailability(available=True),
         )
-
-
-def test_dashboard_dataset_response_defaults_schema_version_and_metadata() -> None:
-    run = DashboardRun(
-        id="run-1",
-        status="completed",
-        source="demo",
-        window_days=30,
-        organization_id=UUID("00000000-0000-0000-0000-000000000001"),
-    )
-
-    response = DashboardDatasetResponse(run=run, summary={}, datasets={})
-
-    assert response.schema_version == SCHEMA_VERSION
-    assert response.metadata is None

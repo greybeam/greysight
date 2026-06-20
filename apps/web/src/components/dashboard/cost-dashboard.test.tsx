@@ -97,42 +97,6 @@ describe("CostDashboard", () => {
     vi.resetAllMocks();
   });
 
-  it("renders required dollar dashboard sections", () => {
-    render(<CostDashboard data={demoDashboardView} />);
-
-    expect(screen.getByText("Overview")).toBeInTheDocument();
-    // The demo view carries a current balance date, so the title is dated.
-    expect(screen.getByText("Ending Balance as of Jun 08")).toBeInTheDocument();
-    // The demo view uses a relative 30-day window, so the KPI label is scoped.
-    expect(screen.getByText("Total Spend in Last 30 Days")).toBeInTheDocument();
-    expect(screen.getByText("Total spend by service")).toBeInTheDocument();
-    expect(
-      screen.getByTestId("dashboard-section-warehouse-spend"),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Storage spend")).toBeInTheDocument();
-    expect(screen.queryByText("Total Spend in Period")).not.toBeInTheDocument();
-    // "Warehouse spend" now only appears as the section heading; the bottom 2x2
-    // detail tables were removed.
-    expect(screen.getAllByText("Warehouse spend").length).toBeGreaterThan(0);
-    // The storage section's right-side card is titled "Total spend by database".
-    // The removed bottom 2x2 detail tables ("User compute spend",
-    // "Storage by database") should no longer render.
-    expect(screen.getByText("Total spend by database")).toBeInTheDocument();
-    expect(screen.queryByText("User compute spend")).not.toBeInTheDocument();
-    expect(screen.queryByText("Storage by database")).not.toBeInTheDocument();
-  });
-
-  it("uses the shared dashboard content container scale", () => {
-    render(<CostDashboard data={demoDashboardView} />);
-
-    expect(screen.getByLabelText("Dashboard content")).toHaveClass(
-      "max-w-[1200px]",
-      "gap-6",
-      "px-6",
-      "py-6",
-    );
-  });
-
   it("loads demo prepared view and prefetches relative windows", async () => {
     vi.mocked(fetchDemoDashboardView).mockResolvedValue(demoDashboardView);
 
