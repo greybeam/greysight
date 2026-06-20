@@ -54,7 +54,7 @@ class SupabaseServiceRoleMembershipLookup:
                         "select": (
                             "role,organization_id,organizations"
                             "(id,name,organization_snowflake_connections"
-                            "(account_locator))"
+                            "(account,account_locator))"
                         ),
                         "limit": str(self._max_memberships + 1),
                     },
@@ -128,4 +128,9 @@ def _account_from_row(row: object) -> str | None:
     account_locator = row.get("account_locator")
     if isinstance(account_locator, str) and account_locator.strip():
         return account_locator.strip()
+    # Fall back to the user-entered account identifier for legacy rows that
+    # pre-date the account_locator column (populated on re-validation).
+    account = row.get("account")
+    if isinstance(account, str) and account.strip():
+        return account.strip()
     return None
