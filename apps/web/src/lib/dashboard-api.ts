@@ -105,7 +105,7 @@ export async function pollUntilTerminal<T>(
     if (isTerminal(result)) {
       return result;
     }
-    if (intervalMs > 0) await delay(intervalMs);
+    if (intervalMs > 0 && attempt < maxAttempts - 1) await delay(intervalMs);
   }
   throw new Error("Polling timed out before reaching a terminal status");
 }
@@ -125,7 +125,7 @@ export async function pollDashboardRun(
       return run;
     }
 
-    if (intervalMs > 0) await delay(intervalMs);
+    if (intervalMs > 0 && attempt < maxAttempts - 1) await delay(intervalMs);
   }
 
   throw new Error("Dashboard run polling timed out");
