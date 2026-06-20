@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { usePrefersReducedMotion } from "../../lib/use-prefers-reduced-motion";
 import {
@@ -507,10 +507,38 @@ function CostDashboardContent({
   const dataReady =
     viewModel != null && loadState.status !== "loading" && !runInFlight;
 
+  // Derive a stable source spec from primitive field values so that
+  // poll-driven reference churn (viewModel / activeRange get new object
+  // identities every 1.5 s) does not re-trigger the AI fetch.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const aiSource = useMemo(
+    () =>
+      dataReady && viewModel
+        ? {
+            runId: viewModel.run.id,
+            request: requestFromViewRange(activeRange ?? viewModel.range),
+          }
+        : null,
+    // Intentionally using primitive fields rather than the objects themselves —
+    // object identity changes on every poll even when the values are identical.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      dataReady,
+      viewModel?.run.id,
+      activeRange?.mode,
+      activeRange?.windowDays,
+      activeRange?.startDate,
+      activeRange?.endDate,
+      viewModel?.range.mode,
+      viewModel?.range.windowDays,
+      viewModel?.range.startDate,
+      viewModel?.range.endDate,
+    ],
+  );
+
   useEffect(() => {
-    if (!dataReady || !viewModel) return;
-    const runId = viewModel.run.id;
-    const request = requestFromViewRange(activeRange ?? viewModel.range);
+    if (!aiSource) return;
+    const { runId, request } = aiSource;
     aiSeqRef.current += 1;
     const seq = aiSeqRef.current;
     // Intentional reset: when the active view/range changes, the AI detail must
@@ -553,7 +581,7 @@ function CostDashboardContent({
         if (seq === aiSeqRef.current) setAiDetail({ status: "error" });
       }
     })();
-  }, [dataReady, viewModel, activeRange, shouldUseDemo, accessToken]);
+  }, [aiSource, shouldUseDemo, accessToken]);
 
   const isFailedWithoutView =
     !viewModel &&
