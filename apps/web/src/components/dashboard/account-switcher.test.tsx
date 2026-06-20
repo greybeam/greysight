@@ -31,7 +31,7 @@ afterEach(() => {
 describe("AccountSwitcher", () => {
   it("shows the active org locator on the trigger", () => {
     renderWith({
-      organizations: [{ id: "org-1", name: "Alpha", accountLocator: "AAA-111" }],
+      organizations: [{ id: "org-1", name: "Alpha", role: "member", accountLocator: "AAA-111" }],
       activeOrganizationId: "org-1",
     });
     expect(screen.getByRole("button", { name: /AAA-111/ })).toBeInTheDocument();
@@ -40,8 +40,8 @@ describe("AccountSwitcher", () => {
   it("switches org on selection", () => {
     const value = renderWith({
       organizations: [
-        { id: "org-1", name: "Alpha", accountLocator: "AAA-111" },
-        { id: "org-2", name: "Beta", accountLocator: "BBB-222" },
+        { id: "org-1", name: "Alpha", role: "member", accountLocator: "AAA-111" },
+        { id: "org-2", name: "Beta", role: "member", accountLocator: "BBB-222" },
       ],
       activeOrganizationId: "org-1",
     });
@@ -52,7 +52,7 @@ describe("AccountSwitcher", () => {
 
   it("invokes openAddAccount from the Add Account item", () => {
     const value = renderWith({
-      organizations: [{ id: "org-1", name: "Alpha", accountLocator: "AAA-111" }],
+      organizations: [{ id: "org-1", name: "Alpha", role: "member", accountLocator: "AAA-111" }],
       activeOrganizationId: "org-1",
     });
     fireEvent.click(screen.getByRole("button", { name: /AAA-111/ }));
@@ -87,7 +87,7 @@ describe("AccountSwitcher", () => {
 
   it("falls back to org name on the trigger when accountLocator is null", () => {
     renderWith({
-      organizations: [{ id: "org-1", name: "Alpha Corp", accountLocator: null }],
+      organizations: [{ id: "org-1", name: "Alpha Corp", role: "member", accountLocator: null }],
       activeOrganizationId: "org-1",
     });
     // The trigger must display the org name when accountLocator is absent.
@@ -96,7 +96,7 @@ describe("AccountSwitcher", () => {
 
   it("closes the menu when clicking outside the container", () => {
     renderWith({
-      organizations: [{ id: "org-1", name: "Alpha", accountLocator: "AAA-111" }],
+      organizations: [{ id: "org-1", name: "Alpha", role: "member", accountLocator: "AAA-111" }],
       activeOrganizationId: "org-1",
     });
     // Open the menu.

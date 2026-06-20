@@ -254,7 +254,7 @@ describe("OrgShell", () => {
         });
       }
       return Promise.resolve([
-        { id: "org-b", name: "Bravo", accountLocator: null },
+        { id: "org-b", name: "Bravo", role: "member" as const, accountLocator: null },
       ]);
     });
 
@@ -288,7 +288,7 @@ describe("OrgShell", () => {
     );
 
     // Now let the stale token-A request resolve last.
-    resolveTokenA?.([{ id: "org-a", name: "Alpha", accountLocator: null }]);
+    resolveTokenA?.([{ id: "org-a", name: "Alpha", role: "member", accountLocator: null }]);
 
     await new Promise((resolve) => setTimeout(resolve, 0));
 

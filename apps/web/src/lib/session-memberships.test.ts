@@ -15,7 +15,7 @@ describe("fetchSessionMemberships", () => {
     const organizations = await fetchSessionMemberships("access-token");
 
     expect(organizations).toEqual([
-      { id: "org-1", name: "Acme", accountLocator: null },
+      { id: "org-1", name: "Acme", role: "member", accountLocator: null },
     ]);
     const [, init] = fetchSpy.mock.calls[0];
     expect((init?.headers as Record<string, string>).authorization).toBe(
@@ -81,7 +81,7 @@ describe("fetchSessionMemberships", () => {
     const organizations = await fetchSessionMemberships("access-token");
 
     expect(organizations).toEqual([
-      { id: "org-1", name: " Acme ", accountLocator: null },
+      { id: "org-1", name: " Acme ", role: "member", accountLocator: null },
     ]);
   });
 
@@ -100,7 +100,20 @@ describe("fetchSessionMemberships", () => {
     const organizations = await fetchSessionMemberships("access-token");
 
     expect(organizations).toEqual([
-      { id: "org-1", name: "Acme", accountLocator: "IJ42635" },
+      { id: "org-1", name: "Acme", role: "member", accountLocator: "IJ42635" },
     ]);
+  });
+
+  it("parses an explicit role", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          organizations: [{ id: "org-1", name: "Acme", role: "owner" }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const organizations = await fetchSessionMemberships("access-token");
+    expect(organizations[0].role).toBe("owner");
   });
 });
