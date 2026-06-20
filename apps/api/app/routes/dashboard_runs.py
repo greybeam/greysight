@@ -62,7 +62,6 @@ BASE_RUN_SOURCE_KEYS: tuple[str, ...] = (
 # source(s) land. Secondary inputs the view builder already tolerates when empty
 # are intentionally EXCLUDED so their lag never blocks a section:
 #   - capacity_balance_daily        (overview capacity strip)
-#   - org_spend_daily               (billed total-spend override)
 #   - query_compute_by_user_daily   (per-user warehouse breakdown)
 #   - rate_sheet_daily              (currency conversion)
 # rate_sheet_daily is OMITTED here on purpose: build_dashboard_view degrades
@@ -70,59 +69,123 @@ BASE_RUN_SOURCE_KEYS: tuple[str, ...] = (
 # _build_rate_index / _estimated_conversion_unsupported_view_model). The
 # trade-off (premature-readiness risk): a converted-currency section may flip to
 # "ready" and render in native/stale FX a beat before the rate sheet lands.
-#   - overview  -> total_spend + service breakdown => service_spend_daily
+#   - overview  -> total_spend + service breakdown => MODE-AWARE (see below)
 #   - warehouse -> warehouse_spend                 => warehouse_spend_daily
 #   - storage   -> storage_spend                    => database_storage_daily
+#
+# OVERVIEW is mode-aware and so is NOT a static single-source entry here. In
+# BILLED (or demo) mode the overview's total-spend (_daily_billed_totals) and
+# service breakdown render from org_spend_daily (Organization Usage); in
+# ESTIMATED mode they render from service_spend_daily (Account Usage). Because
+# the basis is only known once data_mode is finalized, overview readiness is
+# computed by _overview_status (mode-aware) rather than this static matrix.
+# warehouse and storage genuinely read their Account Usage sources in BOTH modes,
+# so they keep their static single-source AND gating.
 SECTION_SOURCE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
-    "overview": ("service_spend_daily",),
     "warehouse": ("warehouse_spend_daily",),
     "storage": ("database_storage_daily",),
 }
 
-# Maps each gating source (a SECTION_SOURCE_DEPENDENCIES value) to the finalized
-# metadata availability field that records whether that source's GROUP collapsed
-# at finalize. _group_from_outcomes collapses an entire source group together and
-# persists the group's availability in the view metadata under "account_usage" /
-# "organization_usage". All three current gating sources are kind
-# snowflake_account_usage, so they map to "account_usage".
+# The two sources that can render the overview, one per data_mode. Either basis
+# is independently renderable: whichever lands first makes overview "ready".
+OVERVIEW_BILLED_SOURCE = "org_spend_daily"  # Organization Usage (billed/demo)
+OVERVIEW_ESTIMATED_SOURCE = "service_spend_daily"  # Account Usage (estimated)
+
+# Maps each gating source to the finalized metadata availability field that
+# records whether that source's GROUP collapsed at finalize. _group_from_outcomes
+# collapses an entire source group together and persists the group's availability
+# in the view metadata under "account_usage" / "organization_usage".
+# snowflake_account_usage sources map to "account_usage"; org_spend_daily is kind
+# snowflake_organization_usage, so it maps to "organization_usage".
 #
-# IMPORTANT: this MUST be extended whenever a SECTION_SOURCE_DEPENDENCIES source
-# of a DIFFERENT kind is added (e.g. an organization_usage source would map to
-# "organization_usage"). The assertion below fails fast if a gating source is
-# ever added without a corresponding group entry.
+# IMPORTANT: this MUST be extended whenever a NEW gating source (a static
+# SECTION_SOURCE_DEPENDENCIES value OR an overview basis source) of a different
+# kind is added. The assertion below fails fast if a gating source is ever added
+# without a corresponding group entry.
 GATING_SOURCE_GROUP: dict[str, str] = {
     "service_spend_daily": "account_usage",
     "warehouse_spend_daily": "account_usage",
     "database_storage_daily": "account_usage",
+    "org_spend_daily": "organization_usage",
 }
 
-# Fail-fast guard: every gating source MUST have an availability-group entry, or
+# Fail-fast guard: every gating source — the static section deps AND both
+# mode-aware overview basis sources — MUST have an availability-group entry, or
 # its collapse signal could never be read. Keeps GATING_SOURCE_GROUP in lockstep
-# with SECTION_SOURCE_DEPENDENCIES.
-assert {
-    dep for deps in SECTION_SOURCE_DEPENDENCIES.values() for dep in deps
-} <= set(GATING_SOURCE_GROUP), (
-    "Every SECTION_SOURCE_DEPENDENCIES gating source must have a "
-    "GATING_SOURCE_GROUP availability-field entry."
+# with the gating set.
+assert (
+    {dep for deps in SECTION_SOURCE_DEPENDENCIES.values() for dep in deps}
+    | {OVERVIEW_BILLED_SOURCE, OVERVIEW_ESTIMATED_SOURCE}
+) <= set(GATING_SOURCE_GROUP), (
+    "Every gating source (static section deps + overview basis sources) must "
+    "have a GATING_SOURCE_GROUP availability-field entry."
 )
 
 
-def compute_section_statuses(source_statuses: dict[str, str]) -> dict[str, str]:
+def _roll_up_dep_states(dep_states: list[str]) -> str:
+    """ready iff every dep is ready; unavailable if any is unavailable/failed;
+    pending otherwise."""
+    if any(state in {"unavailable", "failed"} for state in dep_states):
+        return "unavailable"
+    if all(state == "ready" for state in dep_states):
+        return "ready"
+    return "pending"
+
+
+def _overview_status(
+    source_statuses: dict[str, str], *, data_mode: str | None
+) -> str:
+    """Mode-aware overview readiness.
+
+    The overview renders from org_spend_daily (Organization Usage) in BILLED/demo
+    mode and from service_spend_daily (Account Usage) in ESTIMATED mode — either
+    basis is independently renderable.
+
+    - ``data_mode is None`` (streaming / not yet finalized): the basis is unknown,
+      so overview is "ready" when EITHER basis source is ready (whichever lands
+      first is renderable), "unavailable" only when BOTH are unavailable/failed,
+      else "pending". This unblocks a billed overview that is still waiting on (or
+      has lost) Account Usage.
+    - ``data_mode`` known ("billed"/"demo"/"estimated"): the basis source is
+      selected by mode and the overview rolls up that single source's state.
+    """
+    billed_state = source_statuses.get(OVERVIEW_BILLED_SOURCE, "pending")
+    estimated_state = source_statuses.get(OVERVIEW_ESTIMATED_SOURCE, "pending")
+    if data_mode in {"billed", "demo"}:
+        return _roll_up_dep_states([billed_state])
+    if data_mode == "estimated":
+        return _roll_up_dep_states([estimated_state])
+    # Streaming / unknown mode: OR semantics across the two possible bases.
+    if "ready" in {billed_state, estimated_state}:
+        return "ready"
+    if billed_state in {"unavailable", "failed"} and estimated_state in {
+        "unavailable",
+        "failed",
+    }:
+        return "unavailable"
+    return "pending"
+
+
+def compute_section_statuses(
+    source_statuses: dict[str, str], *, data_mode: str | None = None
+) -> dict[str, str]:
     """Roll per-source readiness up into per-section status.
 
     ready       — every dependency is "ready"
     unavailable — at least one dependency is "unavailable" or "failed"
     pending     — otherwise (a dependency is still pending/unknown)
+
+    ``data_mode`` selects the overview's gating basis (see _overview_status). It
+    is None on the streaming path (the basis is unknown until finalize) and the
+    finalized data_mode on the completed/authoritative path. warehouse and
+    storage are mode-independent and always use their static single-source gating.
     """
-    result: dict[str, str] = {}
+    result: dict[str, str] = {
+        "overview": _overview_status(source_statuses, data_mode=data_mode),
+    }
     for section, deps in SECTION_SOURCE_DEPENDENCIES.items():
         dep_states = [source_statuses.get(dep, "pending") for dep in deps]
-        if any(state in {"unavailable", "failed"} for state in dep_states):
-            result[section] = "unavailable"
-        elif all(state == "ready" for state in dep_states):
-            result[section] = "ready"
-        else:
-            result[section] = "pending"
+        result[section] = _roll_up_dep_states(dep_states)
     return result
 
 
@@ -626,6 +689,42 @@ class InMemoryDashboardRunRepository:
                 return
             run = self._runs[run_id]
             now = datetime.now(timezone.utc)
+            retention_days = self._retention_days.get(run_id, 7)
+            expires_at = now + timedelta(days=retention_days)
+
+            # Build/validate EVERYTHING that can raise into LOCAL variables FIRST,
+            # before mutating any run state. If StoredDashboardDataset validation
+            # or source-bounds computation raises here, the run is still
+            # "running", so the worker's fallback finalize_run(status="failed")
+            # is NOT no-opped by the _is_running_locked guard above — the run can
+            # still reach a terminal state instead of being stranded
+            # half-finalized.
+            stored_datasets = {
+                key: StoredDashboardDataset(
+                    aggregate_dataset=rows, retention_expires_at=expires_at
+                )
+                for key, rows in datasets.items()
+            }
+            source_bounds = _source_bounds_for_dataset_rows(datasets)
+            # Re-seed base source states from the FINAL datasets so per-source
+            # states reflect reality. A base key present in the final datasets is
+            # "ready"; an absent key is "unavailable". For a failed run
+            # (datasets={}) every base source becomes "unavailable", overwriting
+            # any stale streamed "ready"/"unavailable" state. Non-base/deferred
+            # entries (e.g. AI deferred sources) are PRESERVED. Built as an
+            # immutable rebuild rather than mutating the nested dicts in place.
+            existing_states = self._source_states.get(run_id, {})
+            reseeded_states = {
+                key: state
+                for key, state in existing_states.items()
+                if key not in BASE_RUN_SOURCE_KEYS
+            }
+            for key in BASE_RUN_SOURCE_KEYS:
+                reseeded_states[key] = {
+                    "status": "ready" if key in datasets else "unavailable"
+                }
+
+            # All fallible work is done; now mutate state atomically.
             self._runs[run_id] = run.model_copy(
                 update={
                     "status": status,
@@ -635,17 +734,11 @@ class InMemoryDashboardRunRepository:
                 }
             )
             self._running_deadlines.pop(run_id, None)
-            retention_days = self._retention_days.get(run_id, 7)
-            expires_at = now + timedelta(days=retention_days)
             self._summaries[run_id] = summary
             self._metadata[run_id] = metadata
-            self._datasets[run_id] = {
-                key: StoredDashboardDataset(
-                    aggregate_dataset=rows, retention_expires_at=expires_at
-                )
-                for key, rows in datasets.items()
-            }
-            self._store_source_bounds(run_id, datasets)
+            self._datasets[run_id] = stored_datasets
+            self._source_bounds[run_id] = source_bounds
+            self._source_states[run_id] = reseeded_states
 
 
 dashboard_run_repository = InMemoryDashboardRunRepository()
@@ -838,11 +931,38 @@ def read_dashboard_run_view(
         effective_statuses = _reconcile_completed_source_statuses(
             source_statuses, metadata, authoritative=metadata_authoritative
         )
+        # On a settled view the data_mode is known, so the overview's gating basis
+        # is resolved by mode: billed/demo gate on org_spend_daily (Organization
+        # Usage), estimated on service_spend_daily (Account Usage). This is read
+        # from the (authoritative or reconstructed) metadata so a billed overview
+        # is not wrongly downgraded when Account Usage collapsed but Organization
+        # Usage succeeded, and vice versa.
+        completed_data_mode = _data_mode_for(metadata)
         view = view.model_copy(
-            update={"section_statuses": compute_section_statuses(effective_statuses)}
+            update={
+                "section_statuses": compute_section_statuses(
+                    effective_statuses, data_mode=completed_data_mode
+                )
+            }
         )
     _record_dashboard_run_view_retrieved(view)
     return view.model_dump(mode="json")
+
+
+def _data_mode_for(metadata: Any) -> str | None:
+    """Read the finalized ``data_mode`` DEFENSIVELY (dict OR typed object).
+
+    Returns None when metadata is missing or carries no data_mode, in which case
+    the overview falls back to the streaming OR semantics (no mode-selected
+    basis) rather than crashing or force-picking a basis.
+    """
+    if isinstance(metadata, dict):
+        value = metadata.get("data_mode")
+    elif metadata is not None:
+        value = getattr(metadata, "data_mode", None)
+    else:
+        value = None
+    return value if isinstance(value, str) else None
 
 
 def _group_is_available(metadata: Any, group_field: str) -> bool:

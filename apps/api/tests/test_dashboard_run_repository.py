@@ -1,6 +1,9 @@
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
+import pytest
+
+import app.routes.dashboard_runs as dr
 from app.routes.dashboard_runs import (
     BASE_RUN_SOURCE_KEYS,
     InMemoryDashboardRunRepository,
@@ -67,6 +70,47 @@ def test_finalize_run_sets_completed_and_authoritative_bounds():
     _run, datasets, _meta, bounds, _statuses, _auth = view_inputs
     assert datasets["service_spend_daily"] == [{"usage_date": "2026-05-01"}]
     assert bounds.source_end_date.isoformat() == "2026-05-01"
+
+
+def test_finalize_run_is_atomic_on_bounds_failure(monkeypatch):
+    """Finding 3: if dataset/bounds construction inside finalize_run raises, the
+    run must remain "running" (status not mutated to the terminal value), so the
+    worker's fallback finalize_run(status="failed") still lands the run terminal
+    instead of no-opping at the _is_running_locked guard.
+    """
+    repo, run_id = _new_running_repo()
+
+    def boom(*_a, **_k):
+        raise RuntimeError("bounds computation exploded")
+
+    monkeypatch.setattr(dr, "_source_bounds_for_dataset_rows", boom)
+
+    # (a) the exception propagates.
+    with pytest.raises(RuntimeError, match="bounds computation exploded"):
+        repo.finalize_run(
+            run_id,
+            status="completed",
+            summary={"total_credits": 1.0},
+            metadata=None,
+            datasets={"service_spend_daily": [{"usage_date": "2026-05-01"}]},
+        )
+
+    # (b) the run is STILL "running" — status was not half-mutated.
+    run = repo.get_run(run_id)
+    assert run is not None and run.status == "running"
+
+    # (c) the fallback failed-finalize still succeeds and lands "failed".
+    monkeypatch.undo()
+    repo.finalize_run(
+        run_id,
+        status="failed",
+        summary={},
+        metadata=None,
+        datasets={},
+        error="boom",
+    )
+    run = repo.get_run(run_id)
+    assert run is not None and run.status == "failed"
 
 
 def test_writes_after_terminal_state_are_discarded():

@@ -51,11 +51,25 @@ def _storage_rows() -> list[dict]:
 
 
 def _all_dep_sources() -> set[str]:
-    return {s for deps in dr.SECTION_SOURCE_DEPENDENCIES.values() for s in deps}
+    # Every source that gates a section: the static section deps PLUS both
+    # mode-aware overview basis sources (overview is no longer a static entry in
+    # SECTION_SOURCE_DEPENDENCIES — its gating is mode-aware via _overview_status).
+    return {s for deps in dr.SECTION_SOURCE_DEPENDENCIES.values() for s in deps} | {
+        dr.OVERVIEW_BILLED_SOURCE,
+        dr.OVERVIEW_ESTIMATED_SOURCE,
+    }
 
 
 def test_sections_are_overview_warehouse_storage():
-    assert set(dr.SECTION_SOURCE_DEPENDENCIES) == {"overview", "warehouse", "storage"}
+    # compute_section_statuses always reports the three renderable sections.
+    # overview is mode-aware so it is NOT a static SECTION_SOURCE_DEPENDENCIES key;
+    # warehouse and storage are static single-source entries.
+    assert set(dr.compute_section_statuses({})) == {
+        "overview",
+        "warehouse",
+        "storage",
+    }
+    assert set(dr.SECTION_SOURCE_DEPENDENCIES) == {"warehouse", "storage"}
 
 
 def test_section_ready_only_when_all_deps_ready():
@@ -81,9 +95,11 @@ def test_unavailable_dep_marks_section_unavailable():
 
 
 def test_failed_dep_marks_section_unavailable():
+    # Overview is now mode-aware: in the ESTIMATED basis it gates on
+    # service_spend_daily, so a failed service_spend_daily collapses overview.
     base = {key: "ready" for key in _all_dep_sources()}
     base["service_spend_daily"] = "failed"
-    statuses = dr.compute_section_statuses(base)
+    statuses = dr.compute_section_statuses(base, data_mode="estimated")
     assert statuses["overview"] == "unavailable"
 
 
@@ -523,6 +539,97 @@ def test_deferred_source_completes_completed_while_base_run_running():
     assert datasets["ai_consumption_daily"] == [{"usage_date": "2026-05-02"}]
 
 
+def test_failed_run_reseeds_base_source_states_unavailable():
+    """Finding 2: a run that streamed base source(s) to "ready" then finalizes
+    FAILED (metadata=None, datasets={}) must have every base source re-seeded to
+    "unavailable" — a stale "ready" must not survive into the /view of a failed
+    run with no data.
+    """
+    dr.dashboard_run_repository.clear()
+    run = dr.dashboard_run_repository.create_running_run(
+        organization_id=None,
+        source="snowflake",
+        window_days=100,
+        expected_sources=dr.BASE_RUN_SOURCE_KEYS,
+        retention_days=7,
+    )
+    run_id = UUID(run.id)
+
+    # Stream a couple of base sources to "ready" mid-run.
+    dr.dashboard_run_repository.set_dataset(
+        run_id, "service_spend_daily", [{"usage_date": "2026-05-01"}]
+    )
+    dr.dashboard_run_repository.complete_source(run_id, "service_spend_daily")
+    dr.dashboard_run_repository.set_dataset(
+        run_id, "warehouse_spend_daily", [{"usage_date": "2026-05-01"}]
+    )
+    dr.dashboard_run_repository.complete_source(run_id, "warehouse_spend_daily")
+    assert (
+        dr.dashboard_run_repository.get_source(run_id, "service_spend_daily").status
+        == "ready"
+    )
+
+    # Failure finalize: no data at all.
+    dr.dashboard_run_repository.finalize_run(
+        run_id,
+        status="failed",
+        summary={},
+        metadata=None,
+        datasets={},
+        error="boom",
+    )
+
+    # Every base source must now read "unavailable" (no stale "ready").
+    for key in dr.BASE_RUN_SOURCE_KEYS:
+        assert (
+            dr.dashboard_run_repository.get_source(run_id, key).status
+            == "unavailable"
+        ), key
+
+    # And the /view section_statuses reflect reality: nothing is "ready".
+    bounds = dr.dashboard_run_repository.get_source_bounds(run_id)
+    payload = read_dashboard_run_view(
+        run_id, None, bounds.source_start_date, bounds.source_end_date, _anon()
+    )
+    section = payload["section_statuses"]
+    assert section["overview"] != "ready", section
+    assert section["warehouse"] != "ready", section
+    assert section["storage"] != "ready", section
+
+
+def test_completed_run_reseeds_present_sources_ready():
+    """Finding 2 corollary: re-seeding from final datasets keeps a landed base
+    source "ready" on a successful finalize (consistent with streamed state) and
+    preserves deferred (non-base) source entries."""
+    repo = dr.InMemoryDashboardRunRepository()
+    run = repo.create_running_run(
+        organization_id=None,
+        source="snowflake",
+        window_days=100,
+        expected_sources=dr.BASE_RUN_SOURCE_KEYS,
+        retention_days=7,
+    )
+    run_id = UUID(run.id)
+    # A deferred (non-base) source state lands before finalize; it must survive.
+    repo.complete_source(
+        run_id, "ai_consumption_daily", rows=[{"usage_date": "2026-05-02"}]
+    )
+
+    repo.finalize_run(
+        run_id,
+        status="completed",
+        summary={},
+        metadata=None,
+        datasets={"service_spend_daily": [{"usage_date": "2026-05-01"}]},
+    )
+
+    # Present base source => "ready"; absent base source => "unavailable".
+    assert repo.get_source(run_id, "service_spend_daily").status == "ready"
+    assert repo.get_source(run_id, "warehouse_spend_daily").status == "unavailable"
+    # Deferred non-base entry preserved through finalize.
+    assert repo.get_source_state(run_id, "ai_consumption_daily") == "completed"
+
+
 def test_deferred_ai_source_still_updates_after_completion():
     """The deferred-AI post-completion lifecycle must keep working: an AI source
     legitimately completes AFTER the base run is completed."""
@@ -603,16 +710,22 @@ def test_reconcile_none_metadata_preserves_statuses():
 
 
 def test_reconcile_never_alters_non_gating_source():
-    """(d) A non-gating source is never altered, even when the group collapsed."""
+    """(d) A non-gating source is never altered, even when the group collapsed.
+
+    org_spend_daily IS a gating source now (group "organization_usage"), but
+    _meta leaves that group available, so its input "unavailable" passes through
+    unchanged. rate_sheet_daily is non-gating and never touched.
+    """
     statuses = {
-        "service_spend_daily": "ready",
+        "service_spend_daily": "ready",  # gating, account_usage (collapsed)
         "rate_sheet_daily": "ready",  # non-gating
-        "org_spend_daily": "unavailable",  # non-gating
+        "org_spend_daily": "unavailable",  # gating, organization_usage (available)
     }
     result = dr._reconcile_completed_source_statuses(
         statuses, _meta(account_usage_available=False)
     )
-    # Gating source collapses; non-gating sources pass through untouched.
+    # account_usage gating source collapses; org group available + non-gating
+    # source pass through untouched.
     assert result["service_spend_daily"] == "unavailable"
     assert result["rate_sheet_daily"] == "ready"
     assert result["org_spend_daily"] == "unavailable"
@@ -645,3 +758,193 @@ def test_reconcile_tolerates_typed_metadata_object():
         {"service_spend_daily": "ready"}, metadata
     )
     assert result == {"service_spend_daily": "unavailable"}
+
+
+# --- Finding 1: mode-aware overview gating (billed vs estimated) --------------
+
+
+def _org_spend_rows() -> list[dict]:
+    return [
+        {
+            "usage_date": "2026-05-01",
+            "service_type": "WAREHOUSE_METERING",
+            "rating_type": "COMPUTE",
+            "billing_type": "CONSUMPTION",
+            "is_adjustment": False,
+            "currency": "USD",
+            "spend": 10.0,
+        }
+    ]
+
+
+def _billed_metadata(
+    *, account_usage_available: bool, organization_usage_available: bool = True
+) -> dict:
+    """Completed-snapshot metadata for a BILLED run: data_mode="billed" so the
+    completed /view branch gates overview on org_spend_daily (Organization
+    Usage), not service_spend_daily (Account Usage)."""
+    settings = Settings()
+    return DashboardDatasetMetadata(
+        data_mode="billed",
+        account_locator="abc12345",
+        currency="USD",
+        billing_through_date=date(2026, 5, 1),
+        account_usage_through_date=date(2026, 5, 1),
+        estimated_credit_price_usd=settings.estimated_credit_price_usd,
+        storage_price_usd_per_tb_month=settings.storage_price_usd_per_tb_month,
+        organization_usage=SourceAvailability(available=organization_usage_available),
+        account_usage=SourceAvailability(available=account_usage_available),
+    ).model_dump(mode="json")
+
+
+def test_completed_billed_overview_ready_when_account_usage_collapsed():
+    """Finding 1 (completed/billed): Account Usage collapsed (service_spend_daily
+    unavailable) but Organization Usage available + org_spend_daily ready =>
+    overview is "ready" — the billed overview renders from org_spend_daily."""
+    dr.dashboard_run_repository.clear()
+    datasets: dict = {key: [] for key in dr.BASE_RUN_SOURCE_KEYS}
+    datasets["org_spend_daily"] = _org_spend_rows()
+    run = dr.dashboard_run_repository.create_completed_snapshot(
+        organization_id=None,
+        source="snowflake",
+        window_days=30,
+        summary={},
+        datasets=datasets,
+        metadata=_billed_metadata(
+            account_usage_available=False, organization_usage_available=True
+        ),
+        retention_days=7,
+    )
+    run_id = UUID(run.id)
+    payload = read_dashboard_run_view(
+        run_id, None, date(2026, 5, 1), date(2026, 5, 1), _anon()
+    )
+    section = payload["section_statuses"]
+    assert section["overview"] == "ready", section
+    # warehouse/storage genuinely read Account Usage -> still unavailable.
+    assert section["warehouse"] == "unavailable", section
+    assert section["storage"] == "unavailable", section
+
+
+def test_completed_estimated_overview_ready_when_account_usage_available():
+    """Finding 1 (completed/estimated): account_usage available + service_spend
+    ready => overview "ready"."""
+    dr.dashboard_run_repository.clear()
+    datasets: dict = {key: [] for key in dr.BASE_RUN_SOURCE_KEYS}
+    run = dr.dashboard_run_repository.create_completed_snapshot(
+        organization_id=None,
+        source="snowflake",
+        window_days=30,
+        summary={},
+        datasets=datasets,
+        metadata=_completed_metadata(account_usage_available=True),  # estimated
+        retention_days=7,
+    )
+    run_id = UUID(run.id)
+    bounds = dr.dashboard_run_repository.get_source_bounds(run_id)
+    payload = read_dashboard_run_view(
+        run_id, None, bounds.source_start_date, bounds.source_end_date, _anon()
+    )
+    assert payload["section_statuses"]["overview"] == "ready", (
+        payload["section_statuses"]
+    )
+
+
+def test_completed_estimated_overview_unavailable_when_account_usage_collapsed():
+    """Finding 1 (completed/estimated, unchanged): account_usage collapsed =>
+    overview "unavailable" — estimated overview gates on service_spend_daily."""
+    dr.dashboard_run_repository.clear()
+    datasets: dict = {key: [] for key in dr.BASE_RUN_SOURCE_KEYS}
+    run = dr.dashboard_run_repository.create_completed_snapshot(
+        organization_id=None,
+        source="snowflake",
+        window_days=30,
+        summary={},
+        datasets=datasets,
+        metadata=_completed_metadata(account_usage_available=False),  # estimated
+        retention_days=7,
+    )
+    run_id = UUID(run.id)
+    bounds = dr.dashboard_run_repository.get_source_bounds(run_id)
+    payload = read_dashboard_run_view(
+        run_id, None, bounds.source_start_date, bounds.source_end_date, _anon()
+    )
+    assert payload["section_statuses"]["overview"] == "unavailable", (
+        payload["section_statuses"]
+    )
+
+
+def test_streaming_overview_ready_when_only_org_spend_landed():
+    """Finding 1 (streaming): org_spend_daily landed but service_spend_daily has
+    NOT => overview "ready" (was "pending" before — the billed basis is
+    renderable). data_mode is unknown while running, so OR semantics apply."""
+    dr.dashboard_run_repository.clear()
+    run = dr.dashboard_run_repository.create_running_run(
+        organization_id=None,
+        source="snowflake",
+        window_days=100,
+        expected_sources=dr.BASE_RUN_SOURCE_KEYS,
+        retention_days=7,
+    )
+    run_id = UUID(run.id)
+    dr.dashboard_run_repository.set_dataset(
+        run_id, "org_spend_daily", _org_spend_rows()
+    )
+    dr.dashboard_run_repository.complete_source(run_id, "org_spend_daily")
+
+    payload = read_dashboard_run_view(run_id, None, None, None, _anon())
+    assert payload["run"]["status"] == "running"
+    section = payload["section_statuses"]
+    assert section["overview"] == "ready", section
+    # service_spend has not landed but the billed basis is enough.
+    assert section["warehouse"] == "pending", section
+
+
+def test_streaming_overview_ready_when_only_service_spend_landed():
+    """Finding 1 (streaming): service_spend_daily landed but org_spend_daily has
+    NOT => overview "ready" (the estimated basis is renderable)."""
+    dr.dashboard_run_repository.clear()
+    run = dr.dashboard_run_repository.create_running_run(
+        organization_id=None,
+        source="snowflake",
+        window_days=100,
+        expected_sources=dr.BASE_RUN_SOURCE_KEYS,
+        retention_days=7,
+    )
+    run_id = UUID(run.id)
+    dr.dashboard_run_repository.set_dataset(
+        run_id,
+        "service_spend_daily",
+        [
+            {
+                "usage_date": "2026-05-01",
+                "service_type": "WAREHOUSE_METERING",
+                "credits_used": 2.0,
+            }
+        ],
+    )
+    dr.dashboard_run_repository.complete_source(run_id, "service_spend_daily")
+
+    payload = read_dashboard_run_view(run_id, None, None, None, _anon())
+    assert payload["run"]["status"] == "running"
+    assert payload["section_statuses"]["overview"] == "ready", (
+        payload["section_statuses"]
+    )
+
+
+def test_streaming_overview_unavailable_only_when_both_bases_fail():
+    """Finding 1 (streaming): overview is "unavailable" only when BOTH bases are
+    unavailable/failed; one failed + one pending stays "pending"."""
+    base_failed_other_pending = {
+        dr.OVERVIEW_ESTIMATED_SOURCE: "failed",
+        # org_spend_daily not present => pending
+    }
+    assert (
+        dr.compute_section_statuses(base_failed_other_pending)["overview"]
+        == "pending"
+    )
+    both_failed = {
+        dr.OVERVIEW_ESTIMATED_SOURCE: "failed",
+        dr.OVERVIEW_BILLED_SOURCE: "unavailable",
+    }
+    assert dr.compute_section_statuses(both_failed)["overview"] == "unavailable"
