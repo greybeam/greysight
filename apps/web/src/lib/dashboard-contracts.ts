@@ -175,6 +175,10 @@ export type RankedBarRow = RankedSpendRow & {
   barWidthPercent: number;
 };
 
+export type WarehouseIdleBarRow = RankedSpendRow & {
+  idlePct: number | null;
+};
+
 export type HeaderViewModel = {
   dataModeLabel: "Billed" | "Estimated" | "Demo";
   accountLocator: string | null;
@@ -222,7 +226,7 @@ export type WarehouseSpendViewModel = {
   warehouseNames: string[];
   rankedWarehouses: RankedSpendRow[];
   rankedUsers: RankedSpendRow[];
-  warehouseBars: RankedBarRow[];
+  warehouseBars: WarehouseIdleBarRow[];
   userBars: RankedBarRow[];
   isEmpty: boolean;
 };
@@ -825,7 +829,7 @@ function parseWarehouseSpendViewModel(
       payload,
       "warehouse_bars",
       "warehouseBars",
-    ).map(parseRankedBarRow),
+    ).map(parseWarehouseIdleBarRow),
     userBars: readViewArray(payload, "user_bars", "userBars").map(
       parseRankedBarRow,
     ),
@@ -992,6 +996,14 @@ function parseRankedBarRow(payload: unknown): RankedBarRow {
       "bar_width_percent",
       "barWidthPercent",
     ),
+  };
+}
+
+function parseWarehouseIdleBarRow(payload: unknown): WarehouseIdleBarRow {
+  const record = asViewRecord(payload);
+  return {
+    ...parseRankedSpendRow(record),
+    idlePct: readViewNullableNumber(record, "idle_pct", "idlePct"),
   };
 }
 

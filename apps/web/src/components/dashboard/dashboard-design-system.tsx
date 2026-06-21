@@ -11,6 +11,7 @@ import type {
   DashboardViewRange,
   DollarPoint,
   RankedBarRow,
+  RankedSpendRow,
 } from "../../lib/dashboard-contracts";
 import {
   getSeriesColors,
@@ -144,7 +145,7 @@ export function DashboardPanel({
 // whatever currency symbol/suffix the server attached. The server formats with
 // Python `,.2f` (comma groups, period decimal), so en-US grouping matches the
 // source and the first run of digits/commas/decimals is the amount to replace.
-function compactSpendLabel(row: RankedBarRow): string {
+function compactSpendLabel(row: RankedSpendRow): string {
   if (Math.abs(row.spend) < 10) {
     return row.spendLabel;
   }
@@ -152,7 +153,11 @@ function compactSpendLabel(row: RankedBarRow): string {
   return row.spendLabel.replace(/[\d,]+(?:\.\d+)?/, rounded);
 }
 
-export function RankedSpendBars({ rows }: { rows: RankedBarRow[] }) {
+export function RankedSpendBars({
+  rows,
+}: {
+  rows: Array<RankedSpendRow & { barWidthPercent?: number }>;
+}) {
   const visibleRows = rows.filter((row) => Math.round(row.spend * 100) !== 0);
 
   if (visibleRows.length === 0) {
@@ -194,7 +199,7 @@ export function RankedSpendBars({ rows }: { rows: RankedBarRow[] }) {
             <span className="h-2 rounded bg-hairline">
               <span
                 className="block h-2 rounded bg-chart-purple"
-                style={{ width: `${row.barWidthPercent}%` }}
+                style={{ width: `${row.barWidthPercent ?? 0}%` }}
               />
             </span>
             <span className="text-xs font-semibold tabular-nums text-slate-200">
