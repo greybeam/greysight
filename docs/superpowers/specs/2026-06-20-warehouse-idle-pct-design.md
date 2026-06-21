@@ -29,12 +29,18 @@ Aggregated per warehouse over the dashboard window:
 - `idle_credits = sum(credits_used_compute) − sum(credits_attributed_queries)`
 - `idle_pct = idle_credits / sum(credits_used_compute)` — a fraction in `[0, 1]`
 
-Edge cases:
+Edge cases (mirroring the fail-loud stance of `_warehouse_row_dollars`):
 
 - `sum(credits_used_compute) == 0` → `idle_pct = null` → rendered as `–`
   (matches SELECT's dash rows for warehouses with no compute).
-- Tiny negative float noise in `idle_credits` is clamped to `0`.
-- Result is clamped to `[0, 1]` defensively.
+- `idle_credits` in the band `[-_FLOAT_EPSILON, 0)` is clamped to `0` (float
+  noise only).
+- If `sum(credits_attributed_queries)` materially exceeds
+  `sum(credits_used_compute)` (i.e. `idle_credits < -_FLOAT_EPSILON`), **raise**
+  rather than clamp — this is an impossible state and should fail loud, exactly
+  like the existing cloud-services-credits invariant check.
+- No blanket `[0, 1]` clamp: once the epsilon band is handled and the
+  impossible-negative case raises, `idle_pct` is naturally in `[0, 1]`.
 
 ## Changes
 
@@ -57,20 +63,33 @@ spend totals:
 - `sum(credits_used_compute)`
 - `sum(credits_attributed_queries)`
 
-Compute `idle_pct` per warehouse (with the edge-case handling above) and attach
-it to the warehouse bar rows only. The user bar rows are built exactly as
-before.
+Compute `idle_pct` per warehouse (with the edge-case handling above) and build
+the warehouse idle bar rows **inline in `_build_warehouse_spend`** from the
+ranked `RankedSpendRow` values — do **not** route them through
+`_build_ranked_bar_rows`. That helper sets `bar_width_percent = spend / top_spend`
+(spend-relative), whereas the idle bar width is `idle_pct × 100` (absolute,
+0–100). The bar width therefore lives on the frontend (derived from `idlePct`);
+the warehouse row itself carries only `idle_pct`. The user bar rows are built
+exactly as before via `_build_ranked_bar_rows`, and that helper is left
+untouched for the spend-scaled panels.
 
 ### 3. Models — `apps/api/app/services/dashboard_view_models.py`
 
-Add a warehouse-specific bar row type carrying `idle_pct: float | None`, leaving
-the shared `RankedBarRow` (used by the user panel and other sections) untouched.
-`WarehouseSpendViewModel.warehouse_bars` uses the new type.
+Add a warehouse-specific bar row type derived from `RankedSpendRow` (name,
+spend, spend_label, credits) plus `idle_pct: float | None` — **not** from
+`RankedBarRow` (no `bar_width_percent`, since the idle width is derived on the
+frontend). The shared `RankedBarRow` (used by the user panel and other sections)
+is untouched. `WarehouseSpendViewModel.warehouse_bars` uses the new type.
 
 ### 4. TS contracts — `apps/web/src/lib/dashboard-contracts.ts`
 
 Mirror the new warehouse bar row type with `idlePct: number | null`. The shared
 `RankedBarRow` type is unchanged.
+
+**Raw dataset contract (`WarehouseSpendDaily`):** intentionally **not** changed.
+`credits_attributed_queries` is consumed only inside the Python view builder to
+compute `idle_pct`; it is never surfaced through the raw dataset response, so
+adding it to the TS `WarehouseSpendDaily` type would create an unused field.
 
 ### 5. Frontend component — `apps/web/src/components/dashboard/dashboard-design-system.tsx`
 
@@ -96,6 +115,15 @@ unused_wh               –     ░░░░░░░░░░               $0.
   first, so their idle is visible at the top).
 - The spend value on the right keeps the existing `compactSpendLabel`
   formatting.
+- **Layout shell:** reuse the same absolute-fill scroll wrapper + grid `<ul>`
+  list shell that `RankedSpendBars` uses (so it sits correctly inside the flex
+  half-height panel in `WarehouseSpendSection`). Extract a tiny shared shell if
+  clean; otherwise duplicate just those ~5 layout lines. The grid template
+  changes from 3 columns to 4 (`name | idle% | bar | spend`).
+- **Visible-row filter:** apply the same sub-cent filter as `RankedSpendBars`
+  (`Math.round(row.spend * 100) !== 0`). Note this keys off **spend**, so a
+  near-zero-spend warehouse is hidden even if its idle % is high — correct for a
+  spend panel.
 
 ## Testing
 
@@ -103,8 +131,8 @@ Backend only (frontend tests intentionally skipped per request):
 
 - `idle_pct` math for representative warehouses.
 - Zero compute credits → `idle_pct` is `null`.
-- Negative-noise clamp → `0`.
-- Clamp to `[0, 1]`.
+- Epsilon-band negative noise → clamped to `0`.
+- Material invariant violation (attributed > compute beyond epsilon) → raises.
 - Warehouse row ordering preserved (by spend descending).
 - User bar rows / shared `RankedBarRow` shape unchanged (regression guard).
 
