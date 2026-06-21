@@ -240,6 +240,15 @@ def test_warehouse_idle_pct_raises_on_material_excess() -> None:
         _warehouse_idle_pct(compute_credits=10.0, attributed_credits=12.0)
 
 
+def test_warehouse_idle_pct_raises_on_negative_compute() -> None:
+    # Negative summed compute credits are impossible; fail loud, don't return None.
+    with pytest.raises(
+        ValueError,
+        match="warehouse_spend_daily credits_used_compute must be >= 0",
+    ):
+        _warehouse_idle_pct(compute_credits=-1.0, attributed_credits=0.0)
+
+
 def test_warehouse_bars_carry_idle_pct_in_spend_order() -> None:
     datasets = _demo_datasets()
     source_start, source_end = _source_bounds(datasets)
@@ -372,9 +381,15 @@ def _warehouse_idle_pct(
     credits can never exceed compute credits, so a material excess raises rather
     than being silently clamped. ``assert`` is avoided so ``python -O`` cannot
     strip the guard. Tiny negative float noise inside the epsilon band clamps to
-    zero. A warehouse with no compute credits returns ``None`` (rendered "–").
+    zero. A warehouse with exactly zero compute credits returns ``None``
+    (rendered "–"); negative compute credits are an impossible summed state and
+    raise rather than silently returning null.
     """
-    if compute_credits <= 0.0:
+    if compute_credits < 0.0:
+        raise ValueError(
+            "warehouse_spend_daily credits_used_compute must be >= 0"
+        )
+    if compute_credits == 0.0:
         return None
     idle_credits = compute_credits - attributed_credits
     if idle_credits < -_FLOAT_EPSILON:
@@ -428,17 +443,56 @@ Then change the `return WarehouseSpendViewModel(...)` so `warehouse_bars` uses t
         user_bars=_build_ranked_bar_rows(ranked_users),
 ```
 
-- [ ] **Step 6: Run the idle tests to verify they pass**
+- [ ] **Step 6: Update the two existing inline warehouse fixtures in this test file**
+
+`_build_warehouse_spend` now reads `credits_attributed_queries` via `_required_float_field` for every warehouse row, so the two existing tests that override `warehouse_spend_daily` with inline rows (bypassing the demo generator) will raise without the field. Add it to each (value ≤ its `credits_used_compute`):
+
+`test_warehouse_spend_prices_compute_and_cloud_services_credits` (row at ~line 450):
+
+```python
+    datasets["warehouse_spend_daily"] = [
+        {
+            "usage_date": "2026-06-08",
+            "warehouse_name": "BI_WH",
+            "credits_used": 14.0,
+            "credits_used_compute": 10.0,
+            "credits_attributed_queries": 6.0,
+        }
+    ]
+```
+
+`test_warehouse_total_sums_window_daily_dollars` (rows at ~line 1116) — add the field to both rows:
+
+```python
+        {
+            "usage_date": "2026-06-07",
+            "warehouse_name": "BI_WH",
+            "credits_used": 10.0,
+            "credits_used_compute": 10.0,
+            "credits_attributed_queries": 6.0,
+        },
+        {
+            "usage_date": "2026-06-08",
+            "warehouse_name": "ETL_WH",
+            "credits_used": 6.0,
+            "credits_used_compute": 6.0,
+            "credits_attributed_queries": 4.0,
+        },
+```
+
+Do **not** touch the helper-only row in `test_warehouse_row_dollars_raises_on_negative_cloud_credits` (~line 1048): it calls `_warehouse_row_dollars` directly, which never reads `credits_attributed_queries`.
+
+- [ ] **Step 7: Run the idle tests to verify they pass**
 
 Run: `cd apps/api && uv run pytest tests/test_dashboard_view_builder.py -k "idle" -v`
-Expected: PASS (all six tests).
+Expected: PASS (all seven tests).
 
-- [ ] **Step 7: Run the full backend suite (regression guard)**
+- [ ] **Step 8: Run the full backend suite (regression guard)**
 
 Run: `cd apps/api && uv run pytest -q`
-Expected: PASS. If any test fails with "missing fields: credits_attributed_queries" or a missing-field `KeyError`, add `credits_attributed_queries` to that `warehouse_spend_daily` fixture (value ≤ its `credits_used_compute`) and re-run.
+Expected: PASS. If any remaining test fails with "missing fields: credits_attributed_queries" or a missing-field `KeyError`, add `credits_attributed_queries` to that `warehouse_spend_daily` fixture (value ≤ its `credits_used_compute`) and re-run.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add apps/api/app/services/dashboard_view_models.py apps/api/app/services/dashboard_view_builder.py apps/api/tests/test_dashboard_view_builder.py
@@ -530,7 +584,20 @@ git commit -m "feat: add WarehouseIdleBarRow contract and parser"
 
 - [ ] **Step 1: Add the idle helpers + component**
 
-In `apps/web/src/components/dashboard/dashboard-design-system.tsx`, ensure `WarehouseIdleBarRow` is imported from `@/lib/dashboard-contracts` (add it to the existing import of `RankedBarRow`). Then add after `RankedSpendBars` (after line 208):
+In `apps/web/src/components/dashboard/dashboard-design-system.tsx`, add `RankedSpendRow` and `WarehouseIdleBarRow` to the existing **relative** type import (lines 9-14 — this file uses `../../lib/dashboard-contracts`; there is no `@/` path alias in `apps/web/tsconfig.json`). Result:
+
+```tsx
+import type {
+  BalancePoint,
+  DashboardViewRange,
+  DollarPoint,
+  RankedBarRow,
+  RankedSpendRow,
+  WarehouseIdleBarRow,
+} from "../../lib/dashboard-contracts";
+```
+
+Then add after `RankedSpendBars` (after line 208):
 
 ```tsx
 // Color bands for the idle % bar. High idle is the bad state, so the scale runs
@@ -616,7 +683,7 @@ function compactSpendLabel(row: RankedSpendRow): string {
 
 - [ ] **Step 2: Wire the component into the warehouse panel**
 
-In `apps/web/src/components/dashboard/spend-sections.tsx`, update the import from `./dashboard-design-system` to include `WarehouseIdleBars`. Then in `WarehouseSpendSection`, replace the warehouse ranking bars (the `<RankedSpendBars rows={viewModel.warehouseBars} />` inside the "Total spend by warehouse" `<section>`, ~line 246) with:
+In `apps/web/src/components/dashboard/spend-sections.tsx`, add `WarehouseIdleBars` to the existing **relative** import from `./dashboard-design-system` (the import block ending at line 32). Then in `WarehouseSpendSection`, replace the warehouse ranking bars (the `<RankedSpendBars rows={viewModel.warehouseBars} />` inside the "Total spend by warehouse" `<section>`, ~line 246) with:
 
 ```tsx
                   <WarehouseIdleBars rows={viewModel.warehouseBars} />
