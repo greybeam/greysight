@@ -36,10 +36,13 @@ _DEMO_AI_CONSUMPTION_TYPES = (
     ("CORTEX_AGENTS", "CORTEX_AGENTS", 2.0),
     ("CORTEX_SEARCH", "CORTEX_SEARCH", 1.0),
 )
+# (name, spend share, attributed-compute share). The attributed share sets the
+# demo idle %: idle = 1 - attributed_share. Chosen to land one warehouse in each
+# color band (green <=25%, amber <=50%, red >50%).
 _DEMO_WAREHOUSES = (
-    ("BI_WH", 0.50),
-    ("ETL_WH", 0.35),
-    ("ADHOC_WH", 0.15),
+    ("BI_WH", 0.50, 0.78),
+    ("ETL_WH", 0.35, 0.55),
+    ("ADHOC_WH", 0.15, 0.36),
 )
 _DEMO_USERS = (
     ("ANALYST_A", "BI_WH", 0.34),
@@ -158,7 +161,7 @@ def _build_warehouse_spend_daily(usage_dates: list[date]) -> list[dict[str, Any]
     rows: list[dict[str, Any]] = []
     for index, usage_date in enumerate(usage_dates):
         total_compute = 38.0 * _daily_multiplier(index)
-        for warehouse_name, share in _DEMO_WAREHOUSES:
+        for warehouse_name, share, attributed_share in _DEMO_WAREHOUSES:
             compute_credits = round(total_compute * share, 3)
             rows.append(
                 {
@@ -166,6 +169,9 @@ def _build_warehouse_spend_daily(usage_dates: list[date]) -> list[dict[str, Any]
                     "warehouse_name": warehouse_name,
                     "credits_used": round(compute_credits * 1.08, 3),
                     "credits_used_compute": compute_credits,
+                    "credits_attributed_queries": round(
+                        compute_credits * attributed_share, 3
+                    ),
                 }
             )
     return rows

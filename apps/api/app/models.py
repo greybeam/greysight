@@ -19,7 +19,13 @@ UnsupportedReason = Literal["mixed_currency"]
 SAFE_DATASET_ROW_FIELDS: dict[str, frozenset[str]] = {
     "account_spend_daily": frozenset({"usage_date", "credits_used"}),
     "warehouse_spend_daily": frozenset(
-        {"usage_date", "warehouse_name", "credits_used", "credits_used_compute"}
+        {
+            "usage_date",
+            "warehouse_name",
+            "credits_used",
+            "credits_used_compute",
+            "credits_attributed_queries",
+        }
     ),
     "service_spend_daily": frozenset({"usage_date", "service_type", "credits_used"}),
     "query_compute_by_user_daily": frozenset(

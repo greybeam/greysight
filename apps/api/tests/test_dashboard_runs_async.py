@@ -121,6 +121,7 @@ def test_running_view_reports_section_statuses():
                 "warehouse_name": "WH",
                 "credits_used": 1.0,
                 "credits_used_compute": 1.0,
+                "credits_attributed_queries": 0.6,
             }
         ],
     )

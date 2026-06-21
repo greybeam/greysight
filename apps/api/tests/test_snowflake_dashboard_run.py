@@ -486,6 +486,7 @@ def _source_rows(dataset_key: str) -> list[dict[str, object]]:
                 "warehouse_name": "LOAD_WH",
                 "credits_used": 8.0,
                 "credits_used_compute": 7.5,
+                "credits_attributed_queries": 4.5,
             },
         ],
         "query_compute_by_user_daily": [

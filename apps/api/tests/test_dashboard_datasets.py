@@ -28,6 +28,7 @@ def _account_rows() -> dict[str, list[dict[str, Any]]]:
                 "warehouse_name": "LOAD_WH",
                 "credits_used": 8.0,
                 "credits_used_compute": 7.5,
+                "credits_attributed_queries": 4.5,
             }
         ],
         "service_spend_daily": [
