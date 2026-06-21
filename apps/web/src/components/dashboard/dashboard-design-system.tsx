@@ -234,6 +234,43 @@ function idlePctLabel(idlePct: number | null): string {
   return `${Math.round(idlePct * 100)}%`;
 }
 
+// Shared grid template for the warehouse idle panel header and data rows.
+// Defined once here so header and scroll list always match column widths.
+const IDLE_GRID_COLS =
+  "grid grid-cols-[minmax(0,7rem)_auto_minmax(1.5rem,1fr)_auto] gap-x-3";
+
+// Column header row for the warehouse idle % panel. Kept outside the scrolling
+// <ul> so it stays pinned at the top while the data list scrolls beneath it.
+function WarehouseIdleBarsHeader() {
+  return (
+    <div
+      aria-hidden="true"
+      className={cx(IDLE_GRID_COLS, "mb-1 items-baseline")}
+    >
+      <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+        Warehouse
+      </span>
+      <span
+        className="cursor-help text-[10px] font-medium uppercase tracking-wide text-slate-500"
+        title="Idle = compute credits not attributed to running queries, over the window."
+      >
+        Idle{" "}
+        <span
+          aria-label="Idle: compute credits not attributed to running queries, over the window."
+          role="img"
+        >
+          &#x24D8;
+        </span>
+      </span>
+      {/* bar column — intentionally empty */}
+      <span />
+      <span className="text-right text-[10px] font-medium uppercase tracking-wide text-slate-500">
+        Spend
+      </span>
+    </div>
+  );
+}
+
 // Warehouse-only ranked panel: idle % bar (out of 100, colored by band) with the
 // percentage on the left and total spend on the right. Reuses RankedSpendBars'
 // absolute-fill scroll shell so it sits correctly inside the flex half-height
@@ -248,39 +285,45 @@ export function WarehouseIdleBars({ rows }: { rows: WarehouseIdleBarRow[] }) {
   }
 
   return (
-    <div className="relative mt-4 min-h-[16rem] flex-1 lg:min-h-0">
-      <ul
-        className="dashboard-scroll absolute inset-0 grid grid-cols-[minmax(0,7rem)_auto_minmax(1.5rem,1fr)_auto] content-start items-center gap-x-3 gap-y-2 overflow-y-auto"
-        role="list"
-      >
-        {visibleRows.map((row) => (
-          <li className="contents" key={row.name} role="listitem">
-            <span
-              className="min-w-0 truncate text-xs text-slate-400"
-              title={row.name}
-            >
-              {row.name}
-            </span>
-            <span className="text-xs font-semibold tabular-nums text-slate-200">
-              {idlePctLabel(row.idlePct)}
-            </span>
-            <span className="h-2 rounded bg-hairline">
-              {row.idlePct !== null ? (
-                <span
-                  className={cx(
-                    "block h-2 rounded",
-                    idleBarColorClass(row.idlePct),
-                  )}
-                  style={{ width: `${Math.min(row.idlePct * 100, 100)}%` }}
-                />
-              ) : null}
-            </span>
-            <span className="text-xs font-semibold tabular-nums text-slate-200">
-              {compactSpendLabel(row)}
-            </span>
-          </li>
-        ))}
-      </ul>
+    <div className="mt-4 flex min-h-[16rem] flex-1 flex-col lg:min-h-0">
+      <WarehouseIdleBarsHeader />
+      <div className="relative flex-1">
+        <ul
+          className={cx(
+            "dashboard-scroll absolute inset-0 content-start items-center gap-y-2 overflow-y-auto",
+            IDLE_GRID_COLS,
+          )}
+          role="list"
+        >
+          {visibleRows.map((row) => (
+            <li className="contents" key={row.name} role="listitem">
+              <span
+                className="min-w-0 truncate text-xs text-slate-400"
+                title={row.name}
+              >
+                {row.name}
+              </span>
+              <span className="text-xs font-semibold tabular-nums text-slate-200">
+                {idlePctLabel(row.idlePct)}
+              </span>
+              <span className="h-2 rounded bg-hairline">
+                {row.idlePct !== null ? (
+                  <span
+                    className={cx(
+                      "block h-2 rounded",
+                      idleBarColorClass(row.idlePct),
+                    )}
+                    style={{ width: `${Math.min(row.idlePct * 100, 100)}%` }}
+                  />
+                ) : null}
+              </span>
+              <span className="text-xs font-semibold tabular-nums text-slate-200">
+                {compactSpendLabel(row)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }
