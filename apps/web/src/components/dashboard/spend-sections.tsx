@@ -26,6 +26,7 @@ import {
   DetailTableSkeleton,
   RankedSpendBars,
   RankedSpendBarsSkeleton,
+  WarehouseIdleBars,
   SpendBarChart,
   StatValueSkeleton,
   TotalSpendBarCard,
@@ -254,7 +255,7 @@ export function WarehouseSpendSection(props: WarehouseSpendSectionProps) {
               <Card className="flex h-full flex-col p-6">
                 <Text>Total spend by warehouse</Text>
                 <div className="flex min-h-0 flex-1 flex-col">
-                  <RankedSpendBars rows={viewModel.warehouseBars} />
+                  <WarehouseIdleBars rows={viewModel.warehouseBars} />
                 </div>
               </Card>
             </section>

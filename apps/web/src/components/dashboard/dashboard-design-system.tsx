@@ -12,6 +12,7 @@ import type {
   DollarPoint,
   RankedBarRow,
   RankedSpendRow,
+  WarehouseIdleBarRow,
 } from "../../lib/dashboard-contracts";
 import {
   getSeriesColors,
@@ -156,7 +157,7 @@ function compactSpendLabel(row: RankedSpendRow): string {
 export function RankedSpendBars({
   rows,
 }: {
-  rows: Array<RankedSpendRow & { barWidthPercent?: number }>;
+  rows: RankedBarRow[];
 }) {
   const visibleRows = rows.filter((row) => Math.round(row.spend * 100) !== 0);
 
@@ -199,8 +200,80 @@ export function RankedSpendBars({
             <span className="h-2 rounded bg-hairline">
               <span
                 className="block h-2 rounded bg-chart-purple"
-                style={{ width: `${row.barWidthPercent ?? 0}%` }}
+                style={{ width: `${row.barWidthPercent}%` }}
               />
+            </span>
+            <span className="text-xs font-semibold tabular-nums text-slate-200">
+              {compactSpendLabel(row)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// Color bands for the idle % bar. High idle is the bad state, so the scale runs
+// green -> amber -> red as idle climbs. Full literal class strings (no template
+// construction) so Tailwind's content scanner keeps them in the build.
+function idleBarColorClass(idlePct: number): string {
+  if (idlePct <= 0.25) {
+    return "bg-emerald-500";
+  }
+  if (idlePct <= 0.5) {
+    return "bg-amber-500";
+  }
+  return "bg-rose-500";
+}
+
+// Whole-percent label for the idle column; null compute renders an em dash.
+function idlePctLabel(idlePct: number | null): string {
+  if (idlePct === null) {
+    return "–";
+  }
+  return `${Math.round(idlePct * 100)}%`;
+}
+
+// Warehouse-only ranked panel: idle % bar (out of 100, colored by band) with the
+// percentage on the left and total spend on the right. Reuses RankedSpendBars'
+// absolute-fill scroll shell so it sits correctly inside the flex half-height
+// panel; the grid carries a fourth column for the idle % value. Sub-cent-spend
+// rows are filtered like RankedSpendBars (keyed off spend — this is a spend
+// panel — so a near-zero-spend warehouse is hidden even at high idle).
+export function WarehouseIdleBars({ rows }: { rows: WarehouseIdleBarRow[] }) {
+  const visibleRows = rows.filter((row) => Math.round(row.spend * 100) !== 0);
+
+  if (visibleRows.length === 0) {
+    return <p className="mt-4 text-xs text-slate-400">No warehouse spend data</p>;
+  }
+
+  return (
+    <div className="relative mt-4 min-h-[16rem] flex-1 lg:min-h-0">
+      <ul
+        className="dashboard-scroll absolute inset-0 grid grid-cols-[minmax(0,7rem)_auto_minmax(1.5rem,1fr)_auto] content-start items-center gap-x-3 gap-y-2 overflow-y-auto"
+        role="list"
+      >
+        {visibleRows.map((row) => (
+          <li className="contents" key={row.name} role="listitem">
+            <span
+              className="min-w-0 truncate text-xs text-slate-400"
+              title={row.name}
+            >
+              {row.name}
+            </span>
+            <span className="text-xs font-semibold tabular-nums text-slate-200">
+              {idlePctLabel(row.idlePct)}
+            </span>
+            <span className="h-2 rounded bg-hairline">
+              {row.idlePct !== null ? (
+                <span
+                  className={cx(
+                    "block h-2 rounded",
+                    idleBarColorClass(row.idlePct),
+                  )}
+                  style={{ width: `${Math.min(row.idlePct * 100, 100)}%` }}
+                />
+              ) : null}
             </span>
             <span className="text-xs font-semibold tabular-nums text-slate-200">
               {compactSpendLabel(row)}
