@@ -32,6 +32,7 @@ from app.services.dashboard_view_models import (
     UnsupportedViewModel,
     UserDetailRow,
     WarehouseDetailRow,
+    WarehouseIdleBarRow,
     WarehousePoint,
     WarehouseSpendViewModel,
 )
@@ -1211,6 +1212,37 @@ def _warehouse_row_dollars(
     ) + convert(cloud_services_credits, usage_date, "CLOUD_SERVICES", None)
 
 
+def _warehouse_idle_pct(
+    *,
+    compute_credits: float,
+    attributed_credits: float,
+) -> float | None:
+    """Idle share of a warehouse's compute credits over the window.
+
+    ``idle = compute - attributed``; the fraction returned is ``idle / compute``.
+    Mirrors ``_warehouse_row_dollars``'s fail-loud stance: query-attributed
+    credits can never exceed compute credits, so a material excess raises rather
+    than being silently clamped. ``assert`` is avoided so ``python -O`` cannot
+    strip the guard. Tiny negative float noise inside the epsilon band clamps to
+    zero. A warehouse with exactly zero compute credits returns ``None``
+    (rendered "–"); negative compute credits are an impossible summed state and
+    raise rather than silently returning null.
+    """
+    if compute_credits < 0.0:
+        raise ValueError(
+            "warehouse_spend_daily credits_used_compute must be >= 0"
+        )
+    if compute_credits == 0.0:
+        return None
+    idle_credits = compute_credits - attributed_credits
+    if idle_credits < -_FLOAT_EPSILON:
+        raise ValueError(
+            "warehouse_spend_daily credits_used_compute must be "
+            ">= credits_attributed_queries"
+        )
+    return max(idle_credits, 0.0) / compute_credits
+
+
 def _build_warehouse_spend(
     *,
     dates: list[date],
@@ -1264,6 +1296,35 @@ def _build_warehouse_spend(
             for row in warehouse_rows
         }
     )
+    compute_by_warehouse: dict[str, float] = {}
+    attributed_by_warehouse: dict[str, float] = {}
+    for row in warehouse_rows:
+        warehouse_name = _string_field(row, "warehouse_name", "Unknown warehouse")
+        compute_by_warehouse[warehouse_name] = compute_by_warehouse.get(
+            warehouse_name, 0.0
+        ) + _required_float_field(
+            row, "warehouse_spend_daily", "credits_used_compute"
+        )
+        attributed_by_warehouse[warehouse_name] = attributed_by_warehouse.get(
+            warehouse_name, 0.0
+        ) + _required_float_field(
+            row, "warehouse_spend_daily", "credits_attributed_queries"
+        )
+
+    # Idle bars are built from the ranked warehouses (preserving spend-desc order)
+    # rather than _build_ranked_bar_rows: the bar width is idle-based (0-100,
+    # derived on the frontend), not spend-relative, so the RankedBarRow path does
+    # not apply here.
+    warehouse_bars = [
+        WarehouseIdleBarRow(
+            **ranked.model_dump(),
+            idle_pct=_warehouse_idle_pct(
+                compute_credits=compute_by_warehouse.get(ranked.name, 0.0),
+                attributed_credits=attributed_by_warehouse.get(ranked.name, 0.0),
+            ),
+        )
+        for ranked in ranked_warehouses
+    ]
     spend_by_date_and_warehouse = {
         (usage_date, warehouse_name): 0.0
         for usage_date in dates
@@ -1305,7 +1366,7 @@ def _build_warehouse_spend(
         warehouse_names=bucketed_names,
         ranked_warehouses=ranked_warehouses,
         ranked_users=ranked_users,
-        warehouse_bars=_build_ranked_bar_rows(ranked_warehouses),
+        warehouse_bars=warehouse_bars,
         user_bars=_build_ranked_bar_rows(ranked_users),
         is_empty=len(ranked_warehouses) == 0,
     )
