@@ -1,7 +1,7 @@
 "use client";
 
 import type React from "react";
-import { useMemo } from "react";
+import { useId, useMemo } from "react";
 import type { ReactNode } from "react";
 import { AreaChart, BarChart, Card, LineChart, Text } from "@tremor/react";
 import type { CustomTooltipProps, IntervalType } from "@tremor/react";
@@ -242,6 +242,7 @@ const IDLE_GRID_COLS =
 // Column header row for the warehouse idle % panel. Kept outside the scrolling
 // <ul> so it stays pinned at the top while the data list scrolls beneath it.
 function WarehouseIdleBarsHeader() {
+  const tooltipId = useId();
   return (
     <div
       className={cx(IDLE_GRID_COLS, "mb-1 items-baseline")}
@@ -253,14 +254,14 @@ function WarehouseIdleBarsHeader() {
         Idle{" "}
         <span
           tabIndex={0}
-          aria-describedby="warehouse-idle-tooltip"
+          aria-describedby={tooltipId}
           aria-label="What does Idle mean?"
           className="focus-visible:outline focus-visible:outline-1 focus-visible:outline-slate-400 rounded"
         >
           &#x24D8;
         </span>
         <span
-          id="warehouse-idle-tooltip"
+          id={tooltipId}
           role="tooltip"
           className="pointer-events-none absolute left-0 top-full z-10 mt-1 hidden w-max max-w-[16rem] rounded bg-slate-800 px-2 py-1 text-[11px] font-normal normal-case tracking-normal text-slate-200 shadow-lg group-hover:block group-focus-within:block"
         >
