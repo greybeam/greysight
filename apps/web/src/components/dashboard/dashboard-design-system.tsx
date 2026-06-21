@@ -244,7 +244,6 @@ const IDLE_GRID_COLS =
 function WarehouseIdleBarsHeader() {
   return (
     <div
-      aria-hidden="true"
       className={cx(IDLE_GRID_COLS, "mb-1 items-baseline")}
     >
       <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
@@ -253,12 +252,18 @@ function WarehouseIdleBarsHeader() {
       <span className="group relative cursor-help text-[10px] font-medium uppercase tracking-wide text-slate-500">
         Idle{" "}
         <span
-          aria-label="The amount of time a warehouse is active and not processing queries. Lower is better."
-          role="img"
+          tabIndex={0}
+          aria-describedby="warehouse-idle-tooltip"
+          aria-label="What does Idle mean?"
+          className="focus-visible:outline focus-visible:outline-1 focus-visible:outline-slate-400 rounded"
         >
           &#x24D8;
         </span>
-        <span className="pointer-events-none absolute left-0 top-full z-10 mt-1 hidden w-max max-w-[16rem] rounded bg-slate-800 px-2 py-1 text-[11px] font-normal normal-case tracking-normal text-slate-200 shadow-lg group-hover:block">
+        <span
+          id="warehouse-idle-tooltip"
+          role="tooltip"
+          className="pointer-events-none absolute left-0 top-full z-10 mt-1 hidden w-max max-w-[16rem] rounded bg-slate-800 px-2 py-1 text-[11px] font-normal normal-case tracking-normal text-slate-200 shadow-lg group-hover:block group-focus-within:block"
+        >
           The amount of time a warehouse is active and not processing queries. Lower is better.
         </span>
       </span>
