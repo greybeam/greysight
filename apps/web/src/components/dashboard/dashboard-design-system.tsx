@@ -250,16 +250,16 @@ function WarehouseIdleBarsHeader() {
       <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
         Warehouse
       </span>
-      <span
-        className="cursor-help text-[10px] font-medium uppercase tracking-wide text-slate-500"
-        title="Idle = compute credits not attributed to running queries, over the window."
-      >
+      <span className="group relative cursor-help text-[10px] font-medium uppercase tracking-wide text-slate-500">
         Idle{" "}
         <span
           aria-label="Idle: compute credits not attributed to running queries, over the window."
           role="img"
         >
           &#x24D8;
+        </span>
+        <span className="pointer-events-none absolute left-0 top-full z-10 mt-1 hidden w-max max-w-[16rem] rounded bg-slate-800 px-2 py-1 text-[11px] font-normal normal-case tracking-normal text-slate-200 shadow-lg group-hover:block">
+          Idle = compute credits not attributed to running queries, over the window.
         </span>
       </span>
       {/* bar column — intentionally empty */}
