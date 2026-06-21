@@ -1332,22 +1332,22 @@
     ],
     "warehouse_bars": [
       {
-        "bar_width_percent": 100.0,
         "credits": 633.3489999999999,
+        "idle_pct": 0.22,
         "name": "BI_WH",
         "spend": 1425.0352500000004,
         "spend_label": "$1,425.04"
       },
       {
-        "bar_width_percent": 69.99963685108841,
         "credits": 443.342,
+        "idle_pct": 0.45,
         "name": "ETL_WH",
         "spend": 997.5195000000001,
         "spend_label": "$997.52"
       },
       {
-        "bar_width_percent": 29.9998894764182,
         "credits": 190.004,
+        "idle_pct": 0.64,
         "name": "ADHOC_WH",
         "spend": 427.5089999999999,
         "spend_label": "$427.51"
