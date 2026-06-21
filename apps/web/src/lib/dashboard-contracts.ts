@@ -39,6 +39,7 @@ export type ServiceSpendDaily = AccountSpendDaily & {
 export type WarehouseSpendDaily = AccountSpendDaily & {
   warehouse_name: string;
   credits_used_compute: number;
+  credits_attributed_queries: number;
 };
 
 export type QueryComputeByUserDaily = {
