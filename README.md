@@ -1,84 +1,151 @@
 # Greysight
 
-Greysight is an open source Snowflake cost observability tool. The MVP is a
-locally testable Next.js and FastAPI dashboard with deterministic demo data,
-optional Supabase auth, and optional Snowflake Account Usage queries.
+Greysight is an open source dashboard for Snowflake costs.
 
-## Quick Start
+The short version: it shows where spend is going without making you start from
+raw Account Usage views. The backend reads approved Snowflake metadata queries,
+turns them into dashboard views, and the Next.js app renders those views.
 
-Install dependencies from the repository root:
+Version `0.0.1` is intentionally narrow. It covers total spend, service spend,
+warehouse spend, storage spend, AI spend, capacity balance, and early
+organization and auth flows. It is not a recommendations engine yet.
+
+<!--
+Dashboard screenshot placeholder:
+
+![Greysight dashboard](docs/images/dashboard-overview.png)
+-->
+
+## What it shows
+
+- Total Snowflake spend over the selected window.
+- Spend by service, warehouse, user, database, and AI consumption type.
+- Warehouse idle percentage, based on attributed query compute.
+- Capacity balance, when Organization Usage data is available.
+- Billed dollars from Organization Usage, with estimated dollars as a fallback.
+- A demo dashboard that works before you connect anything.
+
+## Quick start
+
+Prerequisites: Node.js 20+, npm, and `uv` with Python 3.12 available for the
+FastAPI workspace.
+
+From the repository root:
 
 ```bash
 npm install --ignore-scripts
+npm run dev
 ```
 
-Start the local web and API servers:
+Open `http://localhost:3000`.
+
+The web app runs on `:3000`. The FastAPI backend runs on `:8000`.
+
+A fresh checkout uses demo mode:
+
+```bash
+DATA_SOURCE=demo
+AUTH_REQUIRED=false
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+```
+
+You do not need Supabase or Snowflake credentials to try the dashboard.
+
+## Spinning up a local instance:
+
+Copy `.env.example` to `.env`, set
+`DATA_SOURCE=snowflake`, keep `AUTH_REQUIRED=false`, and fill in the Snowflake
+connection values:
+
+```bash
+DATA_SOURCE=snowflake
+AUTH_REQUIRED=false
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+SNOWFLAKE_ACCOUNT=
+SNOWFLAKE_USER=
+SNOWFLAKE_ROLE=
+SNOWFLAKE_WAREHOUSE=
+SNOWFLAKE_DATABASE=SNOWFLAKE
+SNOWFLAKE_SCHEMA=ACCOUNT_USAGE
+SNOWFLAKE_PRIVATE_KEY_PATH=/absolute/path/to/key.p8
+SNOWFLAKE_PRIVATE_KEY_PASSPHRASE=
+```
+
+Ensure the role you authenticate with has access to `ACCOUNT_USAGE` and `ORGANIZATION_USAGE` views.
+
+Then restart:
 
 ```bash
 npm run dev
 ```
 
-The web app runs at `http://localhost:3000`, and the FastAPI backend runs at
-`http://localhost:8000`. With the default local settings, `DATA_SOURCE=demo` and
-`AUTH_REQUIRED=false`, the dashboard can render demo data without Supabase or
-Snowflake credentials.
+## How the data moves
 
-## Run Modes
+Greysight keeps the dashboard data path boring on purpose:
 
-Two independent switches shape how the app runs: `DATA_SOURCE` (`demo` |
-`snowflake`) picks the data backend, and `AUTH_REQUIRED` (`false` | `true`)
-toggles the Supabase login and organization-membership gate. Both default to the
-demo / no-auth values, so a fresh checkout runs with no credentials.
+1. SQL files live in [sql/snowflake](sql/snowflake).
+2. Dataset keys are registered in
+   [sql/dashboard_sources.yml](sql/dashboard_sources.yml).
+3. FastAPI runs the approved sources or loads demo data.
+4. The backend computes metrics and builds the dashboard view model.
+5. The Next.js app fetches, validates, caches, and renders that view model.
 
-| `DATA_SOURCE` | `AUTH_REQUIRED` | What you get | Requires |
-| --- | --- | --- | --- |
-| `demo` | `false` | **Default / quick start.** Deterministic demo data, no login, "Demo mode" banner. | Nothing |
-| `demo` | `true` | Exercise the Supabase login + org-membership gate against demo data (no Snowflake). | Supabase URL + publishable key, secret (service-role) key, JWT secret |
-| `snowflake` | `false` | Live Snowflake Account Usage data with **no access control** — trusted local use only. | Snowflake credentials |
-| `snowflake` | `true` | **Production posture.** Live Snowflake data behind Supabase auth + org membership. | Snowflake credentials **and** full Supabase config |
+The frontend should not invent analytics on its own. If a chart needs a new
+derived number, add it to the backend dashboard view contract first.
 
-Notes:
+## Project layout
 
-- `AUTH_REQUIRED=true` makes the API require `SUPABASE_SERVICE_ROLE_KEY` at
-  startup (for the live membership lookup) and a Supabase session verifier;
-  without them bearer-token requests are rejected fail-closed. Also set
-  `NEXT_PUBLIC_AUTH_REQUIRED=true` so the browser enforces login — only
-  `NEXT_PUBLIC_*` vars are inlined into the client bundle.
-- `DATA_SOURCE=snowflake` needs the Snowflake credentials described in
-  `docs/snowflake-setup.md`.
-- ⚠️ `snowflake` + `AUTH_REQUIRED=false` serves real account data with no login.
-  Never use it for shared preview, staging, or production deployments.
+```text
+apps/web/              Next.js dashboard, auth UI, browser API clients, tests
+apps/api/              FastAPI backend, Snowflake access, metrics, route tests
+sql/snowflake/         Approved read-only Snowflake SQL assets
+sql/dashboard_sources.yml
+                       Dataset registry for dashboard sources
+supabase/migrations/   Supabase schema, RLS, org membership, credential storage
+docs/                  Local setup, Snowflake setup, security, deployment notes
+```
 
-## Project Structure
+## Development
 
-- `apps/web/`: Next.js dashboard, auth/org UI, browser API clients, and web tests.
-- `apps/api/`: FastAPI routes, auth/org guards, Snowflake access, metric services, and API tests.
-- `sql/snowflake/`: approved Snowflake Account Usage source queries.
-- `sql/dashboard_sources.yml`: dataset registry for source and derived dashboard datasets.
-- `supabase/migrations/`: Supabase schema, RLS policies, org memberships, audit events, and aggregate dataset tables.
-- `docs/`: setup, Snowflake, deployment, security, specs, and implementation plans.
+Useful commands from the repository root:
 
-## Dashboard Architecture
+```bash
+npm run dev          # web :3000 + API :8000
+npm run test         # Vitest + pytest
+npm run lint         # ESLint + ruff
+npm run typecheck    # TypeScript
+```
 
-The dashboard renders prepared view models from the FastAPI backend. Snowflake
-or demo datasets are normalized on the API side, and
-`apps/api/app/services/dashboard_view_builder.py` owns analytics, date-window
-semantics, pricing, rankings, projections, and unsupported states. The Next.js
-app fetches, validates, caches, and renders that prepared `DashboardView`
-contract through `apps/web/src/lib/dashboard-contracts.ts`.
+Targeted checks:
 
-When adding a chart, use existing `DashboardView` fields when possible. If the
-chart needs new derived numbers, add them to the backend view model and builder
-first, then mirror the contract and render the new graphic in `apps/web`. If it
-needs a new Snowflake source, add the approved SQL asset, registry entry, demo
-data, backend builder logic, frontend rendering, and tests together.
+```bash
+npm run test:web
+npm run test:api
+npm --workspace apps/web run build
+```
+
+The API tests do not call Snowflake or Supabase. Demo mode also stays local, so
+you can work on the dashboard without external credentials.
 
 ## Docs
 
-- Local development: `docs/local-development.md`
-- Snowflake setup: `docs/snowflake-setup.md`
-- Security model: `docs/security-model.md`
-- Deployment: `docs/deployment.md`
-- Dependency compatibility: `docs/dependency-compatibility.md`
+- [Local development](docs/local-development.md)
+- [Snowflake setup](docs/snowflake-setup.md)
+- [Security model](docs/security-model.md)
+- [Deployment](docs/deployment.md)
+- [Dependency compatibility](docs/dependency-compatibility.md)
 
-Savings estimate generation is post-MVP and is not included in the dashboard.
+## Contributing
+
+Greysight is young. Small changes are easiest to review.
+
+For dashboard work, a complete change usually touches the SQL source or backend
+metric, the prepared view contract, the frontend view, demo data, and tests.
+
+Keep analytics in the backend and presentation in the frontend. Keep secrets out
+of the browser. Supabase owns auth. The backend owns authorization and Snowflake
+access.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
