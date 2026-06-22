@@ -1,7 +1,7 @@
 "use client";
 
 import type React from "react";
-import { useMemo } from "react";
+import { useId, useMemo } from "react";
 import type { ReactNode } from "react";
 import { AreaChart, BarChart, Card, LineChart, Text } from "@tremor/react";
 import type { CustomTooltipProps, IntervalType } from "@tremor/react";
@@ -11,6 +11,8 @@ import type {
   DashboardViewRange,
   DollarPoint,
   RankedBarRow,
+  RankedSpendRow,
+  WarehouseIdleBarRow,
 } from "../../lib/dashboard-contracts";
 import {
   getSeriesColors,
@@ -144,7 +146,7 @@ export function DashboardPanel({
 // whatever currency symbol/suffix the server attached. The server formats with
 // Python `,.2f` (comma groups, period decimal), so en-US grouping matches the
 // source and the first run of digits/commas/decimals is the amount to replace.
-function compactSpendLabel(row: RankedBarRow): string {
+function compactSpendLabel(row: RankedSpendRow): string {
   if (Math.abs(row.spend) < 10) {
     return row.spendLabel;
   }
@@ -152,7 +154,11 @@ function compactSpendLabel(row: RankedBarRow): string {
   return row.spendLabel.replace(/[\d,]+(?:\.\d+)?/, rounded);
 }
 
-export function RankedSpendBars({ rows }: { rows: RankedBarRow[] }) {
+export function RankedSpendBars({
+  rows,
+}: {
+  rows: RankedBarRow[];
+}) {
   const visibleRows = rows.filter((row) => Math.round(row.spend * 100) !== 0);
 
   if (visibleRows.length === 0) {
@@ -203,6 +209,127 @@ export function RankedSpendBars({ rows }: { rows: RankedBarRow[] }) {
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+// Color bands for the idle % bar. High idle is the bad state, so the scale runs
+// green -> amber -> red as idle climbs. Full literal class strings (no template
+// construction) so Tailwind's content scanner keeps them in the build.
+function idleBarColorClass(idlePct: number): string {
+  if (idlePct <= 0.25) {
+    return "bg-emerald-500";
+  }
+  if (idlePct <= 0.5) {
+    return "bg-amber-500";
+  }
+  return "bg-rose-500";
+}
+
+// Whole-percent label for the idle column; null compute renders an em dash.
+function idlePctLabel(idlePct: number | null): string {
+  if (idlePct === null) {
+    return "–";
+  }
+  return `${Math.round(idlePct * 100)}%`;
+}
+
+// Shared grid template for the warehouse idle panel header and data rows.
+// Defined once here so header and scroll list always match column widths.
+const IDLE_GRID_COLS =
+  "grid grid-cols-[minmax(0,7rem)_auto_minmax(1.5rem,1fr)_auto] gap-x-3";
+
+// Column header row for the warehouse idle % panel. Kept outside the scrolling
+// <ul> so it stays pinned at the top while the data list scrolls beneath it.
+function WarehouseIdleBarsHeader() {
+  const tooltipId = useId();
+  return (
+    <div
+      className={cx(IDLE_GRID_COLS, "mb-1 items-baseline")}
+    >
+      <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+        Warehouse
+      </span>
+      <span className="group relative cursor-help text-[10px] font-medium uppercase tracking-wide text-slate-500">
+        Idle{" "}
+        <span
+          tabIndex={0}
+          aria-describedby={tooltipId}
+          aria-label="What does Idle mean?"
+          className="focus-visible:outline focus-visible:outline-1 focus-visible:outline-slate-400 rounded"
+        >
+          &#x24D8;
+        </span>
+        <span
+          id={tooltipId}
+          role="tooltip"
+          className="pointer-events-none absolute left-0 top-full z-10 mt-1 hidden w-max max-w-[16rem] rounded bg-slate-800 px-2 py-1 text-[11px] font-normal normal-case tracking-normal text-slate-200 shadow-lg group-hover:block group-focus-within:block"
+        >
+          The amount of time a warehouse is active and not processing queries. Lower is better.
+        </span>
+      </span>
+      {/* bar column — intentionally empty */}
+      <span />
+      <span className="text-right text-[10px] font-medium uppercase tracking-wide text-slate-500">
+        Spend
+      </span>
+    </div>
+  );
+}
+
+// Warehouse-only ranked panel: idle % bar (out of 100, colored by band) with the
+// percentage on the left and total spend on the right. Reuses RankedSpendBars'
+// absolute-fill scroll shell so it sits correctly inside the flex half-height
+// panel; the grid carries a fourth column for the idle % value. Sub-cent-spend
+// rows are filtered like RankedSpendBars (keyed off spend — this is a spend
+// panel — so a near-zero-spend warehouse is hidden even at high idle).
+export function WarehouseIdleBars({ rows }: { rows: WarehouseIdleBarRow[] }) {
+  const visibleRows = rows.filter((row) => Math.round(row.spend * 100) !== 0);
+
+  if (visibleRows.length === 0) {
+    return <p className="mt-4 text-xs text-slate-400">No warehouse spend data</p>;
+  }
+
+  return (
+    <div className="mt-4 flex min-h-[16rem] flex-1 flex-col lg:min-h-0">
+      <WarehouseIdleBarsHeader />
+      <div className="relative flex-1">
+        <ul
+          className={cx(
+            "dashboard-scroll absolute inset-0 content-start items-center gap-y-2 overflow-y-auto",
+            IDLE_GRID_COLS,
+          )}
+          role="list"
+        >
+          {visibleRows.map((row) => (
+            <li className="contents" key={row.name} role="listitem">
+              <span
+                className="min-w-0 truncate text-xs text-slate-400"
+                title={row.name}
+              >
+                {row.name}
+              </span>
+              <span className="text-xs font-semibold tabular-nums text-slate-200">
+                {idlePctLabel(row.idlePct)}
+              </span>
+              <span className="h-2 rounded bg-hairline">
+                {row.idlePct !== null ? (
+                  <span
+                    className={cx(
+                      "block h-2 rounded",
+                      idleBarColorClass(row.idlePct),
+                    )}
+                    style={{ width: `${Math.min(row.idlePct * 100, 100)}%` }}
+                  />
+                ) : null}
+              </span>
+              <span className="text-xs font-semibold tabular-nums text-slate-200">
+                {compactSpendLabel(row)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }

@@ -22,6 +22,7 @@ from app.services.dashboard_view_builder import (
     _format_currency,
     _rate_key,
     _storage_price_for,
+    _warehouse_idle_pct,
     _warehouse_row_dollars,
     build_dashboard_view,
     resolve_dashboard_view_range,
@@ -453,6 +454,7 @@ def test_warehouse_spend_prices_compute_and_cloud_services_credits() -> None:
             "warehouse_name": "BI_WH",
             "credits_used": 14.0,
             "credits_used_compute": 10.0,
+            "credits_attributed_queries": 6.0,
         }
     ]
     datasets["query_compute_by_user_daily"] = []
@@ -1119,12 +1121,14 @@ def test_warehouse_total_sums_window_daily_dollars() -> None:
             "warehouse_name": "BI_WH",
             "credits_used": 10.0,
             "credits_used_compute": 10.0,
+            "credits_attributed_queries": 6.0,
         },
         {
             "usage_date": "2026-06-08",
             "warehouse_name": "ETL_WH",
             "credits_used": 6.0,
             "credits_used_compute": 6.0,
+            "credits_attributed_queries": 4.0,
         },
     ]
     datasets["query_compute_by_user_daily"] = []
@@ -2073,3 +2077,160 @@ def test_custom_range_ending_before_through_date_omits_forecast() -> None:
     assert (
         view.capacity_balance.forecast_series == []
     )  # suppressed: ends before through_date
+
+
+# ---------------------------------------------------------------------------
+# Warehouse idle % — unit tests for _warehouse_idle_pct and integration tests
+# for the idle_pct field on warehouse_bars.
+# ---------------------------------------------------------------------------
+
+
+def test_warehouse_idle_pct_basic_fraction() -> None:
+    # 10 compute credits, 6 attributed -> 4 idle -> 0.4 idle pct.
+    assert _warehouse_idle_pct(
+        compute_credits=10.0, attributed_credits=6.0
+    ) == pytest.approx(0.4)
+
+
+def test_warehouse_idle_pct_zero_compute_is_none() -> None:
+    assert (
+        _warehouse_idle_pct(compute_credits=0.0, attributed_credits=0.0) is None
+    )
+
+
+def test_warehouse_idle_pct_clamps_epsilon_noise_to_zero() -> None:
+    # attributed marginally above compute (float noise) -> 0.0, not negative.
+    idle = _warehouse_idle_pct(
+        compute_credits=10.0, attributed_credits=10.0 + 1e-12
+    )
+    assert idle == 0.0
+
+
+def test_warehouse_idle_pct_raises_on_material_excess() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            "warehouse_spend_daily credits_used_compute must be "
+            ">= credits_attributed_queries"
+        ),
+    ):
+        _warehouse_idle_pct(compute_credits=10.0, attributed_credits=12.0)
+
+
+def test_warehouse_idle_pct_raises_on_negative_compute() -> None:
+    # Negative summed compute credits are impossible; fail loud, don't return None.
+    with pytest.raises(
+        ValueError,
+        match="warehouse_spend_daily credits_used_compute must be >= 0",
+    ):
+        _warehouse_idle_pct(compute_credits=-1.0, attributed_credits=0.0)
+
+
+def test_warehouse_bars_carry_idle_pct_in_spend_order() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    metadata = _demo_metadata().model_copy(
+        update={
+            "data_mode": "estimated",
+            "billing_through_date": None,
+            "organization_usage": SourceAvailability(
+                available=False, detail="org unavailable"
+            ),
+        }
+    )
+    datasets["org_spend_daily"] = []
+    # Two warehouses on one day. BIG_WH: 20 compute, 5 attributed -> idle 0.75.
+    # SMALL_WH: 10 compute, 9 attributed -> idle 0.10. BIG_WH has more spend so
+    # it must rank first.
+    datasets["warehouse_spend_daily"] = [
+        {
+            "usage_date": "2026-06-08",
+            "warehouse_name": "BIG_WH",
+            "credits_used": 20.0,
+            "credits_used_compute": 20.0,
+            "credits_attributed_queries": 5.0,
+        },
+        {
+            "usage_date": "2026-06-08",
+            "warehouse_name": "SMALL_WH",
+            "credits_used": 10.0,
+            "credits_used_compute": 10.0,
+            "credits_attributed_queries": 9.0,
+        },
+    ]
+    datasets["query_compute_by_user_daily"] = []
+    datasets["rate_sheet_daily"] = [
+        {
+            "usage_date": "2026-06-08",
+            "service_type": "WAREHOUSE_METERING",
+            "rating_type": "COMPUTE",
+            "currency": "USD",
+            "effective_rate": 2.0,
+        }
+    ]
+
+    view = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=metadata,
+        source_start_date=source_start,
+        source_end_date=source_end,
+        start_date=date(2026, 6, 8),
+        end_date=date(2026, 6, 8),
+    )
+
+    bars = view.warehouse_spend.warehouse_bars
+    assert [bar.name for bar in bars] == ["BIG_WH", "SMALL_WH"]
+    assert bars[0].idle_pct == pytest.approx(0.75)
+    assert bars[1].idle_pct == pytest.approx(0.10)
+    # The shared spend fields still ride along on the warehouse bar row.
+    assert bars[0].spend == pytest.approx(40.0)
+
+
+def test_warehouse_bars_idle_pct_none_when_no_compute() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    metadata = _demo_metadata().model_copy(
+        update={
+            "data_mode": "estimated",
+            "billing_through_date": None,
+            "organization_usage": SourceAvailability(
+                available=False, detail="org unavailable"
+            ),
+        }
+    )
+    datasets["org_spend_daily"] = []
+    # Pure cloud-services usage: credits_used > 0 but compute == 0.
+    datasets["warehouse_spend_daily"] = [
+        {
+            "usage_date": "2026-06-08",
+            "warehouse_name": "IDLE_WH",
+            "credits_used": 4.0,
+            "credits_used_compute": 0.0,
+            "credits_attributed_queries": 0.0,
+        }
+    ]
+    datasets["query_compute_by_user_daily"] = []
+    datasets["rate_sheet_daily"] = [
+        {
+            "usage_date": "2026-06-08",
+            "service_type": "CLOUD_SERVICES",
+            "rating_type": "COMPUTE",
+            "currency": "USD",
+            "effective_rate": 0.5,
+        }
+    ]
+
+    view = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=metadata,
+        source_start_date=source_start,
+        source_end_date=source_end,
+        start_date=date(2026, 6, 8),
+        end_date=date(2026, 6, 8),
+    )
+
+    bars = view.warehouse_spend.warehouse_bars
+    assert len(bars) == 1
+    assert bars[0].idle_pct is None

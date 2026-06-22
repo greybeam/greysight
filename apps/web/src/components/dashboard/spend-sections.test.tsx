@@ -162,7 +162,7 @@ describe("spend sections", () => {
       spend: 9 - index,
       spendLabel: `$${9 - index}.00`,
       credits: 9 - index,
-      barWidthPercent: 100 - index,
+      idlePct: null,
     }));
 
     render(

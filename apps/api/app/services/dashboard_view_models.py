@@ -57,6 +57,10 @@ class RankedBarRow(RankedSpendRow):
     bar_width_percent: float
 
 
+class WarehouseIdleBarRow(RankedSpendRow):
+    idle_pct: float | None
+
+
 class AIConsumptionPoint(BaseModel):
     date: str
     values: dict[str, float]
@@ -125,7 +129,7 @@ class WarehouseSpendViewModel(BaseModel):
     warehouse_names: list[str]
     ranked_warehouses: list[RankedSpendRow]
     ranked_users: list[RankedSpendRow]
-    warehouse_bars: list[RankedBarRow]
+    warehouse_bars: list[WarehouseIdleBarRow]
     user_bars: list[RankedBarRow]
     is_empty: bool
 

@@ -69,6 +69,7 @@ const warehouseSpendDaily = usageDates.flatMap((usage_date, index) => {
       warehouse_name,
       credits_used: round(computeCredits * 1.08),
       credits_used_compute: computeCredits,
+      credits_attributed_queries: round(computeCredits * 0.6),
     };
   });
 });

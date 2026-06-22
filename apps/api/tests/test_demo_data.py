@@ -64,6 +64,11 @@ def test_demo_dashboard_dataset_matches_v0_contract() -> None:
         "credits_used_compute" in row
         for row in payload.datasets["warehouse_spend_daily"]
     )
+    assert all(
+        "credits_attributed_queries" in row
+        and row["credits_attributed_queries"] <= row["credits_used_compute"]
+        for row in payload.datasets["warehouse_spend_daily"]
+    )
     assert payload.datasets["org_spend_daily"]
     assert payload.datasets["rate_sheet_daily"]
     assert payload.datasets["capacity_balance_daily"]

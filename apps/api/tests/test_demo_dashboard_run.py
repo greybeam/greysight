@@ -40,6 +40,7 @@ def _minimal_estimated_datasets(
                 "warehouse_name": "LOAD_WH",
                 "credits_used": 2.0,
                 "credits_used_compute": 1.5,
+                "credits_attributed_queries": 0.9,
             }
         ],
         "service_spend_daily": [

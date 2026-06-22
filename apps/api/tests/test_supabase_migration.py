@@ -215,6 +215,19 @@ def test_create_rpc_lifts_one_org_cap_and_dedupes_account() -> None:
     assert "authenticated" not in block
 
 
+def test_effective_create_rpc_has_no_one_owner_guard() -> None:
+    # Migrations apply in sorted order, so the LAST create-or-replace of the RPC
+    # is what actually runs in the DB. 202606190001 regressed by re-adding the
+    # v1 one-owner cap; guard against any future migration reintroducing it.
+    sql = read_migration_sql()
+    marker = "create or replace function create_org_with_snowflake_connection"
+    effective = sql.rsplit(marker, 1)[1]
+    assert "user already owns an organization" not in effective
+    assert "pg_advisory_xact_lock" not in effective
+    # The effective definition must still carry the account_locator param/column.
+    assert "p_account_locator" in effective
+
+
 def test_migration_defines_invite_rpc_locked_down() -> None:
     sql = read_migration_sql()
 
