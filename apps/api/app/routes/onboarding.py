@@ -1,7 +1,10 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.auth import AuthContext, require_auth_context, require_org_admin
+from app.services.dashboard_run_cache import get_run_cache_store
 from app.services.snowflake_account import (
     InvalidSnowflakeAccountError,
     validate_account_identifier,
@@ -12,6 +15,8 @@ from app.services.snowflake_client import (
     SnowflakeValidationError,
     validate_snowflake_connection,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/onboarding", tags=["onboarding"])
 
@@ -26,9 +31,18 @@ class ConnectRequest(BaseModel):
     role: str = Field(min_length=1, max_length=255)
     warehouse: str = Field(min_length=1, max_length=255)
     database: str | None = Field(default=None, max_length=255)
-    schema: str | None = Field(default=None, max_length=255)
+    schema_name: str | None = Field(default=None, max_length=255)
     private_key_pem: str = Field(min_length=1)
     passphrase: str | None = Field(default=None, max_length=1024)
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_schema_key(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        if "schema" not in data or "schema_name" in data:
+            return data
+        return {**data, "schema_name": data["schema"]}
 
 
 class ConnectResponse(BaseModel):
@@ -56,6 +70,27 @@ def disconnect_snowflake(
 ) -> None:
     require_org_admin(auth_context, organization_id)
     disconnect_org_connection(organization_id)
+    _drop_cached_run(organization_id)
+
+
+def _drop_cached_run(organization_id: str) -> None:
+    """Best-effort removal of the org's cached run after a disconnect.
+
+    The cached row's account_locator still matches the org's stale locator (the
+    connection row keeps its locator on disconnect), so without dropping the row
+    /cached would keep serving the old account's data until TTL. This runs AFTER
+    the disconnect has already succeeded, so a cache-delete failure must never
+    fail the request — it is logged and swallowed.
+    """
+    store = get_run_cache_store()
+    if store is None:
+        return
+    try:
+        store.delete(organization_id)
+    except Exception:  # noqa: BLE001 — RunCacheStoreError et al.; never fail disconnect
+        logger.exception(
+            "Failed to drop cached run for org %s after disconnect", organization_id
+        )
 
 
 @router.post(
@@ -104,7 +139,7 @@ def _validate_and_create(
         role=request.role,
         warehouse=request.warehouse,
         database=request.database,
-        schema=request.schema,
+        schema=request.schema_name,
         private_key_pem=request.private_key_pem,
         private_key_passphrase=request.passphrase,
         query_timeout_seconds=VALIDATION_TIMEOUT_SECONDS,
@@ -137,7 +172,7 @@ def _validate_and_create(
             p_role=request.role,
             p_warehouse=request.warehouse,
             p_database=request.database or "",
-            p_schema=request.schema or "",
+            p_schema=request.schema_name or "",
             p_private_key_pem=request.private_key_pem,
             p_passphrase=request.passphrase or "",
             p_account_locator=account_locator or "",

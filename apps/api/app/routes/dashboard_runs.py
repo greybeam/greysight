@@ -33,6 +33,15 @@ from app.services.dashboard_view_builder import (
     resolve_dashboard_view_range,
     window_start_for,
 )
+from app.services.dashboard_cache_settings import (
+    get_cache_settings_store,
+    read_cache_settings,
+)
+from app.services.dashboard_run_cache import (
+    CachedDashboardRun,
+    RunCacheStoreError,
+    get_run_cache_store,
+)
 from app.services.dashboard_view_models import DashboardViewRange, DashboardViewResponse
 from app.services.deferred_sources import DEFERRED_SOURCES
 from app.services.demo_data import build_demo_dashboard_dataset
@@ -135,9 +144,7 @@ def _roll_up_dep_states(dep_states: list[str]) -> str:
     return "pending"
 
 
-def _overview_status(
-    source_statuses: dict[str, str], *, data_mode: str | None
-) -> str:
+def _overview_status(source_statuses: dict[str, str], *, data_mode: str | None) -> str:
     """Mode-aware overview readiness.
 
     The overview renders from org_spend_daily (Organization Usage) in BILLED/demo
@@ -293,6 +300,16 @@ class InMemoryDashboardRunRepository:
             key: {"status": "ready" if key in datasets else "unavailable"}
             for key in BASE_RUN_SOURCE_KEYS
         }
+        # Deferred sources (e.g. AI consumption) are fetched AFTER the main run
+        # and are absent from BASE_RUN_SOURCE_KEYS. When a snapshot is loaded from
+        # the durable cache and its datasets already carry a deferred source, seed
+        # that source as "completed" so read_dashboard_source serves it straight
+        # from the stored rows instead of claim_source succeeding and re-running a
+        # live Snowflake fetch. Deferred keys ABSENT from datasets are left unseeded
+        # so a snapshot without AI data can still be triggered on demand.
+        for key in DEFERRED_SOURCES:
+            if key in datasets:
+                seeded_source_states[key] = {"status": "completed"}
         with self._lock:
             self._runs[run_id] = run
             self._summaries[run_id] = summary
@@ -668,9 +685,7 @@ class InMemoryDashboardRunRepository:
             return False
         return True
 
-    def set_dataset(
-        self, run_id: UUID, key: str, rows: list[dict[str, Any]]
-    ) -> None:
+    def set_dataset(self, run_id: UUID, key: str, rows: list[dict[str, Any]]) -> None:
         with self._lock:
             if not self._is_running_locked(run_id):
                 return
@@ -883,6 +898,120 @@ def create_dashboard_run(
     return run
 
 
+class CachedDashboardRunResponse(BaseModel):
+    run: DashboardRun
+    cached_as_of: datetime
+
+
+# Retention for a snapshot loaded from the durable cache into the in-memory
+# repo. The durable cache TTL (in the run-cache store) governs freshness; this
+# in-memory snapshot only needs to outlive a single browsing session so /view
+# keeps resolving. A modest 1-day retention caps how long a leaked/abandoned
+# snapshot can linger in memory (the previous 90d retention meant each snapshot
+# was pinned for 90 days).
+_CACHED_SNAPSHOT_RETENTION_DAYS = 1
+
+
+# Registry bounding in-memory cached snapshots to at most ONE live snapshot per
+# org per distinct cached run. Maps org_id -> (cached completed_at, snapshot
+# run_id). On a /cached hit for the same underlying cached run (same
+# completed_at) whose snapshot is still live in the repo, the existing run_id is
+# reused; otherwise the org's previous snapshot is evicted before a new one is
+# created. Guarded by its own lock so concurrent /cached reads cannot race.
+_cached_snapshot_lock = RLock()
+_cached_snapshot_registry: dict[str, tuple[datetime, UUID]] = {}
+
+
+def _reset_cached_snapshot_registry() -> None:
+    """Test hook: clear the per-org cached-snapshot registry."""
+    with _cached_snapshot_lock:
+        _cached_snapshot_registry.clear()
+
+
+@router.get("/cached", response_model=CachedDashboardRunResponse)
+def read_cached_dashboard_run(
+    organization_id: UUID,
+    auth_context: AuthContext = Depends(require_auth_context),
+) -> Response | CachedDashboardRunResponse:
+    _require_dashboard_run_membership(auth_context, organization_id)
+
+    org_id = str(organization_id)
+    settings = read_cache_settings(org_id, get_cache_settings_store())
+    if not settings.cache_enabled:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    store = get_run_cache_store()
+    if store is None:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    try:
+        cached = store.get_active(org_id)
+    except RunCacheStoreError:
+        # A read failure must not surface as a 500; treat as a cache miss so the
+        # client falls back to a fresh run.
+        logger.exception("Cache read failed for org %s", org_id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    if cached is None:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    # Connection fingerprint check: the cache row is keyed only by org, so if the
+    # owner swapped or disconnected the org's Snowflake connection, the cached
+    # datasets belong to the old active connection. Compare the cached fingerprint
+    # against the org's current ACTIVE account locator from membership lookup; a
+    # missing, inactive, or mismatched connection is a cache miss.
+    current_locator = _current_org_account_locator(auth_context, organization_id)
+    if cached.account_locator is None or current_locator is None:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    if cached.account_locator != current_locator:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    # Load the cached snapshot into the in-memory repo via the SAME mechanism
+    # demo mode uses, so the returned run's /view resolves for any window.
+    # Bound in-memory growth to at most ONE live snapshot per org per distinct
+    # cached run: repeated /cached hits for the same underlying run reuse the
+    # existing snapshot instead of allocating (and 90-day-pinning) a new one.
+    run = _load_or_reuse_cached_snapshot(organization_id, cached)
+    return CachedDashboardRunResponse(run=run, cached_as_of=cached.completed_at)
+
+
+def _load_or_reuse_cached_snapshot(
+    organization_id: UUID, cached: CachedDashboardRun
+) -> DashboardRun:
+    """Return a live in-memory snapshot for the org's cached run, creating one
+    only when necessary and never accumulating stale snapshots.
+
+    Reuses the org's existing snapshot when it is for the SAME cached run (same
+    ``completed_at``) and still resolvable in the repo; otherwise evicts the
+    org's previous snapshot and creates a fresh one. Serialized per process so
+    concurrent /cached reads cannot each allocate a snapshot for the same run.
+    """
+    org_id = str(organization_id)
+    with _cached_snapshot_lock:
+        existing = _cached_snapshot_registry.get(org_id)
+        if existing is not None:
+            prev_completed_at, prev_run_id = existing
+            if prev_completed_at == cached.completed_at:
+                live = dashboard_run_repository.get_run(prev_run_id)
+                if live is not None and live.status == "completed":
+                    return live
+            # Stale or gone: drop the org's previous snapshot before creating a
+            # new one so at most one snapshot per org survives.
+            dashboard_run_repository.delete_run(prev_run_id)
+
+        run = dashboard_run_repository.create_completed_snapshot(
+            organization_id=organization_id,
+            source=cached.source,
+            window_days=cached.window_days,
+            summary=cached.summary,
+            datasets=cached.datasets,
+            metadata=cached.metadata,
+            retention_days=_CACHED_SNAPSHOT_RETENTION_DAYS,
+        )
+        _cached_snapshot_registry[org_id] = (cached.completed_at, UUID(run.id))
+        return run
+
+
 @router.get("/{run_id}", response_model=DashboardRun)
 def read_dashboard_run(
     run_id: UUID,
@@ -944,7 +1073,10 @@ def read_dashboard_run_view(
         else:
             # Validate before clamping — mirror the 422 the completed path
             # raises for unsupported window values.
-            if window_days is not None and window_days not in SUPPORTED_VIEW_WINDOW_DAYS:
+            if (
+                window_days is not None
+                and window_days not in SUPPORTED_VIEW_WINDOW_DAYS
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail={
@@ -981,9 +1113,7 @@ def read_dashboard_run_view(
                 }
             )
         view = view.model_copy(
-            update={
-                "section_statuses": compute_section_statuses(source_statuses or {})
-            }
+            update={"section_statuses": compute_section_statuses(source_statuses or {})}
         )
         _record_dashboard_run_view_retrieved(view)
         return view.model_dump(mode="json")
@@ -1031,19 +1161,19 @@ def read_dashboard_run_view(
     return view.model_dump(mode="json")
 
 
-def _data_mode_for(metadata: Any) -> str | None:
-    """Read the finalized ``data_mode`` DEFENSIVELY (dict OR typed object).
-
-    Returns None when metadata is missing or carries no data_mode, in which case
-    the overview falls back to the streaming OR semantics (no mode-selected
-    basis) rather than crashing or force-picking a basis.
-    """
+def _metadata_field(metadata: Any, field_name: str) -> Any:
+    """Read a metadata field DEFENSIVELY whether metadata is a dict, a typed
+    object, or None. Returns None for missing/None metadata or a missing field."""
     if isinstance(metadata, dict):
-        value = metadata.get("data_mode")
-    elif metadata is not None:
-        value = getattr(metadata, "data_mode", None)
-    else:
-        value = None
+        return metadata.get(field_name)
+    if metadata is not None:
+        return getattr(metadata, field_name, None)
+    return None
+
+
+def _data_mode_for(metadata: Any) -> str | None:
+    """Read the finalized ``data_mode`` (None → streaming OR-semantics fallback)."""
+    value = _metadata_field(metadata, "data_mode")
     return value if isinstance(value, str) else None
 
 
@@ -1174,7 +1304,54 @@ def trigger_dashboard_source(
         partial=bool(skipped),
         skipped_branches=skipped,
     )
+    if run.source == "snowflake":
+        _update_cached_run_datasets(run, source_id, rows)
     return {"status": "completed"}
+
+
+def _update_cached_run_datasets(
+    run: DashboardRun, source_id: str, rows: list[dict[str, Any]]
+) -> None:
+    """Fold a freshly-fetched deferred source into the org's durable cache row.
+
+    Deferred sources (e.g. AI consumption) are fetched after the main run
+    finalizes, so they were never in the datasets persisted to the cache. Once
+    fetched, persist them so FUTURE cache hits include them and never re-query
+    Snowflake. Best-effort: any failure is logged and swallowed, never failing
+    the request. The cache row is updated only when it actually corresponds to
+    this run — either the deferred source was triggered on the ORIGINAL run
+    (cached.run_id == run.id) or on a cache-hit snapshot whose registry entry
+    maps to this run's id.
+    """
+    try:
+        store = get_run_cache_store()
+        if store is None:
+            return
+        if run.organization_id is None:
+            return
+        org_id = str(run.organization_id)
+        cached = store.get_active(org_id)
+        if cached is None:
+            return
+        if not _cached_row_matches_run(cached, org_id, run.id):
+            return
+        store.update_datasets_if_current(cached, {**cached.datasets, source_id: rows})
+    except Exception:  # noqa: BLE001 — cache update must never fail the request
+        logger.exception(
+            "Failed to fold deferred source %s into cache for run %s",
+            source_id,
+            run.id,
+        )
+
+
+def _cached_row_matches_run(
+    cached: CachedDashboardRun, org_id: str, run_id: str
+) -> bool:
+    if cached.run_id == run_id:
+        return True
+    with _cached_snapshot_lock:
+        entry = _cached_snapshot_registry.get(org_id)
+    return entry is not None and str(entry[1]) == run_id
 
 
 @router.get("/{run_id}/sources/{source_id}")
@@ -1200,7 +1377,14 @@ def read_dashboard_source(
     view_inputs = dashboard_run_repository.get_view_inputs(run_id)
     if view_inputs is None:
         return {"status": "expired"}
-    _run, datasets, metadata, source_bounds, _source_statuses, _metadata_authoritative = view_inputs
+    (
+        _run,
+        datasets,
+        metadata,
+        source_bounds,
+        _source_statuses,
+        _metadata_authoritative,
+    ) = view_inputs
     meta = dashboard_run_repository.get_source_meta(run_id, source_id) or {}
 
     through_date = _through_date_for(metadata) or source_bounds.source_end_date
@@ -1399,6 +1583,32 @@ def _account_locator_for_dataset_rows(
     return None
 
 
+def _account_locator_from_metadata(metadata: Any) -> str | None:
+    """The Snowflake account fingerprint persisted with the cached run so a later
+    /cached read can reject a stale connection. None → "no fingerprint"."""
+    value = _metadata_field(metadata, "account_locator")
+    return str(value) if value is not None else None
+
+
+def _current_org_account_locator(
+    auth_context: AuthContext, organization_id: UUID
+) -> str | None:
+    """The org's CURRENT Snowflake account_locator from the membership lookup.
+
+    Returns None when the org is not found in the auth context or has no
+    connected account (disconnected). A None here that differs from a cached
+    row's fingerprint is treated as a cache miss by the /cached route.
+    """
+    target = str(organization_id)
+    for org in auth_context.organizations:
+        if str(org.id) == target:
+            connection_status = getattr(org, "connection_status", None)
+            if connection_status is not None and connection_status != "active":
+                return None
+            return org.account_locator
+    return None
+
+
 def _resolve_source_view_range_or_http_error(
     *,
     through_date: date,
@@ -1474,6 +1684,58 @@ def _prepared_view_or_http_error(
         ) from None
 
 
+def _persist_completed_run_to_cache(
+    run_id: UUID,
+    *,
+    summary: dict[str, Any],
+    metadata: dict[str, Any] | None,
+    datasets: dict[str, list[dict[str, Any]]],
+) -> None:
+    """Write a finalized Snowflake run to the durable per-org cache.
+
+    Best-effort: any failure (no store, cache disabled resolution error, network
+    write failure) is logged and swallowed — the run has already finalized and
+    must not be affected. Demo runs never reach this path (only the snowflake
+    worker calls it), keeping the demo bypass out of the cache.
+    """
+    try:
+        store = get_run_cache_store()
+        if store is None:
+            return
+
+        run = dashboard_run_repository.get_run(run_id)
+        if run is None or run.organization_id is None:
+            return
+        org_id = str(run.organization_id)
+
+        settings = read_cache_settings(org_id, get_cache_settings_store())
+        if not settings.cache_enabled:
+            return
+
+        completed_at = run.completed_at or datetime.now(timezone.utc)
+        expires_at = completed_at + timedelta(seconds=settings.cache_ttl_seconds)
+        bounds = _source_bounds_for_dataset_rows(datasets)
+
+        store.upsert(
+            CachedDashboardRun(
+                organization_id=org_id,
+                run_id=run.id,
+                source=run.source,
+                window_days=run.window_days,
+                account_locator=_account_locator_from_metadata(metadata),
+                summary=summary,
+                metadata=metadata,
+                datasets=datasets,
+                source_start_date=bounds.source_start_date,
+                source_end_date=bounds.source_end_date,
+                completed_at=completed_at,
+                expires_at=expires_at,
+            )
+        )
+    except Exception:  # noqa: BLE001 — cache write must never fail the run
+        logger.exception("Failed to persist run %s to dashboard cache", run_id)
+
+
 def _run_dashboard_worker(
     run_id: UUID,
     settings: Settings,
@@ -1509,6 +1771,15 @@ def _run_dashboard_worker(
         repo.finalize_run(
             run_id,
             status="completed",
+            summary=data.summary,
+            metadata=data.metadata.model_dump(mode="json"),
+            datasets=data.datasets,
+        )
+        # Best-effort durable cache write. A failure here must NEVER fail the run
+        # (which already finalized above), so it is caught and logged inside the
+        # helper — it must not reach the outer terminal-state except clause.
+        _persist_completed_run_to_cache(
+            run_id,
             summary=data.summary,
             metadata=data.metadata.model_dump(mode="json"),
             datasets=data.datasets,

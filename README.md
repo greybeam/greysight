@@ -1,10 +1,8 @@
 # Greysight
 
-**An open source dashboard for Snowflake costs.**
+**An open source dashboard for Snowflake cost observability.**
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-![Status: 0.0.1](https://img.shields.io/badge/status-0.0.1-orange.svg)
-![Stack: Next.js + FastAPI](https://img.shields.io/badge/stack-Next.js%20%2B%20FastAPI-black.svg)
 
 We're team Greybeam, we work with many Snowflake users who often have very narrow
 visibility into their Snowflake costs. Many solely rely on the Cost Management tab

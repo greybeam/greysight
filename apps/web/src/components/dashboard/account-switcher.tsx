@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { useAccountChrome } from "../../lib/account-context";
+import CacheSettings from "./cache-settings";
 
 export default function AccountSwitcher() {
   const account = useAccountChrome();
@@ -58,30 +59,40 @@ export default function AccountSwitcher() {
           className="absolute left-0 z-50 mt-2 min-w-56 rounded-md border border-hairline bg-surface py-1 shadow-lg"
         >
           {account.organizations.map((org) => (
-            <button
+            <div
               key={org.id}
-              role="menuitem"
-              type="button"
-              className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm text-slate-200 hover:bg-white/5"
-              onClick={() => {
-                account.setActiveOrganization(org.id);
-                setOpen(false);
-              }}
+              role="none"
+              className="flex items-center gap-1 px-2 py-1 hover:bg-white/5"
             >
-              <span className="min-w-0">
-                <span className="block truncate">{org.name}</span>
-                {org.accountLocator ? (
-                  <span className="block truncate font-mono text-xs text-slate-400">
-                    {org.accountLocator}
+              <button
+                role="menuitem"
+                type="button"
+                className="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-md px-1 py-1 text-left text-sm text-slate-200"
+                onClick={() => {
+                  account.setActiveOrganization(org.id);
+                  setOpen(false);
+                }}
+              >
+                <span className="min-w-0">
+                  <span className="block truncate">{org.name}</span>
+                  {org.accountLocator ? (
+                    <span className="block truncate font-mono text-xs text-slate-400">
+                      {org.accountLocator}
+                    </span>
+                  ) : null}
+                </span>
+                {org.id === active.id ? (
+                  <span aria-hidden="true" className="text-chart-purple">
+                    ✓
                   </span>
                 ) : null}
-              </span>
-              {org.id === active.id ? (
-                <span aria-hidden="true" className="text-chart-purple">
-                  ✓
-                </span>
-              ) : null}
-            </button>
+              </button>
+              <CacheSettings
+                organizationId={org.id}
+                triggerClassName="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-white/5 hover:text-slate-200"
+                triggerRole="menuitem"
+              />
+            </div>
           ))}
           <div className="my-1 border-t border-hairline" />
           <button

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { usePrefersReducedMotion } from "../../lib/use-prefers-reduced-motion";
 import {
+  fetchCachedDashboardRun,
   fetchDashboardView,
   fetchDemoDashboardView,
   fetchDemoDashboardSource,
@@ -156,6 +157,13 @@ function CostDashboardContent({
   const [startDate, setStartDate] = useState(data?.range.startDate ?? "");
   const [endDate, setEndDate] = useState(data?.range.endDate ?? "");
   const [runInFlight, setRunInFlight] = useState(false);
+  // Why the dashboard is currently loading, so the loading indicator can show
+  // the right copy: "cache" for the mount cache-load/hydration, "fresh" for a
+  // user-started Run analysis. Null when idle/loaded. Set alongside runInFlight
+  // and cleared when the load settles.
+  const [loadingReason, setLoadingReason] = useState<"cache" | "fresh" | null>(
+    null,
+  );
   const [rangeFetchesInFlight, setRangeFetchesInFlight] = useState(0);
   const [revealGeneration, setRevealGeneration] = useState(0);
   // Per-section readiness from the server during a live Snowflake run. Undefined
@@ -170,6 +178,11 @@ function CostDashboardContent({
   const [aiDetail, setAiDetail] = useState<AiSpendDetailState>({
     status: "loading",
   });
+  // ISO8601 timestamp when the on-screen view was served from the cache, or null
+  // for fresh/demo runs. Set only by the cached initial-load path; cleared when
+  // the user starts a fresh run. Window switches keep it, since they re-fetch the
+  // same cached run's `/view` (the backend re-derives windows from cached data).
+  const [cachedAsOf, setCachedAsOf] = useState<string | null>(null);
 
   const cacheView = useCallback(
     (
@@ -223,6 +236,7 @@ function CostDashboardContent({
     setRevealGeneration((value) => value + 1);
     runGenerationRef.current += 1;
     setRunInFlight(true);
+    setLoadingReason("fresh");
     setSectionReadiness(undefined);
     setLoadState((current) => ({ ...current, status: "loading" }));
     try {
@@ -245,6 +259,7 @@ function CostDashboardContent({
       });
     } finally {
       setRunInFlight(false);
+      setLoadingReason(null);
     }
   }, [applyDashboardView, cacheView, data, prefetchRelativeWindows]);
 
@@ -262,6 +277,7 @@ function CostDashboardContent({
     runGenerationRef.current += 1;
     const runGeneration = runGenerationRef.current;
     setRunInFlight(true);
+    setLoadingReason("fresh");
     setSectionReadiness(undefined);
     setLoadState((current) => ({ ...current, status: "loading" }));
 
@@ -316,6 +332,7 @@ function CostDashboardContent({
             if (!firstViewApplied) {
               firstViewApplied = true;
               setRunInFlight(false);
+              setLoadingReason(null);
             }
           },
         },
@@ -357,11 +374,17 @@ function CostDashboardContent({
     } finally {
       if (runGeneration === runGenerationRef.current) {
         setRunInFlight(false);
+        setLoadingReason(null);
       }
     }
   }, [applyDashboardView, cacheView, prefetchRelativeWindows, runtime]);
 
   const startRun = useCallback(async () => {
+    // A fresh run replaces any cached view, so clear the cached indicator before
+    // the run starts and mark the loading reason as a fresh analysis so the
+    // indicator shows "Running fresh analysis…" rather than the cache copy.
+    setCachedAsOf(null);
+    setLoadingReason("fresh");
     if (shouldUseDemo) {
       await loadDemoRun();
       return;
@@ -379,6 +402,7 @@ function CostDashboardContent({
     async function fetchInitialDemoView() {
       setRevealGeneration((value) => value + 1);
       setRunInFlight(true);
+      setLoadingReason("fresh");
       setSectionReadiness(undefined);
       try {
         const dashboardView = await fetchDemoDashboardView(DEFAULT_VIEW_RANGE);
@@ -397,6 +421,7 @@ function CostDashboardContent({
       } finally {
         if (isActive) {
           setRunInFlight(false);
+          setLoadingReason(null);
         }
       }
     }
@@ -411,6 +436,93 @@ function CostDashboardContent({
     cacheView,
     data,
     prefetchRelativeWindows,
+    shouldUseDemo,
+  ]);
+
+  // On the initial Snowflake mount, look for a cached run before doing anything
+  // else. On a hit, render its `/view` (no Snowflake query) and show the cached
+  // indicator; on a 204 miss, fall back to the existing behavior (no auto-run —
+  // the user starts a run via "Run analysis").
+  useEffect(() => {
+    if (data || shouldUseDemo || !runtime) {
+      return;
+    }
+    let isActive = true;
+    const options = { accessToken: runtime.accessToken };
+
+    async function loadCachedRun() {
+      // Capture the run-generation token before the cache lookup goes in flight.
+      // `startRun` bumps this token when a user-initiated fresh run begins, so if
+      // the user clicks "Run analysis" while `fetchCachedDashboardRun` (or the
+      // subsequent `/view` fetch) is pending, the captured value no longer
+      // matches and this cached load aborts, touching nothing — the fresh run's
+      // state (and cleared cached indicator) wins. This complements the
+      // `isActive` unmount guard.
+      const runGeneration = runGenerationRef.current;
+      let cached: Awaited<ReturnType<typeof fetchCachedDashboardRun>> = null;
+      try {
+        cached = await fetchCachedDashboardRun(runtime!.organizationId, options);
+      } catch {
+        // A cache-lookup failure must not break the dashboard: leave the idle
+        // state untouched so the user can still start a fresh run.
+        return;
+      }
+      // On a 204 miss (or after unmount) do nothing — preserve the existing
+      // Snowflake idle behavior where the user starts a run via "Run analysis".
+      // Crucially, never touch runInFlight here, or a concurrent user-initiated
+      // run's in-flight state would be cleared. If a fresh run started while the
+      // lookup was pending, abort before any state write.
+      if (!isActive || !cached || runGeneration !== runGenerationRef.current) {
+        return;
+      }
+      const cachedRunId = cached.run.id;
+
+      setRunInFlight(true);
+      setLoadingReason("cache");
+      setSectionReadiness(undefined);
+      setLoadState((current) => ({ ...current, status: "loading" }));
+      try {
+        const dashboardView = await fetchDashboardView(
+          cachedRunId,
+          DEFAULT_VIEW_RANGE,
+          options,
+        );
+        if (!isActive || runGeneration !== runGenerationRef.current) {
+          return;
+        }
+        cacheView(dashboardView.run.id, DEFAULT_VIEW_RANGE, dashboardView);
+        setSectionReadiness(readinessForView(dashboardView));
+        applyDashboardView(dashboardView);
+        setCachedAsOf(cached.cachedAsOf);
+        prefetchRelativeWindows(dashboardView.run.id, (range) =>
+          fetchDashboardView(cachedRunId, range, options),
+        );
+      } catch {
+        if (isActive && runGeneration === runGenerationRef.current) {
+          setLoadState({
+            status: "failed",
+            message: "Could not load dashboard data.",
+          });
+        }
+      } finally {
+        if (isActive && runGeneration === runGenerationRef.current) {
+          setRunInFlight(false);
+          setLoadingReason(null);
+        }
+      }
+    }
+
+    void loadCachedRun();
+
+    return () => {
+      isActive = false;
+    };
+  }, [
+    applyDashboardView,
+    cacheView,
+    data,
+    prefetchRelativeWindows,
+    runtime,
     shouldUseDemo,
   ]);
 
@@ -521,7 +633,6 @@ function CostDashboardContent({
   // Derive a stable source spec from primitive field values so that
   // poll-driven reference churn (viewModel / activeRange get new object
   // identities every 1.5 s) does not re-trigger the AI fetch.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const aiSource = useMemo(
     () =>
       dataReady && viewModel
@@ -622,6 +733,15 @@ function CostDashboardContent({
       loadState.status === "deleted")
       ? loadState.message ?? "Could not load dashboard data."
       : null;
+  // Copy for the in-flight loading indicator, keyed off why we are loading:
+  // a mount cache-load/hydration vs a user-started fresh analysis. Null when the
+  // reason is unset (no indicator).
+  const loadingMessage =
+    loadingReason === "cache"
+      ? "Loading cached view…"
+      : loadingReason === "fresh"
+        ? "Running fresh analysis…"
+        : null;
 
   return (
     <main className="dark min-h-screen bg-canvas [color-scheme:dark]">
@@ -630,6 +750,7 @@ function CostDashboardContent({
         accountLocator={runtime?.accountLocator ?? null}
         runDisabled={runDisabled}
         running={runInFlight || loadState.status === "running"}
+        cachedAsOf={cachedAsOf}
         onRun={() => {
           void startRun();
         }}
@@ -678,7 +799,11 @@ function CostDashboardContent({
                     serviceSpend: viewModel.serviceSpend,
                     totalSpend: viewModel.totalSpend,
                   }
-                : { status: sectionStatuses.overview === "idle" ? "idle" : "loading" })}
+                : {
+                    status:
+                      sectionStatuses.overview === "idle" ? "idle" : "loading",
+                    loadingMessage: loadingMessage ?? undefined,
+                  })}
             />
             <WarehouseSpendSection
               {...(sectionStatuses.warehouse === "ready" && dataReady && viewModel
@@ -688,13 +813,18 @@ function CostDashboardContent({
                     range: activeRange ?? viewModel.range,
                     viewModel: viewModel.warehouseSpend,
                   }
-                : { status: sectionStatuses.warehouse === "idle" ? "idle" : "loading" })}
+                : {
+                    status:
+                      sectionStatuses.warehouse === "idle" ? "idle" : "loading",
+                    loadingMessage: loadingMessage ?? undefined,
+                  })}
             />
             <AiSpendSection
               {...(sectionStatuses.overview === "idle"
                 ? { status: "idle" as const }
                 : {
                     currency: viewModel?.header.currency ?? "USD",
+                    loadingMessage: loadingMessage ?? undefined,
                     range: activeRange ?? viewModel?.range ?? null,
                     summary: viewModel?.aiSpendSummary ?? {
                       total: 0,
@@ -712,7 +842,11 @@ function CostDashboardContent({
                     range: activeRange ?? viewModel.range,
                     viewModel: viewModel.storageSpend,
                   }
-                : { status: sectionStatuses.storage === "idle" ? "idle" : "loading" })}
+                : {
+                    status:
+                      sectionStatuses.storage === "idle" ? "idle" : "loading",
+                    loadingMessage: loadingMessage ?? undefined,
+                  })}
             />
           </>
         )}

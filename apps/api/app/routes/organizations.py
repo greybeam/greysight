@@ -1,7 +1,20 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app.auth import AuthContext, require_auth_context, require_org_admin
+from app.auth import (
+    AuthContext,
+    require_auth_context,
+    require_org_admin,
+    require_org_membership,
+)
+from app.services.dashboard_cache_settings import (
+    MAX_CACHE_TTL_SECONDS,
+    MIN_CACHE_TTL_SECONDS,
+    CacheSettings,
+    CacheSettingsStoreError,
+    get_cache_settings_store,
+    read_cache_settings,
+)
 
 router = APIRouter(prefix="/api/organizations", tags=["organizations"])
 
@@ -91,3 +104,69 @@ def invite_user(
     )
 
     return InviteResponse(email=email)
+
+
+class CacheSettingsResponse(BaseModel):
+    cache_enabled: bool
+    cache_ttl_seconds: int
+
+
+class CacheSettingsUpdateRequest(BaseModel):
+    cache_enabled: bool | None = None
+    cache_ttl_seconds: int | None = Field(
+        default=None,
+        ge=MIN_CACHE_TTL_SECONDS,
+        le=MAX_CACHE_TTL_SECONDS,
+    )
+
+
+def _cache_settings_response(settings: CacheSettings) -> CacheSettingsResponse:
+    return CacheSettingsResponse(
+        cache_enabled=settings.cache_enabled,
+        cache_ttl_seconds=settings.cache_ttl_seconds,
+    )
+
+
+@router.get("/{organization_id}/cache-settings", response_model=CacheSettingsResponse)
+def read_cache_settings_route(
+    organization_id: str,
+    auth_context: AuthContext = Depends(require_auth_context),
+) -> CacheSettingsResponse:
+    if auth_context.auth_required:
+        require_org_membership(auth_context, organization_id)
+    settings = read_cache_settings(organization_id, get_cache_settings_store())
+    return _cache_settings_response(settings)
+
+
+@router.patch("/{organization_id}/cache-settings", response_model=CacheSettingsResponse)
+def update_cache_settings_route(
+    organization_id: str,
+    request: CacheSettingsUpdateRequest,
+    auth_context: AuthContext = Depends(require_auth_context),
+) -> CacheSettingsResponse:
+    require_org_admin(auth_context, organization_id)
+
+    if request.cache_enabled is None and request.cache_ttl_seconds is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Provide cache_enabled and/or cache_ttl_seconds.",
+        )
+
+    store = get_cache_settings_store()
+    if store is None:
+        raise HTTPException(
+            status_code=503, detail="Cache settings are not configured."
+        )
+
+    try:
+        settings = store.upsert(
+            organization_id,
+            cache_enabled=request.cache_enabled,
+            cache_ttl_seconds=request.cache_ttl_seconds,
+        )
+    except CacheSettingsStoreError:
+        raise HTTPException(
+            status_code=502, detail="Could not update cache settings."
+        ) from None
+
+    return _cache_settings_response(settings)

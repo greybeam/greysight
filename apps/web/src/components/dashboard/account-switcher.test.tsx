@@ -1,7 +1,8 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AccountChromeProvider, type AccountChrome } from "../../lib/account-context";
+import * as api from "../../lib/cache-settings-api";
 import AccountSwitcher from "./account-switcher";
 
 function renderWith(overrides: Partial<AccountChrome>) {
@@ -59,6 +60,38 @@ describe("AccountSwitcher", () => {
     fireEvent.click(screen.getByRole("button", { name: /AAA-111/ }));
     fireEvent.click(screen.getByRole("menuitem", { name: /Add Account/ }));
     expect(value.openAddAccount).toHaveBeenCalled();
+  });
+
+  it("opens cache settings from an admin account row without switching accounts", async () => {
+    vi.spyOn(api, "fetchCacheSettings").mockResolvedValue({
+      cache_enabled: true,
+      cache_ttl_seconds: 86_400,
+    });
+    const value = renderWith({
+      organizations: [
+        { id: "org-1", name: "Alpha", role: "member", accountLocator: "AAA-111" },
+        { id: "org-2", name: "Beta", role: "admin", accountLocator: "BBB-222" },
+      ],
+      activeOrganizationId: "org-1",
+      accessToken: "tok",
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /AAA-111/ }));
+
+    expect(
+      screen.queryByRole("menuitem", { name: /cache settings for alpha/i }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitem", { name: /cache settings for beta/i }));
+
+    await waitFor(() =>
+      expect(api.fetchCacheSettings).toHaveBeenCalledWith("org-2", {
+        accessToken: "tok",
+      }),
+    );
+    expect(
+      screen.getByRole("dialog", { name: "Cache settings for Beta (BBB-222)" }),
+    ).toBeInTheDocument();
+    expect(value.setActiveOrganization).not.toHaveBeenCalled();
   });
 
   it("renders nothing when there is no AccountChromeProvider", () => {

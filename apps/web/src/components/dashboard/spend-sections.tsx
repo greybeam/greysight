@@ -52,7 +52,7 @@ export function flattenServiceDailySeries(
 
 type OverviewSectionProps =
   | { status: "idle" }
-  | { status: "loading" }
+  | { status: "loading"; loadingMessage?: string }
   | {
       status: "ready";
       capacityBalance?: CapacityBalanceViewModel | null;
@@ -75,7 +75,7 @@ export function OverviewSection(props: OverviewSectionProps) {
     );
   }
   if (props.status === "loading") {
-    return <OverviewSectionSkeleton />;
+    return <OverviewSectionSkeleton loadingMessage={props.loadingMessage} />;
   }
   const { capacityBalance, currency, range, serviceSpend, totalSpend } = props;
   const serviceChartData = flattenServiceDailySeries(serviceSpend.dailySeries);
@@ -159,7 +159,11 @@ export function OverviewSection(props: OverviewSectionProps) {
 // Skeleton frame for the Overview section. Mirrors the ready body's structure —
 // a full-width capacity card above a 3-col grid (2-col total spend card + ranked
 // services panel) — so heights and layout match and revealing data never shifts.
-function OverviewSectionSkeleton() {
+function OverviewSectionSkeleton({
+  loadingMessage,
+}: {
+  loadingMessage?: string;
+}) {
   return (
     <DashboardSection
       ariaLabel="Overview"
@@ -174,6 +178,7 @@ function OverviewSectionSkeleton() {
             <ChartSkeleton
               variant="line"
               heightClass="h-80"
+              loadingMessage={loadingMessage}
               testId="overview-capacity-skeleton"
             />
           </Card>
@@ -190,6 +195,7 @@ function OverviewSectionSkeleton() {
               <ChartSkeleton
                 variant="bar"
                 heightClass="h-80"
+                loadingMessage={loadingMessage}
                 testId="overview-total-skeleton-chart"
               />
             </Card>
@@ -209,7 +215,7 @@ function OverviewSectionSkeleton() {
 
 type WarehouseSpendSectionProps =
   | { status: "idle" }
-  | { status: "loading" }
+  | { status: "loading"; loadingMessage?: string }
   | {
       status: "ready";
       currency: string;
@@ -230,7 +236,9 @@ export function WarehouseSpendSection(props: WarehouseSpendSectionProps) {
     );
   }
   if (props.status === "loading") {
-    return <WarehouseSpendSectionSkeleton />;
+    return (
+      <WarehouseSpendSectionSkeleton loadingMessage={props.loadingMessage} />
+    );
   }
   const { currency, range, viewModel } = props;
   const chartData = flattenServiceDailySeries(viewModel.dailySeries);
@@ -305,7 +313,11 @@ export function WarehouseSpendSection(props: WarehouseSpendSectionProps) {
 
 // Skeleton frame for the Warehouse section: a 2-col total spend card with the
 // taller h-96 chart, plus the third column's two half-height ranked panels.
-function WarehouseSpendSectionSkeleton() {
+function WarehouseSpendSectionSkeleton({
+  loadingMessage,
+}: {
+  loadingMessage?: string;
+}) {
   return (
     <DashboardSection
       ariaLabel="Warehouse spend"
@@ -324,6 +336,7 @@ function WarehouseSpendSectionSkeleton() {
             <ChartSkeleton
               variant="bar"
               heightClass="h-96"
+              loadingMessage={loadingMessage}
               testId="warehouse-spend-skeleton-chart"
             />
           </Card>
@@ -361,7 +374,7 @@ function WarehouseSpendSectionSkeleton() {
 
 type StorageSpendSectionProps =
   | { status: "idle" }
-  | { status: "loading" }
+  | { status: "loading"; loadingMessage?: string }
   | {
       status: "ready";
       currency: string;
@@ -382,7 +395,7 @@ export function StorageSpendSection(props: StorageSpendSectionProps) {
     );
   }
   if (props.status === "loading") {
-    return <StorageSpendSectionSkeleton />;
+    return <StorageSpendSectionSkeleton loadingMessage={props.loadingMessage} />;
   }
   const { currency, range, viewModel } = props;
   const totalLabel = buildStorageSpendLabel(range);
@@ -408,7 +421,11 @@ export function StorageSpendSection(props: StorageSpendSectionProps) {
 
 // Skeleton frame for the Storage section: a 2-col total spend card with the
 // h-80 chart, plus the right column's fill-height database table placeholder.
-function StorageSpendSectionSkeleton() {
+function StorageSpendSectionSkeleton({
+  loadingMessage,
+}: {
+  loadingMessage?: string;
+}) {
   return (
     <DashboardSection
       ariaLabel="Storage spend"
@@ -427,6 +444,7 @@ function StorageSpendSectionSkeleton() {
             <ChartSkeleton
               variant="bar"
               heightClass="h-80"
+              loadingMessage={loadingMessage}
               testId="storage-spend-skeleton-chart"
             />
           </Card>
@@ -525,6 +543,7 @@ type AiSpendSectionProps =
   | {
       status?: never;
       currency: string;
+      loadingMessage?: string;
       range?: DashboardViewRange | null;
       summary: AISpendSummaryViewModel;
       detail: AiSpendDetailState;
@@ -542,7 +561,7 @@ export function AiSpendSection(props: AiSpendSectionProps) {
       </DashboardSection>
     );
   }
-  const { currency, range, summary, detail } = props;
+  const { currency, loadingMessage, range, summary, detail } = props;
   const ready = detail.status === "ready" ? detail.viewModel : null;
   const chartData = ready ? flattenServiceDailySeries(ready.dailySeries) : [];
   const categories = ready ? ready.consumptionTypeNames : [];
@@ -574,6 +593,7 @@ export function AiSpendSection(props: AiSpendSectionProps) {
               <ChartSkeleton
                 variant="bar"
                 heightClass="h-96"
+                loadingMessage={loadingMessage}
                 testId="ai-spend-skeleton-chart"
               />
             )
