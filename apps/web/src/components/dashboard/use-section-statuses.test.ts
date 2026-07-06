@@ -116,6 +116,47 @@ describe("useSectionStatuses", () => {
   });
 });
 
+describe("useSectionStatuses idle", () => {
+  it("never reports a section as idle during render once idle is false (no flash)", () => {
+    // Capture the hook's return value on EVERY render (render phase runs before
+    // effects). If the idle->loading transition were only handled in the effect,
+    // the first render after `idle` flips false would still return the stale
+    // ALL_IDLE state — captured here as a one-frame flash. The render-derived
+    // guard must prevent any "idle" from ever being reported when idle=false.
+    const renders: string[][] = [];
+    const { rerender } = renderHook(
+      ({ idle }) => {
+        const statuses = useSectionStatuses({
+          dataReady: false,
+          instant: false,
+          revealGeneration: idle ? 0 : 1,
+          idle,
+        });
+        renders.push([
+          statuses.overview,
+          statuses.warehouse,
+          statuses.storage,
+        ]);
+        return statuses;
+      },
+      { initialProps: { idle: true } },
+    );
+
+    // Precondition: while idle, every render reports idle.
+    expect(renders.every((r) => r.every((s) => s === "idle"))).toBe(true);
+    const rendersDuringIdle = renders.length;
+
+    // Flip out of idle (Run analysis). No render committed from this point on may
+    // report "idle" for any section — including the immediate post-toggle frame.
+    rerender({ idle: false });
+    const rendersAfterToggle = renders.slice(rendersDuringIdle);
+    expect(rendersAfterToggle.length).toBeGreaterThan(0);
+    for (const frame of rendersAfterToggle) {
+      expect(frame).not.toContain("idle");
+    }
+  });
+});
+
 describe("useSectionStatuses per-section readiness", () => {
   it("reveals only sections marked ready when sectionReadiness is provided", () => {
     const { result } = renderHook(() =>

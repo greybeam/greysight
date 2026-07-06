@@ -506,6 +506,17 @@ function CostDashboardContent({
   const reduceMotion = usePrefersReducedMotion();
   const dataReady =
     viewModel != null && loadState.status !== "loading" && !runInFlight;
+  // Pre-run Snowflake idle: real (non-demo) context, no run started yet in this
+  // session (revealGeneration still 0), no view present, nothing in flight, and
+  // the load state is still the initial pre-run "queued". In this state we show
+  // a static empty CTA instead of the animated skeletons so an idle dashboard is
+  // not mistaken for a loading one (issue #40).
+  const isIdle =
+    !shouldUseDemo &&
+    viewModel == null &&
+    !runInFlight &&
+    revealGeneration === 0 &&
+    loadState.status === "queued";
 
   // Derive a stable source spec from primitive field values so that
   // poll-driven reference churn (viewModel / activeRange get new object
@@ -590,6 +601,7 @@ function CostDashboardContent({
       loadState.status === "deleted");
   const sectionStatuses = useSectionStatuses({
     dataReady,
+    idle: isIdle,
     instant: reduceMotion,
     revealGeneration,
     sectionReadiness,
@@ -666,7 +678,7 @@ function CostDashboardContent({
                     serviceSpend: viewModel.serviceSpend,
                     totalSpend: viewModel.totalSpend,
                   }
-                : { status: "loading" })}
+                : { status: sectionStatuses.overview === "idle" ? "idle" : "loading" })}
             />
             <WarehouseSpendSection
               {...(sectionStatuses.warehouse === "ready" && dataReady && viewModel
@@ -676,19 +688,21 @@ function CostDashboardContent({
                     range: activeRange ?? viewModel.range,
                     viewModel: viewModel.warehouseSpend,
                   }
-                : { status: "loading" })}
+                : { status: sectionStatuses.warehouse === "idle" ? "idle" : "loading" })}
             />
             <AiSpendSection
-              currency={viewModel?.header.currency ?? "USD"}
-              range={activeRange ?? viewModel?.range ?? null}
-              summary={
-                viewModel?.aiSpendSummary ?? {
-                  total: 0,
-                  totalLabel: "$0.00",
-                  isEmpty: true,
-                }
-              }
-              detail={dataReady ? aiDetail : { status: "loading" }}
+              {...(sectionStatuses.overview === "idle"
+                ? { status: "idle" as const }
+                : {
+                    currency: viewModel?.header.currency ?? "USD",
+                    range: activeRange ?? viewModel?.range ?? null,
+                    summary: viewModel?.aiSpendSummary ?? {
+                      total: 0,
+                      totalLabel: "$0.00",
+                      isEmpty: true,
+                    },
+                    detail: dataReady ? aiDetail : { status: "loading" },
+                  })}
             />
             <StorageSpendSection
               {...(sectionStatuses.storage === "ready" && dataReady && viewModel
@@ -698,7 +712,7 @@ function CostDashboardContent({
                     range: activeRange ?? viewModel.range,
                     viewModel: viewModel.storageSpend,
                   }
-                : { status: "loading" })}
+                : { status: sectionStatuses.storage === "idle" ? "idle" : "loading" })}
             />
           </>
         )}

@@ -233,7 +233,12 @@ describe("CostDashboard", () => {
     expect(
       screen.getByTestId("dashboard-section-overview"),
     ).toBeInTheDocument();
-    expect(screen.getByTestId("overview-skeleton")).toBeInTheDocument();
+    // Switching to a pre-run org drops to the static idle state, not the
+    // animated skeleton (no run has been initiated for org-b yet).
+    expect(screen.queryByTestId("overview-skeleton")).not.toBeInTheDocument();
+    expect(
+      screen.getAllByText(/No cached run available/i).length,
+    ).toBeGreaterThan(0);
   });
 
   it("keeps the latest range response active when custom range requests resolve out of order", async () => {
@@ -547,6 +552,61 @@ describe("CostDashboard", () => {
     // The filter bar is not rendered until a view exists.
     expect(
       screen.queryByRole("button", { name: "Apply date range" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows a static idle empty state (no skeletons) before the first Snowflake run", async () => {
+    const queuedRun: DashboardRun = {
+      ...demoDashboardView.run,
+      id: "run-idle",
+      source: "snowflake",
+      status: "queued",
+    };
+    vi.mocked(startDashboardRun).mockResolvedValue(queuedRun);
+    vi.mocked(pollUntilTerminal).mockReturnValue(new Promise(() => undefined));
+
+    render(
+      <CostDashboard
+        demoMode={false}
+        runtime={{
+          accessToken: "test-access-token",
+          organizationId: "org-123",
+          organizationName: "Acme Analytics",
+        }}
+      />,
+    );
+
+    // Idle: no animated skeleton test-ids anywhere on screen.
+    for (const skeletonId of [
+      "overview-skeleton",
+      "warehouse-spend-skeleton-chart",
+      "storage-spend-skeleton-chart",
+      "ai-spend-skeleton-chart",
+    ]) {
+      expect(screen.queryByTestId(skeletonId)).not.toBeInTheDocument();
+    }
+    // A clear call-to-action prompts the user to run an analysis (one per
+    // idle section).
+    expect(
+      screen.getAllByText(/No cached run available/i).length,
+    ).toBeGreaterThan(0);
+    // No run has been started yet.
+    expect(startDashboardRun).not.toHaveBeenCalled();
+
+    // Clicking "Run analysis" transitions out of idle into the loading skeletons.
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("overview-skeleton")).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByTestId("warehouse-spend-skeleton-chart"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("storage-spend-skeleton-chart"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/No cached run available/i),
     ).not.toBeInTheDocument();
   });
 
