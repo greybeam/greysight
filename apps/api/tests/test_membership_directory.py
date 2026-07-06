@@ -44,7 +44,7 @@ def test_returns_organizations_for_user() -> None:
     )
     assert requests[0].url.params["user_id"] == "eq.user-123"
     assert (
-        "organizations(id,name,organization_snowflake_connections(account,account_locator))"
+        "organizations(id,name,organization_snowflake_connections(account,account_locator,status))"
         in requests[0].url.params["select"]
     )
     assert requests[0].headers["apikey"] == "service-role-key"
@@ -110,12 +110,14 @@ def test_parses_account_locator_from_embedded_object() -> None:
                 "id": "org-1",
                 "name": "Acme",
                 "organization_snowflake_connections": {
-                    "account_locator": "IJ42635"
+                    "account_locator": "IJ42635",
+                    "status": "active",
                 },
             },
         }
     )
     assert org.account_locator == "IJ42635"
+    assert org.connection_status == "active"
 
 
 def test_parses_account_locator_from_embedded_list() -> None:
@@ -127,12 +129,13 @@ def test_parses_account_locator_from_embedded_list() -> None:
                 "id": "org-1",
                 "name": "Acme",
                 "organization_snowflake_connections": [
-                    {"account_locator": "TU24199"}
+                    {"account_locator": "TU24199", "status": "invalid"}
                 ],
             },
         }
     )
     assert org.account_locator == "TU24199"
+    assert org.connection_status == "invalid"
 
 
 def test_missing_connection_yields_null_account_locator() -> None:

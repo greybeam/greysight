@@ -1,4 +1,6 @@
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
@@ -383,6 +385,40 @@ def test_cached_returns_204_when_org_disconnected(_stores) -> None:
     assert response.status_code == 204
 
 
+def test_cached_returns_204_when_connection_status_is_invalid(_stores) -> None:
+    # Disconnect invalidates the connection secret/status, but older membership
+    # payloads can still expose the stale account locator. A matching locator
+    # must not be enough to serve cached Snowflake data when the connection is
+    # not active.
+    _settings_store, run_store = _stores
+    _seed_active_cached_run(run_store)
+
+    def _invalid_connection_org() -> AuthContext:
+        return AuthContext(
+            user_id="actor-1",
+            auth_required=True,
+            memberships=frozenset({ORG_ID}),
+            organizations=(
+                SimpleNamespace(
+                    id=ORG_ID,
+                    name="Acme",
+                    role="member",
+                    account_locator=DEMO_ACCOUNT_LOCATOR,
+                    connection_status="invalid",
+                ),
+            ),
+        )
+
+    app.dependency_overrides[require_auth_context] = _invalid_connection_org
+    try:
+        response = TestClient(app).get(
+            f"/api/dashboard-runs/cached?organization_id={ORG_ID}"
+        )
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 204
+
+
 def test_repeated_cached_hits_do_not_accumulate_snapshots(_stores) -> None:
     # N repeated /cached hits for the SAME underlying cached run must retain at
     # most ONE in-memory snapshot (no unbounded UUID-backed snapshot growth),
@@ -561,6 +597,64 @@ def test_deferred_trigger_folds_ai_rows_into_cache(_stores, monkeypatch) -> None
     cached = run_store.get_active(ORG_ID)
     assert cached is not None
     assert cached.datasets.get("ai_consumption_daily") == ai_rows
+
+
+def test_deferred_cache_fold_does_not_overwrite_newer_cached_run(
+    _stores, monkeypatch
+) -> None:
+    import app.routes.dashboard_runs as dr
+
+    _settings_store, run_store = _stores
+    payload = build_demo_dashboard_dataset()
+    datasets_no_ai = {
+        k: v for k, v in payload.datasets.items() if k != "ai_consumption_daily"
+    }
+    run = dashboard_run_repository.create_completed_snapshot(
+        organization_id=UUID(ORG_ID),
+        source="snowflake",
+        window_days=payload.run.window_days,
+        summary=payload.summary.model_dump(mode="json"),
+        datasets=datasets_no_ai,
+        metadata=payload.metadata.model_dump(mode="json"),
+        retention_days=1,
+    )
+    bounds = _source_bounds_for_dataset_rows(datasets_no_ai)
+    now = datetime.now(timezone.utc)
+    older_cached = CachedDashboardRun(
+        organization_id=ORG_ID,
+        run_id=run.id,
+        source="snowflake",
+        window_days=payload.run.window_days,
+        account_locator=DEMO_ACCOUNT_LOCATOR,
+        summary=payload.summary.model_dump(mode="json"),
+        metadata=payload.metadata.model_dump(mode="json"),
+        datasets=datasets_no_ai,
+        source_start_date=bounds.source_start_date,
+        source_end_date=bounds.source_end_date,
+        completed_at=now - timedelta(hours=2),
+        expires_at=now + timedelta(hours=22),
+    )
+    newer_cached = replace(
+        older_cached,
+        run_id="00000000-0000-0000-0000-0000000000bb",
+        completed_at=now - timedelta(minutes=5),
+    )
+    run_store.upsert(older_cached)
+
+    def stale_read(organization_id: str, *, now: datetime | None = None):
+        run_store._rows[organization_id] = newer_cached
+        return older_cached
+
+    monkeypatch.setattr(run_store, "get_active", stale_read)
+
+    dr._update_cached_run_datasets(
+        run, "ai_consumption_daily", payload.datasets["ai_consumption_daily"]
+    )
+
+    cached = run_store._rows.get(ORG_ID)
+    assert cached is not None
+    assert cached.run_id == newer_cached.run_id
+    assert "ai_consumption_daily" not in cached.datasets
 
 
 def test_demo_run_never_writes_cache(_stores) -> None:

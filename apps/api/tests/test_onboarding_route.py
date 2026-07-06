@@ -34,9 +34,13 @@ def _payload() -> dict:
 
 def test_connect_validates_then_creates(monkeypatch) -> None:
     app.dependency_overrides[require_auth_context] = _auth_context
-    monkeypatch.setattr(
-        onboarding, "validate_snowflake_connection", lambda config: "XY12345"
-    )
+    validated = {}
+
+    def _validate(config):
+        validated["schema"] = config.schema
+        return "XY12345"
+
+    monkeypatch.setattr(onboarding, "validate_snowflake_connection", _validate)
     created = {}
     monkeypatch.setattr(
         onboarding,
@@ -44,13 +48,18 @@ def test_connect_validates_then_creates(monkeypatch) -> None:
         lambda **kwargs: created.update(kwargs) or "org-123",
     )
     client = TestClient(app)
-    response = client.post("/api/onboarding/connect", json=_payload())
+    response = client.post(
+        "/api/onboarding/connect",
+        json=_payload() | {"schema": "ACCOUNT_USAGE"},
+    )
     app.dependency_overrides.clear()
 
     assert response.status_code == 201
     assert response.json()["id"] == "org-123"
+    assert validated["schema"] == "ACCOUNT_USAGE"
     assert created["p_user_id"] == "user-1"  # identity from token, not body
     assert created["p_account"] == "GOPGUKF-JO19546"
+    assert created["p_schema"] == "ACCOUNT_USAGE"
     assert created["p_account_locator"] == "XY12345"
 
 

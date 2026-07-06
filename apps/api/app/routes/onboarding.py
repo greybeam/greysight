@@ -1,7 +1,7 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.auth import AuthContext, require_auth_context, require_org_admin
 from app.services.dashboard_run_cache import get_run_cache_store
@@ -31,9 +31,18 @@ class ConnectRequest(BaseModel):
     role: str = Field(min_length=1, max_length=255)
     warehouse: str = Field(min_length=1, max_length=255)
     database: str | None = Field(default=None, max_length=255)
-    schema: str | None = Field(default=None, max_length=255)
+    schema_name: str | None = Field(default=None, max_length=255)
     private_key_pem: str = Field(min_length=1)
     passphrase: str | None = Field(default=None, max_length=1024)
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_schema_key(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        if "schema" not in data or "schema_name" in data:
+            return data
+        return {**data, "schema_name": data["schema"]}
 
 
 class ConnectResponse(BaseModel):
@@ -130,7 +139,7 @@ def _validate_and_create(
         role=request.role,
         warehouse=request.warehouse,
         database=request.database,
-        schema=request.schema,
+        schema=request.schema_name,
         private_key_pem=request.private_key_pem,
         private_key_passphrase=request.passphrase,
         query_timeout_seconds=VALIDATION_TIMEOUT_SECONDS,
@@ -163,7 +172,7 @@ def _validate_and_create(
             p_role=request.role,
             p_warehouse=request.warehouse,
             p_database=request.database or "",
-            p_schema=request.schema or "",
+            p_schema=request.schema_name or "",
             p_private_key_pem=request.private_key_pem,
             p_passphrase=request.passphrase or "",
             p_account_locator=account_locator or "",

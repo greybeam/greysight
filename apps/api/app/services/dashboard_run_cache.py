@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Protocol
@@ -49,6 +49,12 @@ class RunCacheStore(Protocol):
         """
         ...
 
+    def update_datasets_if_current(
+        self, cached_run: CachedDashboardRun, datasets: dict[str, list[dict[str, Any]]]
+    ) -> None:
+        """Update datasets only if the org cache row still matches cached_run."""
+        ...
+
     def delete(self, organization_id: str) -> None:
         """Remove the org's cached run (no-op if none exists)."""
         ...
@@ -85,6 +91,18 @@ class InMemoryRunCacheStore:
         if _is_expired(row.expires_at, _now(now)):
             return None
         return row
+
+    def update_datasets_if_current(
+        self, cached_run: CachedDashboardRun, datasets: dict[str, list[dict[str, Any]]]
+    ) -> None:
+        current = self._rows.get(cached_run.organization_id)
+        if (
+            current is None
+            or current.run_id != cached_run.run_id
+            or current.completed_at != cached_run.completed_at
+        ):
+            return
+        self._rows[cached_run.organization_id] = replace(current, datasets=datasets)
 
     def delete(self, organization_id: str) -> None:
         self._rows.pop(organization_id, None)
@@ -186,6 +204,28 @@ class SupabaseRunCacheStore:
         if _is_expired(cached.expires_at, _now(now)):
             return None
         return cached
+
+    def update_datasets_if_current(
+        self, cached_run: CachedDashboardRun, datasets: dict[str, list[dict[str, Any]]]
+    ) -> None:
+        try:
+            with httpx.Client(
+                timeout=self._timeout_seconds, transport=self._transport
+            ) as client:
+                response = client.patch(
+                    self._table_url,
+                    params={
+                        "organization_id": f"eq.{cached_run.organization_id}",
+                        "run_id": f"eq.{cached_run.run_id}",
+                        "completed_at": f"eq.{cached_run.completed_at.isoformat()}",
+                    },
+                    json={"datasets": _json_ready(datasets)},
+                    headers=self._headers(prefer="return=minimal"),
+                )
+        except httpx.HTTPError as exc:
+            raise RunCacheStoreError() from exc
+        if response.status_code not in (200, 204):
+            raise RunCacheStoreError()
 
     def delete(self, organization_id: str) -> None:
         try:

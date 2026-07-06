@@ -1,4 +1,3 @@
-import dataclasses
 import logging
 from datetime import date, datetime, timedelta, timezone
 from threading import RLock, Thread
@@ -957,17 +956,10 @@ def read_cached_dashboard_run(
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # Connection fingerprint check: the cache row is keyed only by org, so if the
-    # owner SWAPPED the org's Snowflake connection, the cached datasets belong to
-    # the OLD account. Compare the cached fingerprint against the org's CURRENT
-    # account_locator (from the membership lookup); a mismatch is a cache MISS so
-    # a swapped connection's stale cost data is never served until TTL.
-    #
-    # Note: DISCONNECT is NOT caught here — the connection row keeps its
-    # account_locator on disconnect, so the fingerprint would still match.
-    # Disconnect invalidation is handled by dropping the cache row on disconnect
-    # (see onboarding._drop_cached_run). Known edge: a run finalizing CONCURRENTLY
-    # with a disconnect can re-persist a row whose old locator still matches; this
-    # is accepted (bounded by TTL).
+    # owner swapped or disconnected the org's Snowflake connection, the cached
+    # datasets belong to the old active connection. Compare the cached fingerprint
+    # against the org's current ACTIVE account locator from membership lookup; a
+    # missing, inactive, or mismatched connection is a cache miss.
     if cached.account_locator != _current_org_account_locator(
         auth_context, organization_id
     ):
@@ -1342,11 +1334,7 @@ def _update_cached_run_datasets(
             return
         if not _cached_row_matches_run(cached, org_id, run.id):
             return
-        store.upsert(
-            dataclasses.replace(
-                cached, datasets={**cached.datasets, source_id: rows}
-            )
-        )
+        store.update_datasets_if_current(cached, {**cached.datasets, source_id: rows})
     except Exception:  # noqa: BLE001 — cache update must never fail the request
         logger.exception(
             "Failed to fold deferred source %s into cache for run %s",
@@ -1613,6 +1601,9 @@ def _current_org_account_locator(
     target = str(organization_id)
     for org in auth_context.organizations:
         if str(org.id) == target:
+            connection_status = getattr(org, "connection_status", None)
+            if connection_status is not None and connection_status != "active":
+                return None
             return org.account_locator
     return None
 

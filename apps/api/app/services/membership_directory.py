@@ -14,6 +14,7 @@ class Organization:
     # Snowflake account locator from the org's persisted connection, if any.
     # Lets callers surface the account before any analysis run.
     account_locator: str | None = None
+    connection_status: str | None = None
 
 
 class MembershipLookupError(Exception):
@@ -54,7 +55,7 @@ class SupabaseServiceRoleMembershipLookup:
                         "select": (
                             "role,organization_id,organizations"
                             "(id,name,organization_snowflake_connections"
-                            "(account,account_locator))"
+                            "(account,account_locator,status))"
                         ),
                         "limit": str(self._max_memberships + 1),
                     },
@@ -97,14 +98,15 @@ def _parse_organization(row: object) -> Organization:
         raise MembershipLookupError()
     role = row.get("role")
     role_value = role if isinstance(role, str) and role else "member"
-    account_locator = _extract_account_locator(
-        embedded.get("organization_snowflake_connections")
-    )
+    connection = embedded.get("organization_snowflake_connections")
+    account_locator = _extract_account_locator(connection)
+    connection_status = _extract_connection_status(connection)
     return Organization(
         id=org_id.strip(),
         name=org_name,
         role=role_value,
         account_locator=account_locator,
+        connection_status=connection_status,
     )
 
 
@@ -133,4 +135,24 @@ def _account_from_row(row: object) -> str | None:
     account = row.get("account")
     if isinstance(account, str) and account.strip():
         return account.strip()
+    return None
+
+
+def _extract_connection_status(connection: object) -> str | None:
+    if isinstance(connection, Mapping):
+        return _connection_status_from_row(connection)
+    if isinstance(connection, list):
+        for entry in connection:
+            status = _connection_status_from_row(entry)
+            if status is not None:
+                return status
+    return None
+
+
+def _connection_status_from_row(row: object) -> str | None:
+    if not isinstance(row, Mapping):
+        return None
+    status = row.get("status")
+    if isinstance(status, str) and status.strip():
+        return status.strip()
     return None
