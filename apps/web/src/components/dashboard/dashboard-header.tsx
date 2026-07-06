@@ -5,6 +5,7 @@ import { showBrandLogo } from "../../lib/brand";
 import type { HeaderViewModel } from "../../lib/dashboard-contracts";
 import Spinner from "../ui/spinner";
 import AccountSwitcher from "./account-switcher";
+import { formatCachedAsOfLabel } from "./dashboard-design-system";
 import InviteUser from "./invite-user";
 
 export type DashboardModeLabel =
@@ -22,6 +23,10 @@ type DashboardHeaderProps = {
   // spinner so the in-progress state is visible while the button is disabled.
   running?: boolean;
   onRun: () => void;
+  // ISO8601 timestamp of the cached run currently on screen, or null/undefined
+  // when the view came from a fresh run. Purely frontend-derived — not part of
+  // the HeaderViewModel contract.
+  cachedAsOf?: string | null;
 };
 
 export default function DashboardHeader({
@@ -29,6 +34,7 @@ export default function DashboardHeader({
   runDisabled,
   running = false,
   onRun,
+  cachedAsOf,
 }: DashboardHeaderProps) {
   const account = useAccountChrome();
   // The "Greybeam" wordmark renders in every build; the env flag only gates the
@@ -56,6 +62,11 @@ export default function DashboardHeader({
           <AccountSwitcher />
         </div>
         <div className="flex flex-wrap items-center justify-end gap-3">
+          {cachedAsOf ? (
+            <span className="text-xs font-medium text-slate-400" role="status">
+              Using cached view as of {formatCachedAsOfLabel(cachedAsOf)}
+            </span>
+          ) : null}
           {header?.dataModeLabel === "Estimated" ? (
             <span className="text-xs font-medium text-amber-400">
               Estimated spend at {header.estimatedCreditPriceLabel}/credit - billed data

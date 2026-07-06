@@ -346,10 +346,12 @@ const SKELETON_BAR_HEIGHTS = [40, 65, 50, 80, 55, 70, 45, 60, 75, 50, 68, 42];
 export function ChartSkeleton({
   variant,
   heightClass = "h-80",
+  loadingMessage,
   testId,
 }: {
   variant: "bar" | "line";
   heightClass?: string;
+  loadingMessage?: string;
   testId?: string;
 }) {
   return (
@@ -382,6 +384,17 @@ export function ChartSkeleton({
           data-skeleton-line
         />
       )}
+      {loadingMessage ? (
+        <p
+          aria-live="polite"
+          className="absolute inset-0 z-10 flex items-center justify-center px-4 text-center text-sm font-medium text-slate-300"
+          role="status"
+        >
+          <span className="rounded-md border border-hairline/80 bg-surface/95 px-3 py-2 shadow-sm">
+            {loadingMessage}
+          </span>
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -1019,6 +1032,27 @@ function formatChartDateLabelWithYear(value: string): string {
     month: "short",
     year: "numeric",
     timeZone: "UTC",
+  }).format(parsed);
+}
+
+// Formats a full ISO8601 timestamp (e.g. "2026-07-06T14:30:00Z") for the cached
+// view indicator, e.g. "Jul 6, 2026, 2:30 PM UTC". Falls back to the raw value
+// when it can't be parsed so the indicator never shows an empty label. Unlike
+// formatChartDateLabel, this handles date+time, not date-only strings.
+export function formatCachedAsOfLabel(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "UTC",
+    timeZoneName: "short",
   }).format(parsed);
 }
 

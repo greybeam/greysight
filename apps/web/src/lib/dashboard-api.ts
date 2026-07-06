@@ -1,4 +1,4 @@
-import resolveApiUrl from "./api-client";
+import resolveApiUrl, { authHeaders } from "./api-client";
 import parseDashboardDatasets, {
   parseAIDetailViewModel,
   parseDashboardRun,
@@ -66,6 +66,51 @@ export async function fetchDashboardRun(
 ): Promise<DashboardRun> {
   const payload = await fetchJson(`/api/dashboard-runs/${runId}`, {}, options);
   return parseDashboardRun(payload);
+}
+
+// Envelope for a cache hit: the cached run plus the ISO8601 timestamp the run
+// was cached. The cached run is a normal run whose datasets cover every window,
+// so its view is fetched through the existing `/view` endpoint.
+export type CachedDashboardRun = {
+  run: DashboardRun;
+  cachedAsOf: string;
+};
+
+// Returns the cached run envelope on a 200 hit, or `null` on a 204 (caching
+// disabled, no cached run, or expired). The endpoint re-derives any window from
+// the cached datasets, so no window param is sent here.
+export async function fetchCachedDashboardRun(
+  organizationId: string,
+  options: DashboardApiOptions = {},
+): Promise<CachedDashboardRun | null> {
+  const suffix = `?organization_id=${encodeURIComponent(organizationId)}`;
+  const response = await fetch(resolveApiUrl(`/api/dashboard-runs/cached${suffix}`), {
+    headers: authHeaders(options.accessToken),
+    cache: "no-store",
+  });
+
+  if (response.status === 204) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`Cached dashboard run request failed with ${response.status}`);
+  }
+
+  return parseCachedDashboardRun(await response.json());
+}
+
+function parseCachedDashboardRun(payload: unknown): CachedDashboardRun {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("Cached dashboard run response must be an object");
+  }
+  const record = payload as { run?: unknown; cached_as_of?: unknown };
+  if (typeof record.cached_as_of !== "string" || record.cached_as_of.length === 0) {
+    throw new Error("Cached dashboard run response is missing cached_as_of");
+  }
+  return {
+    run: parseDashboardRun(record.run),
+    cachedAsOf: record.cached_as_of,
+  };
 }
 
 export async function startDashboardRun(
@@ -245,12 +290,10 @@ async function fetchJson(
   init: RequestInit = {},
   options: DashboardApiOptions = {},
 ): Promise<unknown> {
-  const headers = new Headers(init.headers);
-  const accessToken = options.accessToken?.trim();
-
-  if (accessToken) {
-    headers.set("authorization", `Bearer ${accessToken}`);
-  }
+  const headers = authHeaders(
+    options.accessToken,
+    Object.fromEntries(new Headers(init.headers)),
+  );
 
   const response = await fetch(resolveApiUrl(path), {
     ...init,

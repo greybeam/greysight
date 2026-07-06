@@ -23,6 +23,14 @@ from app.services.org_invitations import (
     SupabaseUserInviter,
     configure_invitations,
 )
+from app.services.dashboard_cache_settings import (
+    SupabaseCacheSettingsStore,
+    configure_cache_settings_store,
+)
+from app.services.dashboard_run_cache import (
+    SupabaseRunCacheStore,
+    configure_run_cache_store,
+)
 from app.services.org_provisioning import (
     SupabaseOrgDisconnector,
     SupabaseOrgProvisioner,
@@ -73,12 +81,43 @@ def _configure_invitations(settings: Settings) -> None:
         configure_invitations(None, None)
 
 
+def _configure_dashboard_cache(settings: Settings) -> None:
+    # The cache stores use the Supabase service role, which bypasses RLS — the
+    # route-layer org-membership check is then the ONLY tenant boundary. That
+    # check no-ops when auth is disabled, so an auth-off deployment with cache
+    # stores wired would let an unauthenticated caller read any org's cached
+    # data. Never configure the service-role cache stores unless auth is
+    # required: with them left as None, /cached returns 204 and /cache-settings
+    # returns harmless defaults, and no cross-org read is possible.
+    if (
+        settings.auth_required
+        and settings.supabase_url.strip()
+        and settings.supabase_service_role_key.strip()
+    ):
+        configure_cache_settings_store(
+            SupabaseCacheSettingsStore(
+                supabase_url=settings.supabase_url,
+                service_role_key=settings.supabase_service_role_key,
+            )
+        )
+        configure_run_cache_store(
+            SupabaseRunCacheStore(
+                supabase_url=settings.supabase_url,
+                service_role_key=settings.supabase_service_role_key,
+            )
+        )
+    else:
+        configure_cache_settings_store(None)
+        configure_run_cache_store(None)
+
+
 settings = Settings()
 auth.configure_supabase_session_verifier(settings)
 auth.configure_membership_lookup(settings)
 _configure_org_provisioner(settings)
 _configure_org_disconnector(settings)
 _configure_invitations(settings)
+_configure_dashboard_cache(settings)
 query_concurrency.configure(settings.query_concurrency)
 
 
@@ -100,6 +139,7 @@ def require_membership_lookup_when_auth_required(settings: Settings) -> None:
 
 warn_when_auth_required_without_verifier(settings)
 require_membership_lookup_when_auth_required(settings)
+
 
 @asynccontextmanager
 async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -145,7 +185,7 @@ async def _redact_validation_errors(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings.cors_allowed_origins),
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["authorization", "content-type"],
 )
 app.include_router(health_router)

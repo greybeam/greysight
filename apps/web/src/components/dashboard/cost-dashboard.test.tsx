@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   type DashboardViewRangeRequest,
+  fetchCachedDashboardRun,
   fetchDashboardView,
   fetchDemoDashboardView,
   pollUntilTerminal,
@@ -26,6 +27,7 @@ import CostDashboard from "./cost-dashboard";
 import { REVEAL_STEP_MS } from "./use-section-statuses";
 
 vi.mock("../../lib/dashboard-api", () => ({
+  fetchCachedDashboardRun: vi.fn(),
   fetchDashboardView: vi.fn(),
   fetchDemoDashboardView: vi.fn(),
   pollUntilTerminal: vi.fn(),
@@ -1128,5 +1130,210 @@ describe("CostDashboard", () => {
       await within(content).findByText("Could not load dashboard data."),
     ).toBeInTheDocument();
     expect(screen.queryByTestId("overview-skeleton")).not.toBeInTheDocument();
+  });
+
+  describe("cached views", () => {
+    const cachedRun: DashboardRun = {
+      ...demoDashboardView.run,
+      id: "cached-run-1",
+      source: "snowflake",
+      status: "completed",
+    };
+    const cachedView: DashboardView = {
+      ...demoDashboardView,
+      run: cachedRun,
+    };
+
+    it("renders a cached run with the indicator and no fresh POST on mount", async () => {
+      vi.mocked(fetchCachedDashboardRun).mockResolvedValue({
+        run: cachedRun,
+        cachedAsOf: "2026-07-06T14:30:00Z",
+      });
+      vi.mocked(fetchDashboardView).mockResolvedValue(cachedView);
+
+      render(
+        <CostDashboard
+          demoMode={false}
+          runtime={{
+            accessToken: "tok",
+            organizationId: "org-cache",
+            organizationName: "Acme",
+          }}
+        />,
+      );
+
+      expect(
+        await screen.findByText(/Using cached view as of/),
+      ).toBeInTheDocument();
+      expect(fetchCachedDashboardRun).toHaveBeenCalledWith("org-cache", {
+        accessToken: "tok",
+      });
+      // A cache hit must render without starting a Snowflake query.
+      expect(startDashboardRun).not.toHaveBeenCalled();
+      expect(fetchDashboardView).toHaveBeenCalledWith(
+        "cached-run-1",
+        { windowDays: 30 },
+        { accessToken: "tok" },
+      );
+    });
+
+    it("keeps the cached run when switching the time window (no fresh POST)", async () => {
+      vi.mocked(fetchCachedDashboardRun).mockResolvedValue({
+        run: cachedRun,
+        cachedAsOf: "2026-07-06T14:30:00Z",
+      });
+      vi.mocked(fetchDashboardView).mockImplementation(async (_runId, request) => ({
+        ...cachedView,
+        range: {
+          ...cachedView.range,
+          mode: "relative" as const,
+          windowDays: request?.windowDays ?? 30,
+        },
+      }));
+
+      render(
+        <CostDashboard
+          demoMode={false}
+          runtime={{
+            accessToken: "tok",
+            organizationId: "org-cache",
+            organizationName: "Acme",
+          }}
+        />,
+      );
+
+      await screen.findByText(/Using cached view as of/);
+      // Prefetch already covers 7/90; switching to a prefetched window serves the
+      // cached view without a fresh run and keeps the indicator on screen.
+      fireEvent.click(screen.getByRole("button", { name: "7 days" }));
+
+      await waitFor(() =>
+        expect(screen.getByText(/Using cached view as of/)).toBeInTheDocument(),
+      );
+      expect(startDashboardRun).not.toHaveBeenCalled();
+    });
+
+    it("clears the cached indicator when Run analysis is clicked", async () => {
+      vi.mocked(fetchCachedDashboardRun).mockResolvedValue({
+        run: cachedRun,
+        cachedAsOf: "2026-07-06T14:30:00Z",
+      });
+      vi.mocked(fetchDashboardView).mockResolvedValue(cachedView);
+
+      const freshRun: DashboardRun = {
+        ...cachedRun,
+        id: "fresh-run-1",
+        status: "running",
+      };
+      const freshCompleted: DashboardView = {
+        ...cachedView,
+        run: { ...freshRun, status: "completed" },
+      };
+      vi.mocked(startDashboardRun).mockResolvedValue(freshRun);
+      mockPollResolvesWith(freshCompleted);
+
+      render(
+        <CostDashboard
+          demoMode={false}
+          runtime={{
+            accessToken: "tok",
+            organizationId: "org-cache",
+            organizationName: "Acme",
+          }}
+        />,
+      );
+
+      await screen.findByText(/Using cached view as of/);
+      fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+
+      await waitFor(() =>
+        expect(screen.queryByText(/Using cached view as of/)).not.toBeInTheDocument(),
+      );
+      expect(startDashboardRun).toHaveBeenCalled();
+    });
+
+    it("does not let an in-flight cache lookup clobber a fresh run started mid-flight", async () => {
+      // The cache lookup is deferred so it is still in flight when the user
+      // clicks "Run analysis". Without the run-generation guard, the late cached
+      // response would re-apply the cached view and re-set the cached indicator,
+      // clobbering the fresh run the user just started.
+      const pendingCache = createDeferred<{
+        run: DashboardRun;
+        cachedAsOf: string;
+      }>();
+      vi.mocked(fetchCachedDashboardRun).mockReturnValue(pendingCache.promise);
+
+      const freshRun: DashboardRun = {
+        ...cachedRun,
+        id: "fresh-run-1",
+        status: "running",
+      };
+      const freshCompleted: DashboardView = {
+        ...cachedView,
+        run: { ...freshRun, status: "completed" },
+      };
+      vi.mocked(startDashboardRun).mockResolvedValue(freshRun);
+      // The fresh run's `/view` fetches resolve with the fresh view; the cached
+      // `/view` is never reached because the guard aborts first.
+      vi.mocked(fetchDashboardView).mockResolvedValue(freshCompleted);
+      mockPollResolvesWith(freshCompleted);
+
+      render(
+        <CostDashboard
+          demoMode={false}
+          runtime={{
+            accessToken: "tok",
+            organizationId: "org-cache",
+            organizationName: "Acme",
+          }}
+        />,
+      );
+
+      // Cache lookup is in flight; the user starts a fresh run.
+      await waitFor(() => expect(fetchCachedDashboardRun).toHaveBeenCalled());
+      fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+      await waitFor(() => expect(startDashboardRun).toHaveBeenCalled());
+
+      // The cache lookup resolves late — after the fresh run took over.
+      await act(async () => {
+        pendingCache.resolve({
+          run: cachedRun,
+          cachedAsOf: "2026-07-06T14:30:00Z",
+        });
+        await pendingCache.promise;
+      });
+
+      // The stale cached response must not resurrect the cached indicator, and
+      // it must not fetch the cached run's `/view`.
+      await waitFor(() =>
+        expect(screen.getByText("Total Spend in Last 30 Days")).toBeInTheDocument(),
+      );
+      expect(screen.queryByText(/Using cached view as of/)).not.toBeInTheDocument();
+      expect(fetchDashboardView).not.toHaveBeenCalledWith(
+        "cached-run-1",
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it("falls back to the idle state on a 204 cache miss (no auto-run)", async () => {
+      vi.mocked(fetchCachedDashboardRun).mockResolvedValue(null);
+
+      render(
+        <CostDashboard
+          demoMode={false}
+          runtime={{
+            accessToken: "tok",
+            organizationId: "org-cache",
+            organizationName: "Acme",
+          }}
+        />,
+      );
+
+      await waitFor(() => expect(fetchCachedDashboardRun).toHaveBeenCalled());
+      expect(screen.queryByText(/Using cached view as of/)).not.toBeInTheDocument();
+      expect(startDashboardRun).not.toHaveBeenCalled();
+      expect(fetchDashboardView).not.toHaveBeenCalled();
+    });
   });
 });

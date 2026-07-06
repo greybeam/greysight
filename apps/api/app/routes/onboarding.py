@@ -1,7 +1,10 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from app.auth import AuthContext, require_auth_context, require_org_admin
+from app.services.dashboard_run_cache import get_run_cache_store
 from app.services.snowflake_account import (
     InvalidSnowflakeAccountError,
     validate_account_identifier,
@@ -12,6 +15,8 @@ from app.services.snowflake_client import (
     SnowflakeValidationError,
     validate_snowflake_connection,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/onboarding", tags=["onboarding"])
 
@@ -56,6 +61,27 @@ def disconnect_snowflake(
 ) -> None:
     require_org_admin(auth_context, organization_id)
     disconnect_org_connection(organization_id)
+    _drop_cached_run(organization_id)
+
+
+def _drop_cached_run(organization_id: str) -> None:
+    """Best-effort removal of the org's cached run after a disconnect.
+
+    The cached row's account_locator still matches the org's stale locator (the
+    connection row keeps its locator on disconnect), so without dropping the row
+    /cached would keep serving the old account's data until TTL. This runs AFTER
+    the disconnect has already succeeded, so a cache-delete failure must never
+    fail the request — it is logged and swallowed.
+    """
+    store = get_run_cache_store()
+    if store is None:
+        return
+    try:
+        store.delete(organization_id)
+    except Exception:  # noqa: BLE001 — RunCacheStoreError et al.; never fail disconnect
+        logger.exception(
+            "Failed to drop cached run for org %s after disconnect", organization_id
+        )
 
 
 @router.post(
