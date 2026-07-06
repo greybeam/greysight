@@ -245,12 +245,12 @@ function WarehouseIdleBarsHeader() {
   const tooltipId = useId();
   return (
     <div
-      className={cx(IDLE_GRID_COLS, "mb-1 items-baseline")}
+      className={cx(IDLE_GRID_COLS, "relative mb-1 items-baseline")}
     >
       <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
         Warehouse
       </span>
-      <span className="group relative cursor-help text-[10px] font-medium uppercase tracking-wide text-slate-500">
+      <span className="group cursor-help text-[10px] font-medium uppercase tracking-wide text-slate-500">
         Idle{" "}
         <span
           tabIndex={0}
@@ -263,7 +263,7 @@ function WarehouseIdleBarsHeader() {
         <span
           id={tooltipId}
           role="tooltip"
-          className="pointer-events-none absolute left-0 top-full z-10 mt-1 hidden w-max max-w-[16rem] rounded bg-slate-800 px-2 py-1 text-[11px] font-normal normal-case tracking-normal text-slate-200 shadow-lg group-hover:block group-focus-within:block"
+          className="pointer-events-none absolute left-0 top-full z-10 mt-1 hidden w-max max-w-[min(16rem,100%)] rounded bg-slate-800 px-2 py-1 text-[11px] font-normal normal-case tracking-normal text-slate-200 shadow-lg group-hover:block group-focus-within:block"
         >
           The amount of time a warehouse is active and not processing queries. Lower is better.
         </span>
