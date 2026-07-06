@@ -33,6 +33,7 @@ import {
 } from "./dashboard-design-system";
 import { DetailTable } from "./detail-tables";
 import SectionEmptyState from "./section-empty-state";
+import SectionIdleState from "./section-idle-state";
 
 type StackedChartPoint = {
   date: string;
@@ -50,6 +51,7 @@ export function flattenServiceDailySeries(
 }
 
 type OverviewSectionProps =
+  | { status: "idle" }
   | { status: "loading" }
   | {
       status: "ready";
@@ -61,6 +63,17 @@ type OverviewSectionProps =
     };
 
 export function OverviewSection(props: OverviewSectionProps) {
+  if (props.status === "idle") {
+    return (
+      <DashboardSection
+        ariaLabel="Overview"
+        testId="dashboard-section-overview"
+        title="Overview"
+      >
+        <SectionIdleState />
+      </DashboardSection>
+    );
+  }
   if (props.status === "loading") {
     return <OverviewSectionSkeleton />;
   }
@@ -195,6 +208,7 @@ function OverviewSectionSkeleton() {
 }
 
 type WarehouseSpendSectionProps =
+  | { status: "idle" }
   | { status: "loading" }
   | {
       status: "ready";
@@ -204,6 +218,17 @@ type WarehouseSpendSectionProps =
     };
 
 export function WarehouseSpendSection(props: WarehouseSpendSectionProps) {
+  if (props.status === "idle") {
+    return (
+      <DashboardSection
+        ariaLabel="Warehouse spend"
+        testId="dashboard-section-warehouse-spend"
+        title="Warehouse spend"
+      >
+        <SectionIdleState />
+      </DashboardSection>
+    );
+  }
   if (props.status === "loading") {
     return <WarehouseSpendSectionSkeleton />;
   }
@@ -335,6 +360,7 @@ function WarehouseSpendSectionSkeleton() {
 }
 
 type StorageSpendSectionProps =
+  | { status: "idle" }
   | { status: "loading" }
   | {
       status: "ready";
@@ -344,6 +370,17 @@ type StorageSpendSectionProps =
     };
 
 export function StorageSpendSection(props: StorageSpendSectionProps) {
+  if (props.status === "idle") {
+    return (
+      <DashboardSection
+        ariaLabel="Storage spend"
+        testId="dashboard-section-storage-spend"
+        title="Storage spend"
+      >
+        <SectionIdleState />
+      </DashboardSection>
+    );
+  }
   if (props.status === "loading") {
     return <StorageSpendSectionSkeleton />;
   }
@@ -483,19 +520,29 @@ export type AiSpendDetailState =
   | { status: "error" }
   | { status: "ready"; viewModel: AIDetailViewModel };
 
-type AiSpendSectionProps = {
-  currency: string;
-  range?: DashboardViewRange | null;
-  summary: AISpendSummaryViewModel;
-  detail: AiSpendDetailState;
-};
+type AiSpendSectionProps =
+  | { status: "idle" }
+  | {
+      status?: never;
+      currency: string;
+      range?: DashboardViewRange | null;
+      summary: AISpendSummaryViewModel;
+      detail: AiSpendDetailState;
+    };
 
-export function AiSpendSection({
-  currency,
-  range,
-  summary,
-  detail,
-}: AiSpendSectionProps) {
+export function AiSpendSection(props: AiSpendSectionProps) {
+  if (props.status === "idle") {
+    return (
+      <DashboardSection
+        ariaLabel="AI spend"
+        testId="dashboard-section-ai-spend"
+        title="AI spend"
+      >
+        <SectionIdleState />
+      </DashboardSection>
+    );
+  }
+  const { currency, range, summary, detail } = props;
   const ready = detail.status === "ready" ? detail.viewModel : null;
   const chartData = ready ? flattenServiceDailySeries(ready.dailySeries) : [];
   const categories = ready ? ready.consumptionTypeNames : [];
