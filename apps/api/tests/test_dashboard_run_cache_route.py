@@ -385,6 +385,48 @@ def test_cached_returns_204_when_org_disconnected(_stores) -> None:
     assert response.status_code == 204
 
 
+def test_cached_returns_204_when_org_disconnected_and_cache_lacks_fingerprint(
+    _stores,
+) -> None:
+    # Fail closed when both sides are missing a locator: old cache rows can lack
+    # the account fingerprint, and a disconnected org also has no active locator.
+    # Treating None == None as a hit would serve stale Snowflake data.
+    _settings_store, run_store = _stores
+    completed_at = _seed_active_cached_run(run_store)
+    cached = run_store.get_active(ORG_ID)
+    assert cached is not None
+    run_store.upsert(
+        CachedDashboardRun(
+            **{
+                **cached.__dict__,
+                "account_locator": None,
+                "completed_at": completed_at,
+            }
+        )
+    )
+
+    def _disconnected_org() -> AuthContext:
+        return AuthContext(
+            user_id="actor-1",
+            auth_required=True,
+            memberships=frozenset({ORG_ID}),
+            organizations=(
+                Organization(
+                    id=ORG_ID, name="Acme", role="member", account_locator=None
+                ),
+            ),
+        )
+
+    app.dependency_overrides[require_auth_context] = _disconnected_org
+    try:
+        response = TestClient(app).get(
+            f"/api/dashboard-runs/cached?organization_id={ORG_ID}"
+        )
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 204
+
+
 def test_cached_returns_204_when_connection_status_is_invalid(_stores) -> None:
     # Disconnect invalidates the connection secret/status, but older membership
     # payloads can still expose the stale account locator. A matching locator

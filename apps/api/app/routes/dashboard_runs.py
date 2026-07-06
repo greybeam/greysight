@@ -960,9 +960,10 @@ def read_cached_dashboard_run(
     # datasets belong to the old active connection. Compare the cached fingerprint
     # against the org's current ACTIVE account locator from membership lookup; a
     # missing, inactive, or mismatched connection is a cache miss.
-    if cached.account_locator != _current_org_account_locator(
-        auth_context, organization_id
-    ):
+    current_locator = _current_org_account_locator(auth_context, organization_id)
+    if cached.account_locator is None or current_locator is None:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    if cached.account_locator != current_locator:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # Load the cached snapshot into the in-memory repo via the SAME mechanism
