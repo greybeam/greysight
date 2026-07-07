@@ -1,8 +1,9 @@
 # Auth & Deployment
 
-Magic-link (Spec A) login for Greysight: email → 6-digit passcode → verified
-Supabase session → bearer token attached to API calls → the API (the trust
-boundary) enforces auth and org membership live on every request.
+Magic-link (Spec A) login for Greysight: email link → `/auth/confirm` →
+client-side token verification → verified Supabase session → bearer token
+attached to API calls → the API (the trust boundary) enforces auth and org
+membership live on every request.
 
 This document covers the environment-variable split, the Supabase deployment
 checklist, the first-user bootstrap, and notes on hosting the FastAPI backend.
@@ -45,10 +46,19 @@ Notes:
 
 1. **Enable email OTP.** In the Supabase dashboard, enable the Email provider
    and email OTP sign-in so `signInWithOtp` / `verifyOtp` work.
-2. **Send the 6-digit code, not a link.** Edit the "Magic Link" email template
-   so it sends the passcode via `{{ .Token }}` (the 6-digit code) instead of a
-   clickable `{{ .ConfirmationURL }}` link. The v1 flow is passcode-only — no
-   `/auth/callback` redirect route exists.
+2. **Point the Magic Link template at our confirm route.** Corporate email
+   security scanners (e.g. Avanan) perform a plain GET on the magic link URL and
+   consume Supabase's single-use token before the user clicks, causing
+   `otp_expired` errors. Fix: send users to `/auth/confirm` on our domain, where
+   a client-side script does the verification — a plain GET of that page verifies
+   nothing. In the Supabase dashboard, edit both the **Magic Link** and the
+   **Confirm signup** templates (since `signInWithOtp` creates new users) and
+   replace `{{ .ConfirmationURL }}` with:
+
+   ```
+   {{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email
+   ```
+
 3. **Set a short access-token lifetime.** Membership/authorization revocation is
    immediate (the API re-reads the table every request), but the stateless
    Supabase JWT's *global sign-out* is bounded by its `exp`. Keep the
@@ -65,7 +75,8 @@ seeding required.
 
 The flow:
 
-1. **Sign in** with the magic-link passcode. A signed-in user with zero
+1. **Sign in** via the magic link. Clicking the link lands on `/auth/confirm`,
+   where the token is verified client-side. A signed-in user with zero
    memberships is shown the connect wizard (not a dead-end "no organization"
    screen).
 2. **Connect wizard.** The user enters their org name and Snowflake keypair
