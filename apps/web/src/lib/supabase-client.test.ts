@@ -29,6 +29,7 @@ describe("supabase-client", () => {
       onAuthStateChange: vi.fn(),
       signInWithOtp: vi.fn(),
       verifyOtp: vi.fn(),
+      verifyEmailOtp: vi.fn(),
       signOut: vi.fn(),
     };
 
@@ -150,6 +151,32 @@ describe("supabase-client", () => {
     expect(verifyOtp).toHaveBeenCalledWith({
       email: "owner@example.com",
       token: "123456",
+      type: "email",
+    });
+  });
+
+  it("verifies a token-hash email OTP (scanner-safe link flow)", async () => {
+    const verifyOtp = vi.fn().mockResolvedValue({ data: {}, error: null });
+    const supabaseClient = {
+      auth: {
+        getSession: vi.fn(),
+        onAuthStateChange: vi.fn(),
+        signInWithOtp: vi.fn().mockResolvedValue({ error: null }),
+        signOut: vi.fn(),
+        verifyOtp,
+      },
+    };
+    createClient.mockReturnValue(supabaseClient);
+
+    const authClient = createSupabaseBrowserAuthClient({
+      supabaseUrl: "https://project.supabase.co",
+      supabaseAnonKey: "anon-key",
+    });
+
+    await authClient.verifyEmailOtp({ tokenHash: "abc123", type: "email" });
+
+    expect(verifyOtp).toHaveBeenCalledWith({
+      token_hash: "abc123",
       type: "email",
     });
   });

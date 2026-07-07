@@ -29,6 +29,9 @@ export type BrowserAuthClient = {
   verifyOtp(input: { email: string; token: string }): Promise<{
     error?: { message: string } | null;
   }>;
+  verifyEmailOtp(input: { tokenHash: string; type?: string }): Promise<{
+    error?: { message: string } | null;
+  }>;
   signOut(): Promise<{
     error?: { message: string } | null;
   }>;
@@ -85,6 +88,13 @@ export const createSupabaseBrowserAuthClient: AuthClientFactory = ({
         email: input.email,
         token: input.token,
         type: "email",
+      });
+      return { error: error ? { message: error.message } : null };
+    },
+    async verifyEmailOtp(input) {
+      const { error } = await supabase.auth.verifyOtp({
+        token_hash: input.tokenHash,
+        type: (input.type ?? "email") as "email",
       });
       return { error: error ? { message: error.message } : null };
     },

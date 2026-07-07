@@ -44,6 +44,7 @@ function authClient(
     onAuthStateChange: vi.fn(() => ({ unsubscribe: vi.fn() })),
     signInWithOtp: vi.fn(),
     verifyOtp: vi.fn(),
+    verifyEmailOtp: vi.fn(),
     signOut: vi.fn().mockResolvedValue({ error: null }),
     ...overrides,
   };

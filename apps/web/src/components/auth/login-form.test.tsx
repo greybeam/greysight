@@ -15,6 +15,7 @@ function authClient(overrides: Partial<BrowserAuthClient> = {}): BrowserAuthClie
     onAuthStateChange: vi.fn(),
     signInWithOtp: vi.fn().mockResolvedValue({ error: null }),
     verifyOtp: vi.fn().mockResolvedValue({ error: null }),
+    verifyEmailOtp: vi.fn().mockResolvedValue({ error: null }),
     signOut: vi.fn(),
     ...overrides,
   };
