@@ -12,7 +12,7 @@ afterEach(() => {
 
 function fill() {
   fireEvent.change(screen.getByLabelText(/organization name/i), { target: { value: "Acme" } });
-  fireEvent.change(screen.getByLabelText(/account/i), { target: { value: "GOPGUKF-JO19546" } });
+  fireEvent.change(screen.getByLabelText("Account identifier"), { target: { value: "GOPGUKF-JO19546" } });
   fireEvent.change(screen.getByLabelText(/^user/i), { target: { value: "GREYBEAM_USER" } });
   fireEvent.change(screen.getByLabelText(/role/i), { target: { value: "GREYBEAM_ROLE" } });
   fireEvent.change(screen.getByLabelText(/warehouse/i), { target: { value: "GREYBEAM_WH" } });
@@ -56,7 +56,7 @@ describe("ConnectWizard", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText } });
     render(<ConnectWizard connect={vi.fn()} onConnected={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: /copy/i }));
+    fireEvent.click(screen.getByRole("button", { name: /copy setup sql/i }));
     await waitFor(() =>
       expect(writeText).toHaveBeenCalledWith(
         expect.stringContaining("CREATE USER IF NOT EXISTS"),

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import {
   connectSnowflake as defaultConnect,
@@ -19,6 +19,9 @@ interface ConnectWizardProps {
 
 const KEY_PAIR_DOCS =
   "https://docs.snowflake.com/en/user-guide/key-pair-auth#generate-the-private-keys";
+
+const ACCOUNT_LOCATOR_SQL =
+  "SELECT CURRENT_ORGANIZATION_NAME() || '-' || CURRENT_ACCOUNT_NAME();";
 
 const SQL_KEYWORDS = new Set([
   "SET", "USE", "ROLE", "CREATE", "USER", "ALTER", "WAREHOUSE", "GRANT", "IF",
@@ -96,11 +99,15 @@ export default function ConnectWizard({
   const [status, setStatus] = useState<"idle" | "submitting">("idle");
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [accountCopied, setAccountCopied] = useState(false);
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const accountCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const accountTooltipId = useId();
 
   useEffect(() => {
     return () => {
       if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
+      if (accountCopyTimeoutRef.current) clearTimeout(accountCopyTimeoutRef.current);
     };
   }, []);
 
@@ -113,6 +120,13 @@ export default function ConnectWizard({
     setCopied(true);
     if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
     copyTimeoutRef.current = setTimeout(() => setCopied(false), 2000);
+  }
+
+  async function handleCopyAccountSql() {
+    await navigator.clipboard?.writeText(ACCOUNT_LOCATOR_SQL);
+    setAccountCopied(true);
+    if (accountCopyTimeoutRef.current) clearTimeout(accountCopyTimeoutRef.current);
+    accountCopyTimeoutRef.current = setTimeout(() => setAccountCopied(false), 2000);
   }
 
   async function handleSubmit(event: React.FormEvent) {
@@ -141,14 +155,47 @@ export default function ConnectWizard({
             Greysight only reads metadata. Greysight never stores data, never reads tables, query results, or data. The key you grant is least-privilege and stored encrypted; disconnect anytime to delete it.
           </p>
           <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
-            <Field id="orgName" label="Organization name" value={form.orgName} onChange={update("orgName")} required />
-            <Field id="account" label="Account" value={form.account} onChange={update("account")} required />
-            <Field id="user" label="User" value={form.user} onChange={update("user")} required />
-            <Field id="role" label="Role" value={form.role} onChange={update("role")} required
+            <Field id="orgName" label="Organization name" placeholder="Acme Company" value={form.orgName} onChange={update("orgName")} required />
+            <Field
+              id="account"
+              label="Account identifier"
+              placeholder="abcde1-fgh234"
+              value={form.account}
+              onChange={update("account")}
+              required
+              labelAccessory={
+                <span className="group relative inline-flex">
+                  <button
+                    type="button"
+                    onClick={handleCopyAccountSql}
+                    aria-describedby={accountTooltipId}
+                    aria-label="How to find your account identifier — click to copy the SQL"
+                    className="cursor-pointer rounded text-slate-400 hover:text-slate-200 focus-visible:outline focus-visible:outline-1 focus-visible:outline-slate-400"
+                  >
+                    &#x24D8;
+                    <span
+                      id={accountTooltipId}
+                      role="tooltip"
+                      className="pointer-events-auto absolute left-0 top-full z-10 mt-1 hidden w-max max-w-[min(20rem,80vw)] rounded bg-slate-800 px-3 py-2 text-left text-[11px] font-normal normal-case tracking-normal text-slate-200 shadow-lg group-hover:block group-focus-within:block"
+                    >
+                      <span className="block">Use your full account identifier. Run this in Snowflake to get it:</span>
+                      <code className="mt-1 block whitespace-pre-wrap break-all font-mono text-emerald-300">
+                        {ACCOUNT_LOCATOR_SQL}
+                      </code>
+                      <span className="mt-1 block text-slate-400">
+                        {accountCopied ? "Copied!" : "Click to copy to clipboard"}
+                      </span>
+                    </span>
+                  </button>
+                </span>
+              }
+            />
+            <Field id="user" label="User" placeholder="GREYSIGHT_USER" value={form.user} onChange={update("user")} required />
+            <Field id="role" label="Role" placeholder="GREYSIGHT_ROLE" value={form.role} onChange={update("role")} required
               hint="The role must read the SNOWFLAKE.ACCOUNT_USAGE views." />
-            <Field id="warehouse" label="Warehouse" value={form.warehouse} onChange={update("warehouse")} required />
-            <Field id="database" label="Database (optional)" value={form.database ?? ""} onChange={update("database")} />
-            <Field id="schema" label="Schema (optional)" value={form.schema ?? ""} onChange={update("schema")} />
+            <Field id="warehouse" label="Warehouse" placeholder="GREYSIGHT_WH" value={form.warehouse} onChange={update("warehouse")} required />
+            <Field id="database" label="Database (optional)" placeholder="SNOWFLAKE" value={form.database ?? ""} onChange={update("database")} />
+            <Field id="schema" label="Schema (optional)" placeholder="ACCOUNT_USAGE" value={form.schema ?? ""} onChange={update("schema")} />
             <div>
               <label className="block text-sm font-medium text-slate-300" htmlFor="privateKeyPem">
                 Private key (PEM)
@@ -216,15 +263,21 @@ interface FieldProps {
   required?: boolean;
   type?: string;
   hint?: string;
+  placeholder?: string;
+  labelAccessory?: React.ReactNode;
 }
 
-function Field({ id, label, value, onChange, required, type = "text", hint }: FieldProps) {
+function Field({ id, label, value, onChange, required, type = "text", hint, placeholder, labelAccessory }: FieldProps) {
   return (
     <div>
-      <label className="block text-sm font-medium text-slate-300" htmlFor={id}>{label}</label>
+      <div className="flex items-center gap-1.5">
+        <label className="text-sm font-medium text-slate-300" htmlFor={id}>{label}</label>
+        {labelAccessory}
+      </div>
       <input
         id={id}
         type={type}
+        placeholder={placeholder}
         className="mt-1 w-full rounded-md border border-hairline bg-canvas p-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-chart-purple focus:outline-none focus:ring-1 focus:ring-chart-purple"
         value={value}
         onChange={onChange}
