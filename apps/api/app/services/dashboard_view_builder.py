@@ -40,12 +40,6 @@ from app.services.dashboard_view_models import (
 DEFAULT_VIEW_WINDOW_DAYS = 30
 SUPPORTED_VIEW_WINDOW_DAYS = frozenset({7, 30, 90})
 DASHBOARD_DETAIL_ROW_LIMIT = 50
-# Stacked chart series cap. Series beyond this count are bucketed into the top
-# (LIMIT - 1) categories by total spend plus an aggregated "Other" series. This
-# matches the frontend chart palette length in apps/web/src/lib/chart-colors.ts
-# (SERIES_PALETTE has 14 entries); keep the two in sync.
-DASHBOARD_STACKED_SERIES_LIMIT = 14
-OTHER_STACKED_SERIES_LABEL = "Other"
 CURRENCY_SYMBOL_PREFIXES = {
     "EUR": "€",
     "GBP": "£",
@@ -1125,60 +1119,6 @@ def _build_capacity_balance(
     )
 
 
-def _bucket_stacked_series(
-    names: list[str],
-    values_by_date: list[dict[str, float]],
-) -> tuple[list[str], list[dict[str, float]]]:
-    """Cap a stacked daily series at DASHBOARD_STACKED_SERIES_LIMIT categories.
-
-    When the number of categories exceeds the limit, the top (LIMIT - 1)
-    categories by total spend across the whole window are kept and every other
-    category is aggregated, per date, into a single "Other" series appended last.
-    A real category named OTHER_STACKED_SERIES_LABEL is never eligible for the
-    kept top set when bucketing engages; its per-date values are folded into the
-    synthetic bucket so the output never carries the reserved name twice.
-    Categories at or under the limit are returned unchanged (a real "Other" stays
-    a normal category). Both the names list and each date's values dict are
-    returned as new objects (immutable inputs).
-
-    ``values_by_date`` is a list of per-date {category: dollars} mappings, one
-    entry per date, aligned positionally with the caller's date list.
-    """
-    if len(names) <= DASHBOARD_STACKED_SERIES_LIMIT:
-        return list(names), [dict(values) for values in values_by_date]
-
-    totals: dict[str, float] = {name: 0.0 for name in names}
-    for values in values_by_date:
-        for name, amount in values.items():
-            totals[name] += amount
-
-    kept_count = DASHBOARD_STACKED_SERIES_LIMIT - 1
-    # A real category equal to the reserved label is excluded from the kept set
-    # so the synthetic bucket name never collides with (or overwrites) it; its
-    # values fold into the bucket below alongside the ranked-out remainder.
-    # Sort by descending total; ties fall back to the incoming (sorted) order so
-    # the selection is deterministic. Precompute the incoming index once so key
-    # construction stays O(n) rather than rescanning names per comparison.
-    order = {name: index for index, name in enumerate(names)}
-    ranked_names = sorted(
-        (name for name in names if name != OTHER_STACKED_SERIES_LABEL),
-        key=lambda name: (-totals[name], order[name]),
-    )
-    kept_names = ranked_names[:kept_count]
-    kept_set = frozenset(kept_names)
-    bucketed_names = kept_names + [OTHER_STACKED_SERIES_LABEL]
-
-    bucketed_values: list[dict[str, float]] = []
-    for values in values_by_date:
-        point: dict[str, float] = {name: values[name] for name in kept_names}
-        point[OTHER_STACKED_SERIES_LABEL] = sum(
-            amount for name, amount in values.items() if name not in kept_set
-        )
-        bucketed_values.append(point)
-
-    return bucketed_names, bucketed_values
-
-
 def _warehouse_row_dollars(
     row: DatasetRow,
     convert: ConvertCredits,
@@ -1340,7 +1280,7 @@ def _build_warehouse_spend(
 
     # Total across the window of the per-warehouse daily dollars — the same
     # derived data the stacked chart renders, so the KPI and chart can never
-    # disagree. Bucketing reshapes only the stacked series, not this total.
+    # disagree.
     total = sum(spend_by_date_and_warehouse.values())
 
     values_by_date = [
@@ -1350,12 +1290,9 @@ def _build_warehouse_spend(
         }
         for usage_date in dates
     ]
-    bucketed_names, bucketed_values = _bucket_stacked_series(
-        warehouse_names, values_by_date
-    )
     daily_series = [
         WarehousePoint(date=usage_date.isoformat(), values=values)
-        for usage_date, values in zip(dates, bucketed_values, strict=True)
+        for usage_date, values in zip(dates, values_by_date, strict=True)
     ]
 
     return WarehouseSpendViewModel(
@@ -1363,7 +1300,7 @@ def _build_warehouse_spend(
         total=total,
         total_label=_format_currency(total, currency),
         daily_series=daily_series,
-        warehouse_names=bucketed_names,
+        warehouse_names=warehouse_names,
         ranked_warehouses=ranked_warehouses,
         ranked_users=ranked_users,
         warehouse_bars=warehouse_bars,
@@ -1383,7 +1320,7 @@ def _build_storage_spend(
     currency: str,
 ) -> StorageSpendViewModel:
     # Per-date, per-database daily dollars. This grid drives BOTH the overall
-    # estimated daily_series and the bucketed stacked series, so the KPI total,
+    # estimated daily_series and the complete stacked series, so the KPI total,
     # the overall line, and the stacked chart can never disagree.
     database_names = sorted(
         {_string_field(row, "database_name", "Unknown database") for row in rows}
@@ -1419,12 +1356,9 @@ def _build_storage_spend(
         }
         for usage_date in dates
     ]
-    bucketed_names, bucketed_values = _bucket_stacked_series(
-        database_names, values_by_date
-    )
     database_daily_series = [
         StorageDatabasePoint(date=usage_date.isoformat(), values=values)
-        for usage_date, values in zip(dates, bucketed_values, strict=True)
+        for usage_date, values in zip(dates, values_by_date, strict=True)
     ]
 
     # The overall daily_series keeps its billed-vs-estimated semantics, but the
@@ -1478,7 +1412,7 @@ def _build_storage_spend(
         total=total,
         total_label=_format_currency(total, currency),
         daily_series=daily_series,
-        database_names=bucketed_names,
+        database_names=database_names,
         database_daily_series=database_daily_series,
         databases=databases,
         database_bars=database_bars,
@@ -1517,12 +1451,9 @@ def _build_service_spend(
         }
         for usage_date in dates
     ]
-    bucketed_names, bucketed_values = _bucket_stacked_series(
-        service_names, values_by_date
-    )
     daily_series = [
         ServicePoint(date=usage_date.isoformat(), values=values)
-        for usage_date, values in zip(dates, bucketed_values, strict=True)
+        for usage_date, values in zip(dates, values_by_date, strict=True)
     ]
     ranked_services = _rank_named_amounts(
         [
@@ -1543,7 +1474,7 @@ def _build_service_spend(
     return ServiceSpendViewModel(
         basis=basis,
         daily_series=daily_series,
-        service_names=bucketed_names,
+        service_names=service_names,
         ranked_services=ranked_services,
         service_bars=_build_ranked_bar_rows(ranked_services),
         is_empty=len(ranked_services) == 0,
@@ -1880,17 +1811,14 @@ def build_ai_detail_view(
         {name: spend_by_date_and_type[(usage_date, name)] for name in consumption_names}
         for usage_date in dates
     ]
-    bucketed_names, bucketed_values = _bucket_stacked_series(
-        consumption_names, values_by_date
-    )
     daily_series = [
         AIConsumptionPoint(date=usage_date.isoformat(), values=values)
-        for usage_date, values in zip(dates, bucketed_values, strict=True)
+        for usage_date, values in zip(dates, values_by_date, strict=True)
     ]
 
     return AIDetailViewModel(
         daily_series=daily_series,
-        consumption_type_names=bucketed_names,
+        consumption_type_names=consumption_names,
         ranked_consumption_types=ranked,
         consumption_bars=_build_ranked_bar_rows(ranked),
         is_empty=len(ranked) == 0,

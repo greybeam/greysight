@@ -125,9 +125,18 @@ const config: Config = {
           "0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)",
       },
       borderRadius: {
-        "tremor-small": "0.375rem",
-        "tremor-default": "0.5rem",
-        "tremor-full": "9999px",
+        none: "0",
+        sm: "0",
+        DEFAULT: "0",
+        md: "0",
+        lg: "0",
+        xl: "0",
+        "2xl": "0",
+        "3xl": "0",
+        full: "0",
+        "tremor-small": "0",
+        "tremor-default": "0",
+        "tremor-full": "0",
       },
       fontFamily: {
         sans: [

@@ -3,7 +3,7 @@
 import type React from "react";
 import type { CustomTooltipProps } from "@tremor/react";
 
-import { resolveChartColor } from "../../lib/chart-colors";
+import { resolveChartColor, seriesDisplayLabel } from "../../lib/chart-colors";
 
 // Shared custom tooltip for the dashboard charts (Tremor line/area charts and
 // the Recharts stacked bar chart, whose payloads are structurally compatible).
@@ -63,7 +63,9 @@ export function createChartTooltip(
         <p className="text-xs font-medium text-slate-100">{label}</p>
         <div className="mt-1 grid gap-1">
           {rows.map((entry, index) => {
-            const name = entry.dataKey ?? entry.name;
+            const name = seriesDisplayLabel(
+              String(entry.name ?? entry.dataKey ?? ""),
+            );
             const key = String(name ?? index);
 
             return (

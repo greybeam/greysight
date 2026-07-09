@@ -552,6 +552,44 @@ describe("parseDashboardView", () => {
     ).toThrow("Dashboard view response is invalid");
   });
 
+  it("parses a complete >14-entity service series without collapsing to Other", () => {
+    const values: Record<string, number> = {};
+    for (let i = 0; i < 20; i += 1) values[`svc-${i}`] = i;
+
+    const parsed = parseDashboardView({
+      ...preparedViewPayload,
+      service_spend: {
+        basis: "estimated",
+        daily_series: [{ date: "2026-07-01", values }],
+        service_names: Object.keys(values),
+        ranked_services: [],
+        service_bars: [],
+        is_empty: false,
+      },
+    });
+
+    expect(parsed.serviceSpend.serviceNames).toHaveLength(20);
+    expect(parsed.serviceSpend.dailySeries[0].values["svc-19"]).toBe(19);
+  });
+
+  it("keeps a real entity named 'Other' as its own key", () => {
+    const parsed = parseDashboardView({
+      ...preparedViewPayload,
+      service_spend: {
+        basis: "estimated",
+        daily_series: [
+          { date: "2026-07-01", values: { Other: 5, compute: 10 } },
+        ],
+        service_names: ["Other", "compute"],
+        ranked_services: [],
+        service_bars: [],
+        is_empty: false,
+      },
+    });
+
+    expect(parsed.serviceSpend.dailySeries[0].values.Other).toBe(5);
+  });
+
   describe("section_statuses", () => {
     it("defaults to all-ready when absent", () => {
       const view = parseDashboardView(preparedViewPayload);

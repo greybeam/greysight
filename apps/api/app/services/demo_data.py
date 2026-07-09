@@ -50,10 +50,27 @@ _DEMO_USERS = (
     ("DATA_ENGINEER", "ETL_WH", 0.30),
     ("AIRFLOW_SVC", "ETL_WH", 0.14),
 )
+# 16 databases (> 14) so storage exercises the display-bucketing + filter path
+# in demo mode too. Spend is realistic and strictly descending so the former
+# lowest-ranked entries are the ones a 14-cap would previously have folded
+# into a synthetic "Other" bucket.
 _DEMO_DATABASES = (
     ("RAW", 3.6),
     ("ANALYTICS", 2.3),
     ("APP", 1.1),
+    ("STAGING", 0.82),
+    ("REPORTING", 0.64),
+    ("MARKETING", 0.51),
+    ("FINANCE", 0.42),
+    ("SALES", 0.35),
+    ("SUPPORT", 0.29),
+    ("LOGS", 0.24),
+    ("METRICS", 0.2),
+    ("EXPERIMENTS", 0.16),
+    ("SANDBOX", 0.13),
+    ("ARCHIVE", 0.1),
+    ("BACKUP", 0.08),
+    ("SCRATCH", 0.06),
 )
 
 

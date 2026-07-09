@@ -3,30 +3,45 @@ import { describe, expect, it } from "vitest";
 import {
   getSeriesColors,
   OTHER_SERIES_COLOR,
-  OTHER_SERIES_LABEL,
   orderCategoriesByTotal,
   PRIMARY_CHART_COLOR,
   resolveChartColor,
+  seriesDisplayLabel,
 } from "./chart-colors";
+import { OTHER_BUCKET_KEY, OTHER_BUCKET_LABEL } from "./stacked-series-bucketing";
 
 describe("getSeriesColors", () => {
   it("maps a single category to brand purple", () => {
     expect(getSeriesColors(["Compute"])).toEqual([PRIMARY_CHART_COLOR]);
   });
 
-  it('pins a lone "Other" series to the neutral, not brand purple', () => {
-    expect(getSeriesColors([OTHER_SERIES_LABEL])).toEqual([OTHER_SERIES_COLOR]);
+  it('pins a lone sentinel bucket to the neutral, not brand purple', () => {
+    expect(getSeriesColors([OTHER_BUCKET_KEY])).toEqual([OTHER_SERIES_COLOR]);
   });
 
   it("maps two categories to consecutive pastels", () => {
     expect(getSeriesColors(["Compute", "Storage"])).toEqual(["chart-1", "chart-2"]);
   });
 
-  it('gives the "Other" bucket the last palette color without consuming a pastel slot', () => {
-    expect(getSeriesColors(["Compute", OTHER_SERIES_LABEL, "Storage"])).toEqual([
+  it('gives the sentinel bucket the last palette color without consuming a pastel slot', () => {
+    expect(getSeriesColors(["Compute", OTHER_BUCKET_KEY, "Storage"])).toEqual([
       "chart-1",
       "chart-14",
       "chart-2",
+    ]);
+  });
+
+  it("uses the pastel palette for a lone series when singleSeriesPrimary is opted out", () => {
+    expect(getSeriesColors(["a"], { singleSeriesPrimary: false })).toEqual(["chart-1"]);
+  });
+
+  it("still defaults to brand purple for a lone series", () => {
+    expect(getSeriesColors(["a"])).toEqual([PRIMARY_CHART_COLOR]);
+  });
+
+  it("still pins a lone sentinel bucket to the neutral when singleSeriesPrimary is opted out", () => {
+    expect(getSeriesColors([OTHER_BUCKET_KEY], { singleSeriesPrimary: false })).toEqual([
+      OTHER_SERIES_COLOR,
     ]);
   });
 
@@ -123,18 +138,32 @@ describe("orderCategoriesByTotal", () => {
     expect(orderCategoriesByTotal(["A", "B"], [])).toEqual(["A", "B"]);
   });
 
-  it('pins "Other" last even when its total is the largest', () => {
-    const categories = ["Small", OTHER_SERIES_LABEL, "Big"];
+  it('pins the sentinel bucket last even when its total is the largest', () => {
+    const categories = ["Small", OTHER_BUCKET_KEY, "Big"];
     const rows = [
-      { Small: 1, [OTHER_SERIES_LABEL]: 100, Big: 10 },
-      { Small: 1, [OTHER_SERIES_LABEL]: 100, Big: 10 },
+      { Small: 1, [OTHER_BUCKET_KEY]: 100, Big: 10 },
+      { Small: 1, [OTHER_BUCKET_KEY]: 100, Big: 10 },
     ];
 
-    // Big and Small order by descending total; "Other" stays last regardless.
+    // Big and Small order by descending total; the sentinel stays last regardless.
     expect(orderCategoriesByTotal(categories, rows)).toEqual([
       "Big",
       "Small",
-      OTHER_SERIES_LABEL,
+      OTHER_BUCKET_KEY,
     ]);
+  });
+});
+
+describe("chart-colors sentinel bucket", () => {
+  it("pins the sentinel bucket to chart-14, not a real 'Other' entity", () => {
+    const colors = getSeriesColors(["a", "Other", OTHER_BUCKET_KEY]);
+    // Real "Other" takes a normal palette slot; only the sentinel pins to chart-14.
+    expect(colors).toEqual(["chart-1", "chart-2", "chart-14"]);
+  });
+
+  it("maps the sentinel to the display label, passing real names through", () => {
+    expect(seriesDisplayLabel(OTHER_BUCKET_KEY)).toBe(OTHER_BUCKET_LABEL);
+    expect(seriesDisplayLabel("Other")).toBe("Other");
+    expect(seriesDisplayLabel("Warehouse A")).toBe("Warehouse A");
   });
 });

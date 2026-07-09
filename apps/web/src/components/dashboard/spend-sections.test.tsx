@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import demoDashboardView from "../../lib/demo-dashboard-view";
@@ -36,6 +36,34 @@ describe("spend sections", () => {
     expect(
       within(totalCard).getByText("Total Spend between May 12 and Jun 11"),
     ).toBeInTheDocument();
+  });
+
+  it("survives re-rendering the same instance across ready↔loading (rules-of-hooks regression)", () => {
+    // The parent renders one section element at a fixed tree position and toggles
+    // its status prop (e.g. a date-range change flips ready→loading). If the hook
+    // is called conditionally, React throws "Rendered fewer hooks than expected"
+    // on the transition. Hoisting useSectionFilter above the early returns keeps
+    // the hook count stable across every status.
+    const readyElement = (
+      <OverviewSection
+        status="ready"
+        currency={demoDashboardView.header.currency}
+        capacityBalance={demoDashboardView.capacityBalance}
+        serviceSpend={demoDashboardView.serviceSpend}
+        totalSpend={demoDashboardView.totalSpend}
+      />
+    );
+
+    const { rerender } = render(readyElement);
+    expect(screen.getByTestId("total-spend-card")).toBeInTheDocument();
+
+    expect(() =>
+      rerender(<OverviewSection status="loading" />),
+    ).not.toThrow();
+    expect(screen.getByTestId("overview-skeleton")).toBeInTheDocument();
+
+    expect(() => rerender(readyElement)).not.toThrow();
+    expect(screen.getByTestId("total-spend-card")).toBeInTheDocument();
   });
 
   it("renders an empty capacity card for older views without capacity balance", () => {
@@ -197,6 +225,49 @@ describe("spend sections", () => {
     expect(screen.getByText("No warehouse spend data")).toBeInTheDocument();
   });
 
+  it("shows the 'filter not applied' note on the user card when filtered", () => {
+    render(
+      <WarehouseSpendSection
+        status="ready"
+        currency="USD"
+        viewModel={{
+          basis: "estimated",
+          total: 300,
+          totalLabel: "$300.00",
+          warehouseNames: ["WH_A", "WH_B"],
+          dailySeries: [
+            { date: "2026-07-01", values: { WH_A: 200, WH_B: 100 } },
+          ],
+          rankedWarehouses: [
+            { name: "WH_A", spend: 200, spendLabel: "$200", credits: null },
+            { name: "WH_B", spend: 100, spendLabel: "$100", credits: null },
+          ],
+          rankedUsers: [
+            { name: "alice", spend: 50, spendLabel: "$50", credits: null },
+          ],
+          warehouseBars: [
+            { name: "WH_A", spend: 200, spendLabel: "$200", credits: null, idlePct: 0.3 },
+            { name: "WH_B", spend: 100, spendLabel: "$100", credits: null, idlePct: 0.5 },
+          ],
+          userBars: [
+            { name: "alice", spend: 50, spendLabel: "$50", credits: null, barWidthPercent: 100 },
+          ],
+          isEmpty: false,
+        }}
+      />,
+    );
+    expect(screen.queryByText(/warehouse filter not applied/i)).toBeNull();
+    fireEvent.click(
+      within(
+        screen.getByTestId("dashboard-section-warehouse-spend"),
+      ).getByRole("button", { name: /filter/i }),
+    );
+    fireEvent.click(screen.getByRole("checkbox", { name: "WH_A" })); // deselect one
+    expect(
+      screen.getByText(/warehouse filter not applied/i),
+    ).toBeInTheDocument();
+  });
+
   it("renders a right-side database table with name, spend, and size", () => {
     render(
       <StorageSpendSection
@@ -227,6 +298,46 @@ describe("spend sections", () => {
     expect(
       within(tablePanel).getByText(firstRow.bytesLabel),
     ).toBeInTheDocument();
+  });
+
+  it("filters the storage table and KPI to selected databases", () => {
+    render(
+      <StorageSpendSection
+        status="ready"
+        currency="USD"
+        viewModel={{
+          basis: "estimated",
+          databaseBasis: "estimated",
+          total: 90,
+          totalLabel: "$90.00",
+          dailySeries: [],
+          databaseNames: ["DB_A", "DB_B"],
+          databaseDailySeries: [
+            { date: "2026-07-01", values: { DB_A: 60, DB_B: 30 } },
+          ],
+          databases: [
+            { name: "DB_A", bytes: 1, bytesLabel: "1 KB", monthlySpend: 120, monthlySpendLabel: "$120", periodSpend: 60, periodSpendLabel: "$60" },
+            { name: "DB_B", bytes: 1, bytesLabel: "1 KB", monthlySpend: 60, monthlySpendLabel: "$60", periodSpend: 30, periodSpendLabel: "$30" },
+          ],
+          databaseBars: [
+            { name: "DB_A", spend: 60, spendLabel: "$60", credits: null, barWidthPercent: 100 },
+            { name: "DB_B", spend: 30, spendLabel: "$30", credits: null, barWidthPercent: 50 },
+          ],
+          isEmpty: false,
+        }}
+      />,
+    );
+    expect(screen.getByText("DB_A")).toBeInTheDocument();
+    const filterButton = within(
+      screen.getByTestId("dashboard-section-storage-spend"),
+    ).getByRole("button", { name: /filter/i });
+    fireEvent.click(filterButton);
+    fireEvent.click(screen.getByRole("checkbox", { name: "DB_A" })); // deselect DB_A
+    fireEvent.click(filterButton); // close the popover so its "DB_A" checkbox label
+    // no longer satisfies queryByText("DB_A") below (the table row is already gone).
+    expect(screen.queryByText("DB_A")).toBeNull(); // table row gone
+    const card = screen.getByTestId("storage-spend-card");
+    expect(within(card).getByText("$30.00")).toBeInTheDocument(); // KPI recomputed
   });
 
   it("renders a storage empty state when storage data is missing", () => {
@@ -286,6 +397,73 @@ describe("spend sections", () => {
     );
 
     expect(screen.getByText("No storage spend data")).toBeInTheDocument();
+  });
+
+  it("filters the Overview KPI to the selected services", () => {
+    render(
+      <OverviewSection
+        status="ready"
+        currency="USD"
+        serviceSpend={{
+          basis: "estimated",
+          serviceNames: ["compute", "storage"],
+          dailySeries: [
+            { date: "2026-07-01", values: { compute: 100, storage: 40 } },
+          ],
+          rankedServices: [
+            { name: "compute", spend: 100, spendLabel: "$100", credits: null },
+            { name: "storage", spend: 40, spendLabel: "$40", credits: null },
+          ],
+          serviceBars: [
+            {
+              name: "compute",
+              spend: 100,
+              spendLabel: "$100",
+              credits: null,
+              barWidthPercent: 100,
+            },
+            {
+              name: "storage",
+              spend: 40,
+              spendLabel: "$40",
+              credits: null,
+              barWidthPercent: 40,
+            },
+          ],
+          isEmpty: false,
+        }}
+        totalSpend={{
+          basis: "estimated",
+          total: 140,
+          totalLabel: "$140.00",
+          averageDaily: 0,
+          averageDailyLabel: "$0",
+          projectedMonthly: 0,
+          projectedMonthlyLabel: "$0",
+          projectionBasisLabel: "",
+          dailySeries: [],
+          topDriver: null,
+          isEmpty: false,
+        }}
+      />,
+    );
+
+    const card = screen.getByTestId("total-spend-card");
+    // Unfiltered → the KPI shows the verbatim billed prop value.
+    expect(within(card).getByText("$140.00")).toBeInTheDocument();
+
+    // Open the Overview section's Filter and deselect one service.
+    fireEvent.click(
+      within(screen.getByTestId("dashboard-section-overview")).getByRole(
+        "button",
+        { name: /filter/i },
+      ),
+    );
+    fireEvent.click(screen.getByRole("checkbox", { name: "storage" }));
+
+    // Filtered → the KPI recomputes to the remaining service's detail sum.
+    expect(within(card).getByText("$100.00")).toBeInTheDocument();
+    expect(within(card).queryByText("$140.00")).not.toBeInTheDocument();
   });
 
   it("flattens prepared service points for the service bar chart", () => {
@@ -407,5 +585,63 @@ describe("AiSpendSection", () => {
       />,
     );
     expect(screen.getByTestId("dashboard-section-ai-spend")).toBeInTheDocument();
+  });
+
+  const aiReady = {
+    status: "ready" as const,
+    viewModel: {
+      consumptionTypeNames: ["cortex", "copilot"],
+      dailySeries: [
+        { date: "2026-07-01", values: { cortex: 80, copilot: 20 } },
+      ],
+      rankedConsumptionTypes: [
+        { name: "cortex", spend: 80, spendLabel: "$80", credits: null },
+        { name: "copilot", spend: 20, spendLabel: "$20", credits: null },
+      ],
+      consumptionBars: [
+        { name: "cortex", spend: 80, spendLabel: "$80", credits: null, barWidthPercent: 100 },
+        { name: "copilot", spend: 20, spendLabel: "$20", credits: null, barWidthPercent: 25 },
+      ],
+      isEmpty: false,
+      partial: false,
+      skippedBranches: [],
+    },
+  };
+  const billedSummary = { total: 105, totalLabel: "$105.00", isEmpty: false }; // billed ≠ detail sum
+
+  it("disables the AI filter until detail is ready", () => {
+    render(
+      <AiSpendSection
+        currency="USD"
+        summary={billedSummary}
+        detail={{ status: "loading" }}
+      />,
+    );
+    expect(
+      within(screen.getByTestId("dashboard-section-ai-spend")).getByRole(
+        "button",
+        { name: /filter/i },
+      ),
+    ).toBeDisabled();
+  });
+
+  it("shows the billed KPI unfiltered and the detail-derived KPI + note when filtered", () => {
+    render(
+      <AiSpendSection currency="USD" summary={billedSummary} detail={aiReady} />,
+    );
+    const card = screen.getByTestId("total-ai-spend-card");
+    expect(within(card).getByText("$105.00")).toBeInTheDocument(); // billed
+    expect(screen.queryByText(/estimated from detail/i)).toBeNull();
+    fireEvent.click(
+      within(screen.getByTestId("dashboard-section-ai-spend")).getByRole(
+        "button",
+        { name: /filter/i },
+      ),
+    );
+    fireEvent.click(screen.getByRole("checkbox", { name: "copilot" })); // deselect
+    expect(within(card).getByText("$80.00")).toBeInTheDocument(); // detail-derived
+    expect(
+      screen.getByText(/estimated from detail — differs from billed metering/i),
+    ).toBeInTheDocument();
   });
 });

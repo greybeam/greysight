@@ -857,7 +857,7 @@ export function SpendBarChart({
       <StackedSpendBarChart
         averageKey={averageKey}
         categories={orderedCategories}
-        colors={getSeriesColors(orderedCategories)}
+        colors={getSeriesColors(orderedCategories, { singleSeriesPrimary: false })}
         data={rows}
         heightClass={heightClass}
         segmentGap={segmentGap}
