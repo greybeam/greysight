@@ -58,6 +58,13 @@ export function createChartTooltip(
       0,
     );
 
+    // Full displayed category set (by true data key) so seriesDisplayLabel can
+    // disambiguate the synthetic overflow bucket from a real entity named
+    // "Other" when both are present in this point.
+    const displayedCategories = rows.map((entry) =>
+      String(entry.dataKey ?? entry.name ?? ""),
+    );
+
     return (
       <div className="rounded-md border border-hairline bg-surface px-3 py-2 shadow-lg">
         <p className="text-xs font-medium text-slate-100">{label}</p>
@@ -65,6 +72,7 @@ export function createChartTooltip(
           {rows.map((entry, index) => {
             const name = seriesDisplayLabel(
               String(entry.name ?? entry.dataKey ?? ""),
+              displayedCategories,
             );
             const key = String(name ?? index);
 

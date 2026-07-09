@@ -3,6 +3,7 @@ import {
   bucketStackedSeries,
   OTHER_BUCKET_KEY,
   OTHER_BUCKET_LABEL,
+  STACKED_SERIES_LIMIT,
   type StackedPoint,
 } from "./stacked-series-bucketing";
 
@@ -128,8 +129,8 @@ describe("bucketStackedSeries parity with legacy backend bucketing", () => {
   });
 });
 
-describe("bucketStackedSeries intentionally diverges from legacy when a real 'Other' is present", () => {
-  it("keeps a high-spend real 'Other' separate from the synthetic overflow bucket", () => {
+describe("bucketStackedSeries reserves two slots when a real 'Other' is present", () => {
+  it("keeps a high-spend real 'Other' separate with its TRUE value, still within the limit", () => {
     // 15 entities, one of which is literally "Other" with the highest spend.
     const spends = Array.from({ length: 15 }, (_, i) => 15 - i);
     const names = spends.map((_, i) => (i === 0 ? "Other" : `svc-${String(i).padStart(3, "0")}`));
@@ -140,22 +141,27 @@ describe("bucketStackedSeries intentionally diverges from legacy when a real 'Ot
       },
     ];
 
-    const legacy = legacyBackendBucket(names, dailySeries);
     const actual = bucketStackedSeries(names, dailySeries);
 
-    // Legacy: real "Other" merges into the single "Other" bucket → 14 names total,
-    // last one literally "Other" (aggregated).
-    expect(legacy.names).toHaveLength(14);
-    expect(legacy.names.filter((n) => n === "Other")).toHaveLength(1);
+    // Displayed series count never exceeds the palette limit, and for a >14
+    // dataset with a real "Other" it is exactly STACKED_SERIES_LIMIT (14):
+    // 12 ranked non-"Other" + the pinned real "Other" + the sentinel.
+    expect(actual.names.length).toBeLessThanOrEqual(STACKED_SERIES_LIMIT);
+    expect(actual.names).toHaveLength(STACKED_SERIES_LIMIT);
 
-    // Frontend: real "Other" survives under its own key, AND a distinct sentinel
-    // bucket is appended for the folded overflow — two separate series, not one.
+    // The real "Other" survives under its own key, distinct from the sentinel.
     expect(actual.names).toContain("Other");
     expect(actual.names).toContain(OTHER_BUCKET_KEY);
     expect(actual.names.filter((n) => n === "Other")).toHaveLength(1);
     expect(actual.names.filter((n) => n === OTHER_BUCKET_KEY)).toHaveLength(1);
-    // This is a deliberate contract change (Codex H3), not a parity regression —
-    // frontend output has one MORE series than legacy for this dataset shape.
-    expect(actual.names.length).toBe(legacy.names.length + 1);
+
+    const day0 = actual.dailySeries[0].values;
+    // Real "Other" carries its TRUE value (15), never merged/inflated.
+    expect(day0.Other).toBe(15);
+    // Top 12 ranked non-"Other" entities kept: svc-001..svc-012 (spends 14..3).
+    // svc-013 (2) + svc-014 (1) fold into the sentinel = 3.
+    expect(day0[OTHER_BUCKET_KEY]).toBe(spends[13] + spends[14]);
+    expect(day0).not.toHaveProperty("svc-013");
+    expect(day0).not.toHaveProperty("svc-014");
   });
 });

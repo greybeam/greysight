@@ -2,13 +2,18 @@ import { describe, expect, it } from "vitest";
 
 import {
   getSeriesColors,
+  OTHER_BUCKET_DISAMBIGUATED_LABEL,
   OTHER_SERIES_COLOR,
   orderCategoriesByTotal,
   PRIMARY_CHART_COLOR,
   resolveChartColor,
   seriesDisplayLabel,
 } from "./chart-colors";
-import { OTHER_BUCKET_KEY, OTHER_BUCKET_LABEL } from "./stacked-series-bucketing";
+import {
+  OTHER_BUCKET_KEY,
+  OTHER_BUCKET_LABEL,
+  STACKED_SERIES_LIMIT,
+} from "./stacked-series-bucketing";
 
 describe("getSeriesColors", () => {
   it("maps a single category to brand purple", () => {
@@ -165,5 +170,39 @@ describe("chart-colors sentinel bucket", () => {
     expect(seriesDisplayLabel(OTHER_BUCKET_KEY)).toBe(OTHER_BUCKET_LABEL);
     expect(seriesDisplayLabel("Other")).toBe("Other");
     expect(seriesDisplayLabel("Warehouse A")).toBe("Warehouse A");
+  });
+
+  it("gives a real 'Other' and the sentinel DISTINCT colors in the reserve-two-slots case", () => {
+    // 13 real series (one literally named "Other") + the sentinel = 14 total,
+    // exactly the reserve-two-slots displayed shape. No chart-14 collision: the
+    // real "Other" takes a normal pastel, only the sentinel pins to chart-14.
+    const reals = Array.from({ length: 12 }, (_, i) => `svc-${i + 1}`);
+    const categories = [...reals, "Other", OTHER_BUCKET_KEY];
+    const colors = getSeriesColors(categories);
+
+    expect(colors).toHaveLength(STACKED_SERIES_LIMIT);
+    const realOtherColor = colors[categories.indexOf("Other")];
+    const sentinelColor = colors[categories.indexOf(OTHER_BUCKET_KEY)];
+    expect(sentinelColor).toBe(OTHER_SERIES_COLOR); // chart-14
+    expect(realOtherColor).not.toBe(sentinelColor); // no collision
+    // Every color is unique — 13 reals map to chart-1..chart-13, sentinel chart-14.
+    expect(new Set(colors).size).toBe(STACKED_SERIES_LIMIT);
+  });
+
+  it("disambiguates the sentinel label only when a real 'Other' coexists", () => {
+    // Without a real "Other" in the displayed set → plain "Other" (unchanged).
+    expect(seriesDisplayLabel(OTHER_BUCKET_KEY, ["a", OTHER_BUCKET_KEY])).toBe(
+      OTHER_BUCKET_LABEL,
+    );
+    // With a real "Other" present → the sentinel is disambiguated.
+    const withRealOther = ["Other", OTHER_BUCKET_KEY];
+    expect(seriesDisplayLabel(OTHER_BUCKET_KEY, withRealOther)).toBe(
+      OTHER_BUCKET_DISAMBIGUATED_LABEL,
+    );
+    // The real "Other" still renders as itself, distinct from the sentinel label.
+    expect(seriesDisplayLabel("Other", withRealOther)).toBe("Other");
+    expect(seriesDisplayLabel("Other", withRealOther)).not.toBe(
+      seriesDisplayLabel(OTHER_BUCKET_KEY, withRealOther),
+    );
   });
 });

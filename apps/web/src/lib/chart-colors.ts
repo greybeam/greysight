@@ -139,10 +139,27 @@ export function resolveChartColor(color: string | undefined): string | undefined
   return CHART_COLORS[color] ?? color;
 }
 
+// Disambiguated label for the synthetic overflow bucket when a real entity
+// literally named "Other" is displayed alongside it, so the two series never
+// both render the plain "Other" label. COPY: "Other (grouped)" is a placeholder
+// wording the human may want to reword.
+export const OTHER_BUCKET_DISAMBIGUATED_LABEL = "Other (grouped)";
+
 /**
- * Display label for a chart category. The synthetic bucket's sentinel data key
- * renders as "Other"; every real entity renders as itself.
+ * Display label for a chart category. Every real entity renders as itself. The
+ * synthetic bucket's sentinel data key renders as "Other" — unless the full
+ * displayed category set (`categories`) also contains a real entity named
+ * "Other", in which case the sentinel is disambiguated to "Other (grouped)" so
+ * the two series never collide on the same visible label.
  */
-export function seriesDisplayLabel(category: string): string {
-  return category === OTHER_BUCKET_KEY ? OTHER_BUCKET_LABEL : category;
+export function seriesDisplayLabel(
+  category: string,
+  categories?: readonly string[],
+): string {
+  if (category !== OTHER_BUCKET_KEY) {
+    return category;
+  }
+  return categories?.includes(OTHER_BUCKET_LABEL)
+    ? OTHER_BUCKET_DISAMBIGUATED_LABEL
+    : OTHER_BUCKET_LABEL;
 }

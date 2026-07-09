@@ -49,7 +49,15 @@ export function bucketStackedSeries(
     const diff = (totals.get(b) ?? 0) - (totals.get(a) ?? 0);
     return diff !== 0 ? diff : (order.get(a) ?? 0) - (order.get(b) ?? 0);
   });
-  const kept = ranked.slice(0, STACKED_SERIES_LIMIT - 1);
+  // The displayed series count must never exceed STACKED_SERIES_LIMIT (14).
+  // No real "Other": reserve 1 slot for the sentinel → keep top 13 (parity with
+  // the legacy backend). Real "Other" present: reserve 2 slots (one for the
+  // pinned real "Other" carrying its TRUE value, one for the sentinel) → keep
+  // top 12 ranked non-"Other" entities. Either way the total is exactly 14.
+  const keepCount = hasRealOther
+    ? STACKED_SERIES_LIMIT - 2
+    : STACKED_SERIES_LIMIT - 1;
+  const kept = ranked.slice(0, keepCount);
   const keptSet = new Set(kept);
 
   const bucketedNames = hasRealOther

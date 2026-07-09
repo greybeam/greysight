@@ -113,7 +113,7 @@ export function StackedSpendBarChart({
               dataKey={category}
               fill={resolveChartColor(colors[index])}
               key={category}
-              name={seriesDisplayLabel(category)}
+              name={seriesDisplayLabel(category, categories)}
               stackId="spend"
             />
           ))}
