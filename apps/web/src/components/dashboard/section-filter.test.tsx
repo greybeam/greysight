@@ -46,8 +46,23 @@ describe("SectionFilter", () => {
   it("closes the popover on outside click", () => {
     render(<SectionFilter options={options} selected={options} onChange={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: /filter/i }));
-    expect(screen.getByRole("menu")).toBeInTheDocument();
+    expect(screen.getByTestId("section-filter-popover")).toBeInTheDocument();
     fireEvent.mouseDown(document.body);
-    expect(screen.queryByRole("menu")).toBeNull();
+    expect(screen.queryByTestId("section-filter-popover")).toBeNull();
+  });
+
+  it("renders all checkboxes checked when selection is empty (empty = all)", () => {
+    render(<SectionFilter options={options} selected={[]} onChange={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: /filter/i }));
+    const boxes = screen.getAllByRole("checkbox");
+    expect(boxes.every((b) => (b as HTMLInputElement).checked)).toBe(true);
+  });
+
+  it("unchecking a box from the empty (all-selected) state yields all except that one", () => {
+    const onChange = vi.fn();
+    render(<SectionFilter options={options} selected={[]} onChange={onChange} />);
+    fireEvent.click(screen.getByRole("button", { name: /filter/i }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "alpha" }));
+    expect(onChange).toHaveBeenCalledWith(["beta", "gamma"]);
   });
 });

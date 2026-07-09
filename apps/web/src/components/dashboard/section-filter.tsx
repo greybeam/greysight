@@ -21,7 +21,10 @@ export function SectionFilter({
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const sorted = useMemo(() => [...options].sort(), [options]);
-  const selectedSet = useMemo(() => new Set(selected), [selected]);
+  // Empty selection means "unfiltered" (all entities shown), so checkboxes must
+  // render as fully checked in that state to avoid contradicting the data.
+  const effectiveSelected = selected.length === 0 ? options : selected;
+  const selectedSet = useMemo(() => new Set(effectiveSelected), [effectiveSelected]);
   const isSubset = !isFullSelection(selected, options) && selected.length > 0;
 
   useEffect(() => {
@@ -56,8 +59,8 @@ export function SectionFilter({
     // must sort too — filter alone preserves the incoming order).
     onChange(
       selectedSet.has(name)
-        ? selected.filter((n) => n !== name).sort()
-        : [...selected, name].sort(),
+        ? effectiveSelected.filter((n) => n !== name).sort()
+        : [...effectiveSelected, name].sort(),
     );
   }
 
@@ -86,7 +89,7 @@ export function SectionFilter({
       </button>
       {open ? (
         <div
-          role="menu"
+          data-testid="section-filter-popover"
           className="absolute z-10 mt-2 w-72 rounded-md border border-hairline bg-surface p-4 shadow-lg"
         >
           <div className="mb-2 flex gap-4">
