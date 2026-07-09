@@ -76,7 +76,7 @@ export function OverviewSection(props: OverviewSectionProps) {
   // Hook must run unconditionally on every render (rules-of-hooks); derive the
   // options defensively since ready-only fields are absent in idle/loading.
   const options =
-    props.status === "ready" ? props.serviceSpend.serviceNames : [];
+    props.status === "ready" ? props.serviceSpend.serviceNames : null;
   const { selected, setSelected } = useSectionFilter(options);
   if (props.status === "idle") {
     return (
@@ -253,7 +253,7 @@ export function WarehouseSpendSection(props: WarehouseSpendSectionProps) {
   // Hook must run unconditionally on every render (rules-of-hooks); derive the
   // options defensively since ready-only fields are absent in idle/loading.
   const options =
-    props.status === "ready" ? props.viewModel.warehouseNames : [];
+    props.status === "ready" ? props.viewModel.warehouseNames : null;
   const { selected, setSelected } = useSectionFilter(options);
   if (props.status === "idle") {
     return (
@@ -431,7 +431,7 @@ export function StorageSpendSection(props: StorageSpendSectionProps) {
   // Hook must run unconditionally on every render (rules-of-hooks); derive the
   // options defensively since ready-only fields are absent in idle/loading.
   const options =
-    props.status === "ready" ? props.viewModel.databaseNames : [];
+    props.status === "ready" ? props.viewModel.databaseNames : null;
   const { selected, setSelected } = useSectionFilter(options);
   if (props.status === "idle") {
     return (
@@ -615,7 +615,7 @@ export function AiSpendSection(props: AiSpendSectionProps) {
     props.status !== "idle" && props.detail.status === "ready"
       ? props.detail.viewModel
       : null;
-  const options = ready ? ready.consumptionTypeNames : [];
+  const options = ready ? ready.consumptionTypeNames : null;
   const { selected, setSelected } = useSectionFilter(options);
   if (props.status === "idle") {
     return (
@@ -646,7 +646,7 @@ export function AiSpendSection(props: AiSpendSectionProps) {
       title="AI spend"
     >
       <SectionFilter
-        options={options}
+        options={ready ? ready.consumptionTypeNames : []}
         selected={selected}
         onChange={setSelected}
         disabled={ready == null}

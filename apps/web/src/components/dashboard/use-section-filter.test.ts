@@ -27,4 +27,26 @@ describe("useSectionFilter", () => {
     rerender({ opts: ["a", "b", "d"] }); // set changed
     expect(result.current.selected).toEqual(["a", "b", "d"]);
   });
+
+  it("preserves the selection across a null (loading) round trip and only re-syncs on a real option-set change", () => {
+    const { result, rerender } = renderHook(
+      ({ opts }: { opts: string[] | null }) => useSectionFilter(opts),
+      { initialProps: { opts: ["a", "b", "c"] as string[] | null } },
+    );
+    act(() => result.current.setSelected(["a"]));
+    expect(result.current.selected).toEqual(["a"]);
+
+    // Transient loading render: options go null — selection must be preserved,
+    // not reset.
+    rerender({ opts: null });
+    expect(result.current.selected).toEqual(["a"]);
+
+    // Back to ready with the SAME options — still preserved, not reset to all.
+    rerender({ opts: ["a", "b", "c"] });
+    expect(result.current.selected).toEqual(["a"]);
+
+    // Ready again with a genuinely different option set — re-syncs to all.
+    rerender({ opts: ["a", "b", "d"] });
+    expect(result.current.selected).toEqual(["a", "b", "d"]);
+  });
 });

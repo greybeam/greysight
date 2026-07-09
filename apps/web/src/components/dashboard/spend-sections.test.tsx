@@ -466,6 +466,81 @@ describe("spend sections", () => {
     expect(within(card).queryByText("$140.00")).not.toBeInTheDocument();
   });
 
+  it("preserves an active filter selection across a ready→loading→ready round trip", () => {
+    const readyElement = (
+      <OverviewSection
+        status="ready"
+        currency="USD"
+        serviceSpend={{
+          basis: "estimated",
+          serviceNames: ["compute", "storage"],
+          dailySeries: [
+            { date: "2026-07-01", values: { compute: 100, storage: 40 } },
+          ],
+          rankedServices: [
+            { name: "compute", spend: 100, spendLabel: "$100", credits: null },
+            { name: "storage", spend: 40, spendLabel: "$40", credits: null },
+          ],
+          serviceBars: [
+            {
+              name: "compute",
+              spend: 100,
+              spendLabel: "$100",
+              credits: null,
+              barWidthPercent: 100,
+            },
+            {
+              name: "storage",
+              spend: 40,
+              spendLabel: "$40",
+              credits: null,
+              barWidthPercent: 40,
+            },
+          ],
+          isEmpty: false,
+        }}
+        totalSpend={{
+          basis: "estimated",
+          total: 140,
+          totalLabel: "$140.00",
+          averageDaily: 0,
+          averageDailyLabel: "$0",
+          projectedMonthly: 0,
+          projectedMonthlyLabel: "$0",
+          projectionBasisLabel: "",
+          dailySeries: [],
+          topDriver: null,
+          isEmpty: false,
+        }}
+      />
+    );
+
+    const { rerender } = render(readyElement);
+
+    // Deselect "storage" so the KPI recomputes to the compute-only subset.
+    fireEvent.click(
+      within(screen.getByTestId("dashboard-section-overview")).getByRole(
+        "button",
+        { name: /filter/i },
+      ),
+    );
+    fireEvent.click(screen.getByRole("checkbox", { name: "storage" }));
+    expect(
+      within(screen.getByTestId("total-spend-card")).getByText("$100.00"),
+    ).toBeInTheDocument();
+
+    // A transient loading render (e.g. an Apply-date-range refetch) must not
+    // reset the selection, and neither should returning to ready with the
+    // SAME options — the subset KPI should still read $100.00, not the full
+    // $140.00.
+    rerender(<OverviewSection status="loading" />);
+    rerender(readyElement);
+
+    const card = screen.getByTestId("total-spend-card");
+    expect(within(card).getByText("$100.00")).toBeInTheDocument();
+    expect(within(card).queryByText("$140.00")).not.toBeInTheDocument();
+  });
+
   it("flattens prepared service points for the service bar chart", () => {
     expect(
       flattenServiceDailySeries([
