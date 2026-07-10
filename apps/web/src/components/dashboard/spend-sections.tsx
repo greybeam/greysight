@@ -273,9 +273,7 @@ export function WarehouseSpendSection(props: WarehouseSpendSectionProps) {
   }
   const { currency, range, viewModel } = props;
   const filtered = filterWarehouseSpend(viewModel, selected, currency);
-  const isFiltered =
-    !isFullSelection(selected, viewModel.warehouseNames) &&
-    selected.length > 0;
+  const isFiltered = !isFullSelection(selected, viewModel.warehouseNames);
   const chartData = flattenServiceDailySeries(filtered.dailySeries);
   const totalLabel = buildTotalWarehouseSpendLabel(range);
 

@@ -51,18 +51,23 @@ describe("SectionFilter", () => {
     expect(screen.queryByTestId("section-filter-popover")).toBeNull();
   });
 
-  it("renders all checkboxes checked when selection is empty (empty = all)", () => {
+  it("renders all checkboxes unchecked when selection is empty (empty = nothing)", () => {
     render(<SectionFilter options={options} selected={[]} onChange={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: /filter/i }));
     const boxes = screen.getAllByRole("checkbox");
-    expect(boxes.every((b) => (b as HTMLInputElement).checked)).toBe(true);
+    expect(boxes.every((b) => (b as HTMLInputElement).checked)).toBe(false);
   });
 
-  it("unchecking a box from the empty (all-selected) state yields all except that one", () => {
+  it("checking a box from the empty state yields just that one", () => {
     const onChange = vi.fn();
     render(<SectionFilter options={options} selected={[]} onChange={onChange} />);
     fireEvent.click(screen.getByRole("button", { name: /filter/i }));
     fireEvent.click(screen.getByRole("checkbox", { name: "alpha" }));
-    expect(onChange).toHaveBeenCalledWith(["beta", "gamma"]);
+    expect(onChange).toHaveBeenCalledWith(["alpha"]);
+  });
+
+  it("shows a count badge of 0 when selection is empty", () => {
+    render(<SectionFilter options={options} selected={[]} onChange={() => {}} />);
+    expect(screen.getByTestId("section-filter-count")).toHaveTextContent("0");
   });
 });

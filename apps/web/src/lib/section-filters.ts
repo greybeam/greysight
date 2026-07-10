@@ -23,10 +23,10 @@ import type {
   WarehouseSpendViewModel,
 } from "./dashboard-contracts";
 
-// Empty selection is treated as "all". A selection is "full" when it covers
-// every available option (order-independent).
+// A selection is "full" when it covers every available option
+// (order-independent). An empty selection is NOT full — it is a real,
+// literal selection that means "show nothing".
 export function isFullSelection(selected: string[], all: string[]): boolean {
-  if (selected.length === 0) return true;
   if (selected.length !== all.length) return false;
   const set = new Set(selected);
   return all.every((name) => set.has(name));
