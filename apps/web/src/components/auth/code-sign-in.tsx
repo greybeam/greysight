@@ -66,7 +66,14 @@ export default function CodeSignIn({
   // Resend flow: countdown gates the button, and a separate in-flight guard
   // prevents double submits. `resendError`/`resendNotice` are mutually
   // exclusive user feedback near the input.
-  const [cooldown, setCooldown] = useState(RESEND_COOLDOWN_SECONDS);
+  // A code was just sent, so the cooldown deadline is one full window from now.
+  // Deriving remaining time from a wall-clock deadline (not accumulated ticks)
+  // keeps the countdown honest when the tab is backgrounded or the device
+  // sleeps — the interval below only forces re-renders and self-corrects.
+  const [cooldownUntil, setCooldownUntil] = useState(
+    () => Date.now() + RESEND_COOLDOWN_SECONDS * 1000,
+  );
+  const [remaining, setRemaining] = useState(RESEND_COOLDOWN_SECONDS);
   const [resending, setResending] = useState(false);
   const [resendError, setResendError] = useState<string | null>(null);
   const [resendNotice, setResendNotice] = useState<string | null>(null);
@@ -74,23 +81,37 @@ export default function CodeSignIn({
   // value rather than a stale closure. The state drives disabled props.
   const resendingRef = useRef(false);
 
-  // Tick the countdown down to zero. A single interval is (re)created whenever a
-  // fresh cooldown starts and is always cleared on unmount, so no state update
-  // fires after the component is gone.
+  // Recompute `remaining` from the wall-clock deadline (never accumulated
+  // ticks), so a backgrounded/throttled tab self-corrects: the interval clears
+  // at zero and on unmount, and a "visibilitychange" recompute snaps the count
+  // to the truth the instant the tab is refocused. `Date.now()` stays inside
+  // these callbacks — never in render — to keep render pure.
   useEffect(() => {
-    if (cooldown <= 0) {
+    function recompute(): number {
+      const next = Math.max(0, Math.ceil((cooldownUntil - Date.now()) / 1000));
+      setRemaining(next);
+      return next;
+    }
+    if (recompute() <= 0) {
       return;
     }
     const timer = setInterval(() => {
-      setCooldown((current) => (current <= 1 ? 0 : current - 1));
+      if (recompute() <= 0) {
+        clearInterval(timer);
+      }
     }, 1000);
-    return () => clearInterval(timer);
-  }, [cooldown]);
+    const onVisible = () => recompute();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [cooldownUntil]);
 
   async function resend() {
     // No resend while a resend or a verify is already in flight, or while the
     // cooldown is still running.
-    if (resendingRef.current || submittingRef.current || cooldown > 0) {
+    if (resendingRef.current || submittingRef.current || remaining > 0) {
       return;
     }
     resendingRef.current = true;
@@ -111,7 +132,7 @@ export default function CodeSignIn({
       setError(null);
       setCode("");
       lastAutoSubmittedRef.current = null;
-      setCooldown(RESEND_COOLDOWN_SECONDS);
+      setCooldownUntil(Date.now() + RESEND_COOLDOWN_SECONDS * 1000);
     } catch {
       setResendError(friendlyAuthError());
     } finally {
@@ -170,7 +191,8 @@ export default function CodeSignIn({
 
   async function submitCode(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (submittingRef.current) {
+    // Don't race the primary submit against an in-flight resend (or verify).
+    if (submittingRef.current || resendingRef.current) {
       return;
     }
 
@@ -203,7 +225,7 @@ export default function CodeSignIn({
         />
         <button
           className="shrink-0 whitespace-nowrap rounded-md bg-chart-purple px-4 py-2 text-sm font-medium text-white hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-chart-purple focus-visible:ring-offset-2 focus-visible:ring-offset-surface disabled:opacity-60"
-          disabled={pending}
+          disabled={pending || resending}
           type="submit"
         >
           {pending ? "Signing in" : "Sign in with code"}
@@ -216,12 +238,12 @@ export default function CodeSignIn({
       ) : null}
       <div className="flex flex-col gap-2">
         <button
-          className="self-start text-sm font-medium text-chart-purple underline hover:opacity-90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-chart-purple disabled:cursor-default disabled:text-slate-500 disabled:no-underline disabled:opacity-60"
-          disabled={cooldown > 0 || resending || pending}
+          className="self-start text-sm font-medium text-slate-300 underline hover:text-slate-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-chart-purple disabled:cursor-default disabled:text-slate-500 disabled:no-underline disabled:opacity-60"
+          disabled={remaining > 0 || resending || pending}
           onClick={() => void resend()}
           type="button"
         >
-          {cooldown > 0 ? `Resend code in ${cooldown}s` : "Resend code"}
+          {remaining > 0 ? `Resend code in ${remaining}s` : "Resend code"}
         </button>
         {resendNotice ? (
           <p
