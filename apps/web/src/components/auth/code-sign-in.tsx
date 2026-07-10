@@ -85,8 +85,12 @@ export default function CodeSignIn({
 
   function handleChange(event: React.ChangeEvent<HTMLInputElement>) {
     // Strip whitespace: codes copied from the email carry letter-spacing that
-    // some clients paste as literal spaces.
-    const cleaned = event.target.value.replace(/\s+/g, "");
+    // some clients paste as literal spaces. Truncate to the max code length
+    // only after stripping, so a spaced paste (e.g. "12345 67890") isn't cut
+    // short before normalization.
+    const cleaned = event.target.value
+      .replace(/\s+/g, "")
+      .slice(0, CODE_MAX_LENGTH);
     setCode(cleaned);
 
     // Auto-submit once the full expected code is present (typing or paste).
@@ -129,7 +133,6 @@ export default function CodeSignIn({
           disabled={pending}
           id="code"
           inputMode="numeric"
-          maxLength={CODE_MAX_LENGTH}
           name="code"
           onChange={handleChange}
           placeholder="Enter code"

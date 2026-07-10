@@ -79,6 +79,30 @@ describe("LoginForm code sign-in", () => {
     });
   });
 
+  it("keeps all 10 digits of a spaced paste (whitespace stripped before the length cap)", async () => {
+    const verifyEmailCode = vi.fn().mockResolvedValue({ error: null });
+    render(
+      <CodeSignIn
+        authClient={authClient({ verifyEmailCode })}
+        email="owner@greybeam.ai"
+        expectedCodeLength={10}
+      />,
+    );
+
+    // 11 raw chars (10 digits + a space). A DOM maxLength would truncate to
+    // "12345 6789" first, dropping the final digit after normalization.
+    fireEvent.change(screen.getByLabelText("Sign-in code"), {
+      target: { value: "12345 67890" },
+    });
+
+    await waitFor(() => {
+      expect(verifyEmailCode).toHaveBeenCalledWith({
+        email: "owner@greybeam.ai",
+        token: "1234567890",
+      });
+    });
+  });
+
   it("rejects a too-short code without calling the client", async () => {
     const verifyEmailCode = vi.fn();
     render(<LoginForm authClient={authClient({ verifyEmailCode })} />);
