@@ -1,8 +1,9 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { BrowserAuthClient } from "../../lib/supabase-client";
+import { friendlyAuthError } from "./auth-errors";
 
 type CodeSignInProps = {
   authClient: BrowserAuthClient;
@@ -19,6 +20,9 @@ const CODE_MAX_LENGTH = 10;
 const DEFAULT_CODE_LENGTH = 8;
 const CODE_PATTERN = /^\d{6,10}$/;
 const INVALID_CODE_ERROR = "Enter the code from the email we sent you.";
+// A code was just sent when this view mounts, so start the resend cooldown
+// immediately to discourage a burst of duplicate sends.
+const RESEND_COOLDOWN_SECONDS = 60;
 const VERIFY_ERROR =
   "That code is incorrect or has expired. Request a new code and try again.";
 
@@ -59,8 +63,67 @@ export default function CodeSignIn({
   // auto-submit again after the user edits the input.
   const lastAutoSubmittedRef = useRef<string | null>(null);
 
+  // Resend flow: countdown gates the button, and a separate in-flight guard
+  // prevents double submits. `resendError`/`resendNotice` are mutually
+  // exclusive user feedback near the input.
+  const [cooldown, setCooldown] = useState(RESEND_COOLDOWN_SECONDS);
+  const [resending, setResending] = useState(false);
+  const [resendError, setResendError] = useState<string | null>(null);
+  const [resendNotice, setResendNotice] = useState<string | null>(null);
+  // Ref mirror of `resending` so the verify/auto-submit guards read the live
+  // value rather than a stale closure. The state drives disabled props.
+  const resendingRef = useRef(false);
+
+  // Tick the countdown down to zero. A single interval is (re)created whenever a
+  // fresh cooldown starts and is always cleared on unmount, so no state update
+  // fires after the component is gone.
+  useEffect(() => {
+    if (cooldown <= 0) {
+      return;
+    }
+    const timer = setInterval(() => {
+      setCooldown((current) => (current <= 1 ? 0 : current - 1));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [cooldown]);
+
+  async function resend() {
+    // No resend while a resend or a verify is already in flight, or while the
+    // cooldown is still running.
+    if (resendingRef.current || submittingRef.current || cooldown > 0) {
+      return;
+    }
+    resendingRef.current = true;
+    setResending(true);
+    setResendError(null);
+    setResendNotice(null);
+    try {
+      const result = await authClient.signInWithOtp({ email });
+      if (result.error) {
+        // Do not restart the cooldown on failure so the user can retry at once.
+        setResendError(friendlyAuthError(result.error.message));
+        return;
+      }
+      setResendNotice(`New code sent to ${email}`);
+      // A fresh code invalidates whatever was typed: clear the box, drop any
+      // stale verify error, and reset the auto-submit dedupe so the same digits
+      // aren't left ready to resubmit.
+      setError(null);
+      setCode("");
+      lastAutoSubmittedRef.current = null;
+      setCooldown(RESEND_COOLDOWN_SECONDS);
+    } catch {
+      setResendError(friendlyAuthError());
+    } finally {
+      resendingRef.current = false;
+      setResending(false);
+    }
+  }
+
   async function verify(token: string) {
-    if (submittingRef.current) {
+    // Symmetric with `resend()`: never race a verify against an in-flight
+    // resend (or another verify).
+    if (submittingRef.current || resendingRef.current) {
       return;
     }
     setError(null);
@@ -130,7 +193,7 @@ export default function CodeSignIn({
           aria-invalid={error ? true : undefined}
           autoComplete="one-time-code"
           className="flex-1 rounded-md border border-slate-600 bg-canvas px-3 py-2 text-center text-sm tracking-[0.4em] text-slate-100 placeholder:tracking-normal placeholder:text-slate-500 focus:border-chart-purple focus:outline-none focus:ring-1 focus:ring-chart-purple"
-          disabled={pending}
+          disabled={pending || resending}
           id="code"
           inputMode="numeric"
           name="code"
@@ -151,6 +214,30 @@ export default function CodeSignIn({
           {error}
         </p>
       ) : null}
+      <div className="flex flex-col gap-2">
+        <button
+          className="self-start text-sm font-medium text-chart-purple underline hover:opacity-90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-chart-purple disabled:cursor-default disabled:text-slate-500 disabled:no-underline disabled:opacity-60"
+          disabled={cooldown > 0 || resending || pending}
+          onClick={() => void resend()}
+          type="button"
+        >
+          {cooldown > 0 ? `Resend code in ${cooldown}s` : "Resend code"}
+        </button>
+        {resendNotice ? (
+          <p
+            aria-live="polite"
+            className="text-sm font-medium text-slate-300"
+            role="status"
+          >
+            {resendNotice}
+          </p>
+        ) : null}
+        {resendError ? (
+          <p className="text-sm font-medium text-red-400" role="alert">
+            {resendError}
+          </p>
+        ) : null}
+      </div>
     </form>
   );
 }
