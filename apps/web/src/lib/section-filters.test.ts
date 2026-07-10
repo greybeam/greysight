@@ -43,10 +43,12 @@ describe("filterServiceSpend", () => {
     expect(out.serviceNames).toEqual(view.serviceNames);
   });
 
-  it("is identity when the selection is empty (treat as all)", () => {
+  it("filters to nothing when the selection is empty", () => {
     const out = filterServiceSpend(view, [], "USD");
-    expect(out.total).toBeNull();
-    expect(out.serviceNames).toEqual(view.serviceNames);
+    expect(out.total).toBe(0);
+    expect(out.totalLabel).toBe("$0.00");
+    expect(out.serviceNames).toEqual([]);
+    expect(out.serviceBars).toEqual([]);
   });
 
   it("recomputes total, label, filtered names, and bar widths for a subset", () => {

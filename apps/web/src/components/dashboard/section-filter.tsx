@@ -21,11 +21,8 @@ export function SectionFilter({
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const sorted = useMemo(() => [...options].sort(), [options]);
-  // Empty selection means "unfiltered" (all entities shown), so checkboxes must
-  // render as fully checked in that state to avoid contradicting the data.
-  const effectiveSelected = selected.length === 0 ? options : selected;
-  const selectedSet = useMemo(() => new Set(effectiveSelected), [effectiveSelected]);
-  const isSubset = !isFullSelection(selected, options) && selected.length > 0;
+  const selectedSet = useMemo(() => new Set(selected), [selected]);
+  const isSubset = !isFullSelection(selected, options);
 
   useEffect(() => {
     if (!open) return;
@@ -59,8 +56,8 @@ export function SectionFilter({
     // must sort too — filter alone preserves the incoming order).
     onChange(
       selectedSet.has(name)
-        ? effectiveSelected.filter((n) => n !== name).sort()
-        : [...effectiveSelected, name].sort(),
+        ? selected.filter((n) => n !== name).sort()
+        : [...selected, name].sort(),
     );
   }
 
