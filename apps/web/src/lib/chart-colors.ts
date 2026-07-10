@@ -2,6 +2,12 @@
 // config registers these token→hex pairs as custom colors; chart components pass
 // the token names to Tremor and resolve hexes here for custom tooltip swatches.
 
+import {
+  OTHER_BUCKET_KEY,
+  OTHER_BUCKET_LABEL,
+  STACKED_SERIES_LIMIT,
+} from "./stacked-series-bucketing";
+
 export const CHART_COLORS: Record<string, string> = {
   "chart-purple": "#9F57E7",
   "chart-lime": "#C9E930",
@@ -23,17 +29,18 @@ export const CHART_COLORS: Record<string, string> = {
 
 // Single-series / primary metric → brand purple.
 export const PRIMARY_CHART_COLOR = "chart-purple";
-// Multi-series pastels, used in this fixed order; never reordered. The 14-entry
-// length matches the backend stacked-series bucket threshold
-// (DASHBOARD_STACKED_SERIES_LIMIT in apps/api/.../dashboard_view_builder.py):
-// a stacked chart never exceeds 14 categories, so every real series — plus an
-// "Other" bucket — always lands on a distinct palette color.
+// The palette length is the shared stacked-series cap: a stacked chart never
+// exceeds STACKED_SERIES_LIMIT categories, so every displayed series — plus the
+// synthetic "Other" bucket — always lands on a distinct color.
 export const SERIES_PALETTE = [
   "chart-1", "chart-2", "chart-3", "chart-4",
   "chart-5", "chart-6", "chart-7", "chart-8",
   "chart-9", "chart-10", "chart-11", "chart-12",
   "chart-13", "chart-14",
 ] as const;
+if (SERIES_PALETTE.length !== STACKED_SERIES_LIMIT) {
+  throw new Error("SERIES_PALETTE length must equal STACKED_SERIES_LIMIT");
+}
 // Grouped "Other" bucket always takes the last palette color so it reads as a
 // neutral catch-all distinct from the real series.
 export const OTHER_SERIES_COLOR = "chart-14";
@@ -52,16 +59,26 @@ export const ANOMALY_COLOR = "red";
  * bucket does not consume a pastel slot — real series keep getting consecutive
  * pastels even when "Other" appears mid-list.
  */
-export function getSeriesColors(categories: readonly string[]): string[] {
+export function getSeriesColors(
+  categories: readonly string[],
+  options?: { singleSeriesPrimary?: boolean },
+): string[] {
+  const singleSeriesPrimary = options?.singleSeriesPrimary ?? true;
   // The single-series fast-path only applies to a lone real series; a lone
-  // "Other" still pins to its reserved neutral, so the pin branch wins first.
-  if (categories.length <= 1 && categories[0] !== OTHER_SERIES_LABEL) {
+  // sentinel bucket still pins to its reserved neutral. Callers that never
+  // want brand purple for a lone series (e.g. stacked spend charts) opt out
+  // via singleSeriesPrimary: false.
+  if (
+    singleSeriesPrimary &&
+    categories.length <= 1 &&
+    categories[0] !== OTHER_BUCKET_KEY
+  ) {
     return categories.map(() => PRIMARY_CHART_COLOR);
   }
   const colors: string[] = [];
   let paletteIndex = 0;
   for (const category of categories) {
-    if (category === OTHER_SERIES_LABEL) {
+    if (category === OTHER_BUCKET_KEY) {
       colors.push(OTHER_SERIES_COLOR);
       continue;
     }
@@ -97,13 +114,13 @@ export function orderCategoriesByTotal(
     categories.map((category, index) => [category, index] as const),
   );
   return [...categories].sort((a, b) => {
-    // Pin "Other" last no matter its total so its neutral color and catch-all
-    // role stay stable.
-    if (a === OTHER_SERIES_LABEL || b === OTHER_SERIES_LABEL) {
+    // Pin the sentinel bucket last no matter its total so its neutral color
+    // and catch-all role stay stable.
+    if (a === OTHER_BUCKET_KEY || b === OTHER_BUCKET_KEY) {
       if (a === b) {
         return 0;
       }
-      return a === OTHER_SERIES_LABEL ? 1 : -1;
+      return a === OTHER_BUCKET_KEY ? 1 : -1;
     }
     const diff = (totals.get(b) ?? 0) - (totals.get(a) ?? 0);
     return diff !== 0 ? diff : (indexByCategory.get(a) ?? 0) - (indexByCategory.get(b) ?? 0);
@@ -120,4 +137,29 @@ export function resolveChartColor(color: string | undefined): string | undefined
     return undefined;
   }
   return CHART_COLORS[color] ?? color;
+}
+
+// Disambiguated label for the synthetic overflow bucket when a real entity
+// literally named "Other" is displayed alongside it, so the two series never
+// both render the plain "Other" label. COPY: "Other (grouped)" is a placeholder
+// wording the human may want to reword.
+export const OTHER_BUCKET_DISAMBIGUATED_LABEL = "Other (grouped)";
+
+/**
+ * Display label for a chart category. Every real entity renders as itself. The
+ * synthetic bucket's sentinel data key renders as "Other" — unless the full
+ * displayed category set (`categories`) also contains a real entity named
+ * "Other", in which case the sentinel is disambiguated to "Other (grouped)" so
+ * the two series never collide on the same visible label.
+ */
+export function seriesDisplayLabel(
+  category: string,
+  categories?: readonly string[],
+): string {
+  if (category !== OTHER_BUCKET_KEY) {
+    return category;
+  }
+  return categories?.includes(OTHER_BUCKET_LABEL)
+    ? OTHER_BUCKET_DISAMBIGUATED_LABEL
+    : OTHER_BUCKET_LABEL;
 }

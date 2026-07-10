@@ -41,7 +41,7 @@ body {
 
 .dashboard-scroll::-webkit-scrollbar-thumb {
   background-color: rgb(255 255 255 / 0.25);
-  border-radius: 9999px;
+  border-radius: 0;
 }
 
 .dashboard-scroll::-webkit-scrollbar-thumb:hover {

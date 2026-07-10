@@ -34,6 +34,16 @@ import {
 import { DetailTable } from "./detail-tables";
 import SectionEmptyState from "./section-empty-state";
 import SectionIdleState from "./section-idle-state";
+import { SectionFilter } from "./section-filter";
+import { useSectionFilter } from "./use-section-filter";
+import {
+  filterAiDetail,
+  filterServiceSpend,
+  filterStorageSpend,
+  filterWarehouseSpend,
+  isFullSelection,
+  type FilteredStorageSpend,
+} from "../../lib/section-filters";
 
 type StackedChartPoint = {
   date: string;
@@ -63,6 +73,11 @@ type OverviewSectionProps =
     };
 
 export function OverviewSection(props: OverviewSectionProps) {
+  // Hook must run unconditionally on every render (rules-of-hooks); derive the
+  // options defensively since ready-only fields are absent in idle/loading.
+  const options =
+    props.status === "ready" ? props.serviceSpend.serviceNames : null;
+  const { selected, setSelected } = useSectionFilter(options);
   if (props.status === "idle") {
     return (
       <DashboardSection
@@ -78,8 +93,14 @@ export function OverviewSection(props: OverviewSectionProps) {
     return <OverviewSectionSkeleton loadingMessage={props.loadingMessage} />;
   }
   const { capacityBalance, currency, range, serviceSpend, totalSpend } = props;
-  const serviceChartData = flattenServiceDailySeries(serviceSpend.dailySeries);
+  const filtered = filterServiceSpend(serviceSpend, selected, currency);
+  const serviceChartData = flattenServiceDailySeries(filtered.dailySeries);
   const totalSpendLabel = buildTotalSpendLabel(range);
+  // Filtered → recomputed detail sum; unfiltered → verbatim billed prop
+  // (filtered.totalLabel is null in the zero-drift default).
+  const kpiValue = totalSpend.isEmpty
+    ? undefined
+    : (filtered.totalLabel ?? totalSpend.totalLabel);
 
   return (
     <DashboardSection
@@ -87,6 +108,11 @@ export function OverviewSection(props: OverviewSectionProps) {
       testId="dashboard-section-overview"
       title="Overview"
     >
+      <SectionFilter
+        options={serviceSpend.serviceNames}
+        selected={selected}
+        onChange={setSelected}
+      />
       {!capacityBalance || capacityBalance.isEmpty ? (
         <DashboardPanel
           ariaLabel="Capacity balance summary"
@@ -118,7 +144,7 @@ export function OverviewSection(props: OverviewSectionProps) {
         ) : (
           <TotalSpendBarCard
             ariaLabel="Total spend summary"
-            categories={serviceSpend.serviceNames}
+            categories={filtered.serviceNames}
             chart={
               serviceSpend.isEmpty ? (
                 <SectionEmptyState message="No service spend data" />
@@ -127,7 +153,7 @@ export function OverviewSection(props: OverviewSectionProps) {
             currency={currency}
             emptyValueMessage="No total spend data"
             label={totalSpendLabel}
-            value={totalSpend.isEmpty ? undefined : totalSpend.totalLabel}
+            value={kpiValue}
             data={serviceChartData}
             span={2}
             testId="total-spend-card"
@@ -148,7 +174,7 @@ export function OverviewSection(props: OverviewSectionProps) {
             fill
             title="Total spend by service"
           >
-            <RankedSpendBars rows={serviceSpend.serviceBars} />
+            <RankedSpendBars rows={filtered.serviceBars} />
           </DashboardPanel>
         )}
       </DashboardGrid>
@@ -224,6 +250,11 @@ type WarehouseSpendSectionProps =
     };
 
 export function WarehouseSpendSection(props: WarehouseSpendSectionProps) {
+  // Hook must run unconditionally on every render (rules-of-hooks); derive the
+  // options defensively since ready-only fields are absent in idle/loading.
+  const options =
+    props.status === "ready" ? props.viewModel.warehouseNames : null;
+  const { selected, setSelected } = useSectionFilter(options);
   if (props.status === "idle") {
     return (
       <DashboardSection
@@ -241,7 +272,11 @@ export function WarehouseSpendSection(props: WarehouseSpendSectionProps) {
     );
   }
   const { currency, range, viewModel } = props;
-  const chartData = flattenServiceDailySeries(viewModel.dailySeries);
+  const filtered = filterWarehouseSpend(viewModel, selected, currency);
+  const isFiltered =
+    !isFullSelection(selected, viewModel.warehouseNames) &&
+    selected.length > 0;
+  const chartData = flattenServiceDailySeries(filtered.dailySeries);
   const totalLabel = buildTotalWarehouseSpendLabel(range);
 
   return (
@@ -250,16 +285,21 @@ export function WarehouseSpendSection(props: WarehouseSpendSectionProps) {
       testId="dashboard-section-warehouse-spend"
       title="Warehouse spend"
     >
+      <SectionFilter
+        options={viewModel.warehouseNames}
+        selected={selected}
+        onChange={setSelected}
+      />
       {viewModel.isEmpty ? (
         <SectionEmptyState message="No warehouse spend data" />
       ) : (
         <DashboardGrid columns={3} testId="dashboard-grid-warehouse-spend">
           <TotalSpendBarCard
             ariaLabel="Total warehouse spend"
-            categories={viewModel.warehouseNames}
+            categories={filtered.warehouseNames}
             chart={
               <SpendBarChart
-                categories={viewModel.warehouseNames}
+                categories={filtered.warehouseNames}
                 currency={currency}
                 data={chartData}
                 heightClass="h-96"
@@ -271,7 +311,7 @@ export function WarehouseSpendSection(props: WarehouseSpendSectionProps) {
             }
             currency={currency}
             label={totalLabel}
-            value={viewModel.totalLabel}
+            value={filtered.totalLabel ?? viewModel.totalLabel}
             data={chartData}
             span={2}
             testId="total-warehouse-spend-card"
@@ -288,7 +328,7 @@ export function WarehouseSpendSection(props: WarehouseSpendSectionProps) {
               <Card className="flex h-full flex-col p-6">
                 <Text>Total spend by warehouse</Text>
                 <div className="flex min-h-0 flex-1 flex-col">
-                  <WarehouseIdleBars rows={viewModel.warehouseBars} />
+                  <WarehouseIdleBars rows={filtered.warehouseBars} />
                 </div>
               </Card>
             </section>
@@ -299,8 +339,13 @@ export function WarehouseSpendSection(props: WarehouseSpendSectionProps) {
             >
               <Card className="flex h-full flex-col p-6">
                 <Text>Total spend by user</Text>
+                {isFiltered ? (
+                  <Text className="text-xs opacity-60">
+                    Warehouse filter not applied
+                  </Text>
+                ) : null}
                 <div className="flex min-h-0 flex-1 flex-col">
-                  <RankedSpendBars rows={viewModel.userBars} />
+                  <RankedSpendBars rows={filtered.userBars} />
                 </div>
               </Card>
             </section>
@@ -383,6 +428,11 @@ type StorageSpendSectionProps =
     };
 
 export function StorageSpendSection(props: StorageSpendSectionProps) {
+  // Hook must run unconditionally on every render (rules-of-hooks); derive the
+  // options defensively since ready-only fields are absent in idle/loading.
+  const options =
+    props.status === "ready" ? props.viewModel.databaseNames : null;
+  const { selected, setSelected } = useSectionFilter(options);
   if (props.status === "idle") {
     return (
       <DashboardSection
@@ -398,6 +448,7 @@ export function StorageSpendSection(props: StorageSpendSectionProps) {
     return <StorageSpendSectionSkeleton loadingMessage={props.loadingMessage} />;
   }
   const { currency, range, viewModel } = props;
+  const filtered = filterStorageSpend(viewModel, selected, currency);
   const totalLabel = buildStorageSpendLabel(range);
 
   return (
@@ -406,12 +457,18 @@ export function StorageSpendSection(props: StorageSpendSectionProps) {
       testId="dashboard-section-storage-spend"
       title="Storage spend"
     >
+      <SectionFilter
+        options={viewModel.databaseNames}
+        selected={selected}
+        onChange={setSelected}
+      />
       {viewModel.isEmpty ? (
         <SectionEmptyState message="No storage spend data" />
       ) : (
         <StorageSpendBody
           currency={currency}
           totalLabel={totalLabel}
+          filtered={filtered}
           viewModel={viewModel}
         />
       )}
@@ -464,22 +521,24 @@ function StorageSpendSectionSkeleton({
 function StorageSpendBody({
   currency,
   totalLabel,
+  filtered,
   viewModel,
 }: {
   currency: string;
   totalLabel: string;
+  filtered: FilteredStorageSpend;
   viewModel: StorageSpendViewModel;
 }) {
-  const chartData = flattenServiceDailySeries(viewModel.databaseDailySeries);
+  const chartData = flattenServiceDailySeries(filtered.databaseDailySeries);
 
   return (
     <DashboardGrid columns={3} testId="dashboard-grid-storage-spend">
       <TotalSpendBarCard
         ariaLabel="Storage spend"
-        categories={viewModel.databaseNames}
+        categories={filtered.databaseNames}
         chart={
           <SpendBarChart
-            categories={viewModel.databaseNames}
+            categories={filtered.databaseNames}
             currency={currency}
             data={chartData}
             heightClass="h-80"
@@ -491,7 +550,7 @@ function StorageSpendBody({
         }
         currency={currency}
         label={totalLabel}
-        value={viewModel.totalLabel}
+        value={filtered.totalLabel ?? viewModel.totalLabel}
         data={chartData}
         span={2}
         testId="storage-spend-card"
@@ -510,7 +569,7 @@ function StorageSpendBody({
           headers={["Database", "Spend", "Size"]}
           fillHeight
           truncateFirstColumn
-          rows={viewModel.databases.map((row) => ({
+          rows={filtered.databases.map((row) => ({
             key: row.name,
             cells: [
               { key: "name", value: row.name },
@@ -550,6 +609,14 @@ type AiSpendSectionProps =
     };
 
 export function AiSpendSection(props: AiSpendSectionProps) {
+  // Hook must run unconditionally on every render (rules-of-hooks); derive the
+  // options defensively since the ready detail is absent in the idle state.
+  const ready =
+    props.status !== "idle" && props.detail.status === "ready"
+      ? props.detail.viewModel
+      : null;
+  const options = ready ? ready.consumptionTypeNames : null;
+  const { selected, setSelected } = useSectionFilter(options);
   if (props.status === "idle") {
     return (
       <DashboardSection
@@ -561,11 +628,16 @@ export function AiSpendSection(props: AiSpendSectionProps) {
       </DashboardSection>
     );
   }
-  const { currency, loadingMessage, range, summary, detail } = props;
-  const ready = detail.status === "ready" ? detail.viewModel : null;
-  const chartData = ready ? flattenServiceDailySeries(ready.dailySeries) : [];
-  const categories = ready ? ready.consumptionTypeNames : [];
+  const { currency, loadingMessage, range, summary } = props;
+  const filtered = ready ? filterAiDetail(ready, selected, currency) : null;
+  const chartData = filtered
+    ? flattenServiceDailySeries(filtered.dailySeries)
+    : [];
+  const categories = filtered ? filtered.consumptionTypeNames : [];
   const totalLabel = buildTotalAiSpendLabel(range);
+  // Filtered → detail-derived KPI + microcopy; unfiltered → verbatim billed KPI.
+  const kpiValue = filtered?.detailTotalLabel ?? summary.totalLabel;
+  const showDetailNote = filtered?.detailTotalLabel != null;
 
   return (
     <DashboardSection
@@ -573,6 +645,12 @@ export function AiSpendSection(props: AiSpendSectionProps) {
       testId="dashboard-section-ai-spend"
       title="AI spend"
     >
+      <SectionFilter
+        options={ready ? ready.consumptionTypeNames : []}
+        selected={selected}
+        onChange={setSelected}
+        disabled={ready == null}
+      />
       <DashboardGrid columns={3} testId="dashboard-grid-ai-spend">
         <TotalSpendBarCard
           ariaLabel="Total AI spend"
@@ -600,7 +678,7 @@ export function AiSpendSection(props: AiSpendSectionProps) {
           }
           currency={currency}
           label={totalLabel}
-          value={summary.totalLabel}
+          value={kpiValue}
           data={chartData}
           span={2}
           testId="total-ai-spend-card"
@@ -619,12 +697,17 @@ export function AiSpendSection(props: AiSpendSectionProps) {
               {/* Data-consistency note: KPI = billed metering; chart = per-feature
                   breakdown. Small differences between the two are expected. */}
               <div className="flex min-h-0 flex-1 flex-col">
-                {ready ? (
-                  <RankedSpendBars rows={ready.consumptionBars} />
+                {filtered ? (
+                  <RankedSpendBars rows={filtered.consumptionBars} />
                 ) : (
                   <RankedSpendBarsSkeleton rows={4} />
                 )}
               </div>
+              {showDetailNote ? (
+                <Text className="mt-2 text-xs opacity-60">
+                  Estimated from detail — differs from billed metering.
+                </Text>
+              ) : null}
               {ready?.partial ? (
                 <Text className="mt-2 text-xs opacity-60">
                   Some sources unavailable: {ready.skippedBranches.join(", ")}

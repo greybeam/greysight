@@ -121,6 +121,28 @@ def test_demo_view_route_returns_default_prepared_view() -> None:
     assert body["total_spend"]["projection_basis_label"] == "latest 30 days"
 
 
+def test_demo_run_has_a_section_with_more_than_fourteen_entities() -> None:
+    # Demo mode flows through the same view builders as real runs (Task 16), so
+    # a demo section with > 14 entities exercises the display-bucketing + filter
+    # path even with the small, hand-written demo fixture. Storage/database is
+    # the section with the fewest fixture entities, so it's the cheapest to
+    # extend past the 14-entity cap.
+    client = TestClient(app)
+
+    response = client.get("/api/dashboard-runs/demo/view")
+
+    assert response.status_code == 200
+    storage_spend = response.json()["storage_spend"]
+    database_names = storage_spend["database_names"]
+    assert len(database_names) > 14
+    # Complete series: every daily point carries every database, no synthetic
+    # "Other" bucket — bucketing is a display-layer concern (Task 16), not a
+    # backend one.
+    for point in storage_spend["database_daily_series"]:
+        assert "Other" not in point["values"]
+        assert len(point["values"]) == len(database_names)
+
+
 def test_view_routes_declare_dashboard_view_response_model() -> None:
     app.openapi_schema = None
 

@@ -65,6 +65,55 @@ def test_build_ai_detail_view_breaks_down_by_consumption_type():
     assert view.is_empty is False
 
 
+def _ai_detail_view_from_types(consumption_types):
+    from app.services.dashboard_view_builder import build_ai_detail_view
+
+    ai_rows = [
+        {
+            "usage_date": date(2026, 6, 1),
+            "service_type": "AI_SERVICES",
+            "consumption_type": name,
+            "credits_used": float(index + 1),
+        }
+        for index, name in enumerate(consumption_types)
+    ]
+    return build_ai_detail_view(
+        ai_rows=ai_rows,
+        rate_rows=[],
+        currency="USD",
+        estimated_credit_price_usd=2.0,
+        start_date=date(2026, 6, 1),
+        end_date=date(2026, 6, 1),
+        partial=False,
+        skipped_branches=[],
+    )
+
+
+def test_ai_detail_series_is_complete_and_unbucketed():
+    # 20 consumption types (> old cap) => complete series: all 20 names, every
+    # point holds all 20 values, no synthetic "Other" from the backend.
+    view = _ai_detail_view_from_types([f"TYPE_{index:02}" for index in range(20)])
+
+    assert len(view.consumption_type_names) == 20
+    assert "Other" not in view.consumption_type_names
+    for point in view.daily_series:
+        assert "Other" not in point.values
+        assert len(point.values) == 20
+        assert set(point.values) == set(view.consumption_type_names)
+
+
+def test_ai_detail_series_keeps_real_other_consumption_type():
+    # A REAL consumption type named "Other" stays a normal category across 20.
+    names = ["Other"] + [f"TYPE_{index:02}" for index in range(19)]
+    view = _ai_detail_view_from_types(names)
+
+    assert len(view.consumption_type_names) == 20
+    assert "Other" in view.consumption_type_names
+    for point in view.daily_series:
+        assert "Other" in point.values
+        assert len(point.values) == 20
+
+
 def test_build_ai_detail_view_empty_and_partial():
     from app.services.dashboard_view_builder import build_ai_detail_view
 

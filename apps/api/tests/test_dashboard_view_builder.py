@@ -6,15 +6,12 @@ import pytest
 from app.models import DashboardDatasetMetadata, DashboardRun, SourceAvailability
 from app.services.demo_data import build_demo_dashboard_dataset
 from app.services.dashboard_view_builder import (
-    DASHBOARD_STACKED_SERIES_LIMIT,
     DEFAULT_VIEW_WINDOW_DAYS,
-    OTHER_STACKED_SERIES_LABEL,
     DashboardInvalidRangeError,
     DashboardRangeOutOfBoundsError,
     _build_capacity_balance,
     _build_forecast_series,
     _trailing_average_spend,
-    _bucket_stacked_series,
     _build_rate_index,
     _build_storage_rate_index,
     _credits_to_dollars,
@@ -758,9 +755,10 @@ def test_uncapped_ranked_bars_and_detail_rows_match_dashboard_limits() -> None:
     assert len(view.service_spend.service_bars) == 55
     assert view.service_spend.service_bars[0].name == "SERVICE_55"
     assert view.service_spend.service_bars[0].bar_width_percent == 100
-    # Only the stacked chart series is bucketed: top 13 + an "Other" bucket.
-    assert len(view.service_spend.service_names) == 14
-    assert view.service_spend.service_names[-1] == "Other"
+    # The stacked chart series carries the COMPLETE entity set: no backend
+    # bucketing, no synthetic "Other" (the frontend does display-bucketing now).
+    assert len(view.service_spend.service_names) == 55
+    assert "Other" not in view.service_spend.service_names
     # Detail tables keep their own independent cap.
     assert len(view.detail_tables.services) == 50
 
@@ -925,125 +923,6 @@ def test_invalid_required_billed_spend_fails_loudly(invalid_spend: object) -> No
         )
 
 
-def test_bucket_stacked_series_keeps_series_at_or_under_limit_untouched() -> None:
-    names = [f"S{index}" for index in range(DASHBOARD_STACKED_SERIES_LIMIT)]
-    values_by_date = [{name: float(index) for index, name in enumerate(names)}]
-
-    bucketed_names, bucketed_values = _bucket_stacked_series(names, values_by_date)
-
-    assert bucketed_names == names
-    assert "Other" not in bucketed_names
-    assert bucketed_values == values_by_date
-    # Inputs are returned as new objects, not aliased.
-    assert bucketed_values is not values_by_date
-    assert bucketed_values[0] is not values_by_date[0]
-
-
-def test_bucket_stacked_series_keeps_real_other_as_normal_category_under_limit() -> (
-    None
-):
-    # At/under the limit, a real category named "Other" (not last, nonzero) stays
-    # a normal category: order is unchanged (not pinned last) and values are not
-    # aggregated into a synthetic bucket.
-    names = ["S0", OTHER_STACKED_SERIES_LABEL, "S1", "S2"]
-    values_by_date = [
-        {"S0": 1.0, OTHER_STACKED_SERIES_LABEL: 2.0, "S1": 3.0, "S2": 4.0},
-        {"S0": 5.0, OTHER_STACKED_SERIES_LABEL: 6.0, "S1": 7.0, "S2": 8.0},
-    ]
-
-    bucketed_names, bucketed_values = _bucket_stacked_series(names, values_by_date)
-
-    # Incoming order is preserved verbatim; "Other" is not moved last.
-    assert bucketed_names == names
-    assert bucketed_values == values_by_date
-
-
-def test_bucket_stacked_series_buckets_overflow_into_top_thirteen_plus_other() -> None:
-    # 16 categories (> 14). Total spend ranks them by their trailing index, so
-    # the smallest three (S0, S1, S2) collapse into "Other".
-    names = [f"S{index}" for index in range(16)]
-    values_by_date = [
-        {name: float(index) for index, name in enumerate(names)},
-        {name: float(index) * 2 for index, name in enumerate(names)},
-    ]
-
-    bucketed_names, bucketed_values = _bucket_stacked_series(names, values_by_date)
-
-    # Top 13 by descending total, then "Other" pinned last.
-    assert bucketed_names == [
-        "S15",
-        "S14",
-        "S13",
-        "S12",
-        "S11",
-        "S10",
-        "S9",
-        "S8",
-        "S7",
-        "S6",
-        "S5",
-        "S4",
-        "S3",
-        "Other",
-    ]
-    assert len(bucketed_names) == DASHBOARD_STACKED_SERIES_LIMIT
-    # "Other" aggregates the dropped categories per date: S0 + S1 + S2.
-    assert bucketed_values[0]["Other"] == pytest.approx(0.0 + 1.0 + 2.0)
-    assert bucketed_values[1]["Other"] == pytest.approx(0.0 + 2.0 + 4.0)
-    # Kept categories preserve their original per-date values.
-    assert bucketed_values[0]["S15"] == pytest.approx(15.0)
-    assert bucketed_values[1]["S15"] == pytest.approx(30.0)
-
-
-def test_bucket_stacked_series_merges_real_other_into_synthetic_bucket() -> None:
-    # 16 categories (> 14) including a real "Other" that ranks high enough to
-    # otherwise land in the top 13. When bucketing engages it must never occupy
-    # a kept slot; its values fold into the synthetic bucket so the reserved name
-    # appears exactly once (last) with no overwrite or duplicate key.
-    names = [f"S{index}" for index in range(15)] + [OTHER_STACKED_SERIES_LABEL]
-    values_by_date = [
-        {f"S{index}": float(index) for index in range(15)}
-        | {OTHER_STACKED_SERIES_LABEL: 100.0},
-        {f"S{index}": float(index) * 2 for index in range(15)}
-        | {OTHER_STACKED_SERIES_LABEL: 200.0},
-    ]
-
-    bucketed_names, bucketed_values = _bucket_stacked_series(names, values_by_date)
-
-    # Reserved name appears exactly once, pinned last; no duplicate keys.
-    assert bucketed_names.count(OTHER_STACKED_SERIES_LABEL) == 1
-    assert bucketed_names[-1] == OTHER_STACKED_SERIES_LABEL
-    assert len(bucketed_names) == len(set(bucketed_names))
-    assert len(bucketed_names) == DASHBOARD_STACKED_SERIES_LIMIT
-    # Top 13 by descending total exclude the real "Other"; smallest S0, S1 drop.
-    assert bucketed_names == [
-        "S14",
-        "S13",
-        "S12",
-        "S11",
-        "S10",
-        "S9",
-        "S8",
-        "S7",
-        "S6",
-        "S5",
-        "S4",
-        "S3",
-        "S2",
-        OTHER_STACKED_SERIES_LABEL,
-    ]
-    # Synthetic bucket = real "Other" + ranked-out remainder (S0 + S1).
-    assert bucketed_values[0][OTHER_STACKED_SERIES_LABEL] == pytest.approx(
-        100.0 + 0.0 + 1.0
-    )
-    assert bucketed_values[1][OTHER_STACKED_SERIES_LABEL] == pytest.approx(
-        200.0 + 0.0 + 2.0
-    )
-    # Per-date sums are preserved across the rebucketing.
-    for original, bucketed in zip(values_by_date, bucketed_values, strict=True):
-        assert sum(bucketed.values()) == pytest.approx(sum(original.values()))
-
-
 def test_warehouse_row_dollars_raises_on_negative_cloud_credits() -> None:
     # credits_used below credits_used_compute is an impossible negative cloud
     # balance; the guard must fail loud (not a stripped assert).
@@ -1066,24 +945,23 @@ def test_warehouse_row_dollars_raises_on_negative_cloud_credits() -> None:
         _warehouse_row_dollars(row, convert)
 
 
-def test_stacked_service_series_buckets_but_ranked_lists_stay_full() -> None:
+def _service_view_from_names(names: list[str]) -> DashboardViewResponse:
     datasets = _demo_datasets()
     source_start, source_end = _source_bounds(datasets)
     service_rows = [
         {
             "usage_date": "2026-06-08",
-            "service_type": f"SERVICE_{index + 1:02}",
+            "service_type": name,
             "rating_type": "COMPUTE",
             "billing_type": "CONSUMPTION",
             "is_adjustment": False,
             "currency": "USD",
             "spend": float(index + 1),
         }
-        for index in range(20)
+        for index, name in enumerate(names)
     ]
     datasets["org_spend_daily"] = service_rows
-
-    view = build_dashboard_view(
+    return build_dashboard_view(
         run=_demo_run(),
         datasets=datasets,
         metadata=_demo_metadata(),
@@ -1092,14 +970,107 @@ def test_stacked_service_series_buckets_but_ranked_lists_stay_full() -> None:
         window_days=7,
     )
 
-    # Stacked chart series is bucketed to 13 + Other.
-    assert len(view.service_spend.service_names) == DASHBOARD_STACKED_SERIES_LIMIT
-    assert view.service_spend.service_names[-1] == "Other"
-    for point in view.service_spend.daily_series:
-        assert set(point.values) == set(view.service_spend.service_names)
-    # Ranked lists stay unbucketed (full data, no synthetic "Other").
-    assert len(view.service_spend.ranked_services) == 20
-    assert all(row.name != "Other" for row in view.service_spend.ranked_services)
+
+def test_service_series_is_complete_and_unbucketed() -> None:
+    # 20 services (> old cap) => the view carries all 20 names and every point
+    # holds all 20 per-day values, with NO synthetic "Other" added by the backend.
+    view = _service_view_from_names(
+        [f"SERVICE_{index + 1:02}" for index in range(20)]
+    ).service_spend
+
+    assert len(view.service_names) == 20
+    assert "Other" not in view.service_names
+    for point in view.daily_series:
+        assert "Other" not in point.values
+        assert len(point.values) == 20
+        assert set(point.values) == set(view.service_names)
+    # Ranked lists stay full and un-bucketed (unchanged contract).
+    assert len(view.ranked_services) == 20
+    assert all(row.name != "Other" for row in view.ranked_services)
+
+
+def test_service_series_keeps_real_other_service() -> None:
+    # A REAL entity named "Other" is a normal category: it stays in the names
+    # list and every per-day point, never merged away.
+    names = ["Other"] + [f"SERVICE_{index + 1:02}" for index in range(19)]
+    view = _service_view_from_names(names).service_spend
+
+    assert len(view.service_names) == 20
+    assert "Other" in view.service_names
+    for point in view.daily_series:
+        assert "Other" in point.values
+        assert len(point.values) == 20
+
+
+def _warehouse_view_from_names(names: list[str]) -> DashboardViewResponse:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    metadata = _demo_metadata().model_copy(
+        update={
+            "data_mode": "estimated",
+            "billing_through_date": None,
+            "organization_usage": SourceAvailability(
+                available=False, detail="org unavailable"
+            ),
+        }
+    )
+    datasets["org_spend_daily"] = []
+    datasets["warehouse_spend_daily"] = [
+        {
+            "usage_date": "2026-06-08",
+            "warehouse_name": name,
+            "credits_used": float(index + 1),
+            "credits_used_compute": float(index + 1),
+            "credits_attributed_queries": float(index + 1),
+        }
+        for index, name in enumerate(names)
+    ]
+    datasets["query_compute_by_user_daily"] = []
+    datasets["rate_sheet_daily"] = [
+        {
+            "usage_date": "2026-06-08",
+            "service_type": "WAREHOUSE_METERING",
+            "rating_type": "COMPUTE",
+            "currency": "USD",
+            "effective_rate": 2.0,
+        }
+    ]
+    return build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=metadata,
+        source_start_date=source_start,
+        source_end_date=source_end,
+        start_date=date(2026, 6, 8),
+        end_date=date(2026, 6, 8),
+    )
+
+
+def test_warehouse_series_is_complete_and_unbucketed() -> None:
+    # 20 warehouses (> old cap) => complete series: all 20 names, every point
+    # holds all 20 values, no synthetic "Other".
+    view = _warehouse_view_from_names(
+        [f"WH_{index:02}" for index in range(20)]
+    ).warehouse_spend
+
+    assert len(view.warehouse_names) == 20
+    assert "Other" not in view.warehouse_names
+    for point in view.daily_series:
+        assert "Other" not in point.values
+        assert len(point.values) == 20
+        assert set(point.values) == set(view.warehouse_names)
+
+
+def test_warehouse_series_keeps_real_other_warehouse() -> None:
+    # A REAL warehouse named "Other" stays a normal category across 20 warehouses.
+    names = ["Other"] + [f"WH_{index:02}" for index in range(19)]
+    view = _warehouse_view_from_names(names).warehouse_spend
+
+    assert len(view.warehouse_names) == 20
+    assert "Other" in view.warehouse_names
+    for point in view.daily_series:
+        assert "Other" in point.values
+        assert len(point.values) == 20
 
 
 def test_warehouse_total_sums_window_daily_dollars() -> None:
@@ -1740,19 +1711,16 @@ def test_demo_storage_section_not_marked_empty() -> None:
     assert len(view.storage_spend.databases) > 0
 
 
-def test_storage_stacked_series_buckets_overflow_into_thirteen_plus_other() -> None:
-    # 16 databases (> 14) => top 13 by total kept, rest folded into "Other"
-    # (last). Per-date totals are conserved across bucketing.
+def _storage_view_from_db_names(names: list[str]) -> DashboardViewResponse:
     storage_rows = [
         {
             "usage_date": "2026-06-08",
-            "database_name": f"DB_{index:02}",
-            # Larger index => more bytes => higher rank.
+            "database_name": name,
             "average_database_bytes": (index + 1) * 1_000_000_000_000,
             "average_failsafe_bytes": 0,
             "average_hybrid_table_storage_bytes": 0,
         }
-        for index in range(16)
+        for index, name in enumerate(names)
     ]
     rate_rows = [
         {
@@ -1764,28 +1732,41 @@ def test_storage_stacked_series_buckets_overflow_into_thirteen_plus_other() -> N
             "effective_rate": 25.0,
         }
     ]
+    return _estimated_storage_view(storage_rows=storage_rows, rate_rows=rate_rows)
 
-    view = _estimated_storage_view(storage_rows=storage_rows, rate_rows=rate_rows)
 
-    names = view.storage_spend.database_names
-    assert len(names) == DASHBOARD_STACKED_SERIES_LIMIT
-    assert names[-1] == OTHER_STACKED_SERIES_LABEL
-    assert names.count(OTHER_STACKED_SERIES_LABEL) == 1
-    # 16 databases, 13 kept => the 3 smallest (DB_00, DB_01, DB_02) fold into
-    # "Other".
-    point = view.storage_spend.database_daily_series[0]
-    assert "DB_00" not in point.values
-    assert "DB_01" not in point.values
-    assert "DB_02" not in point.values
-    assert point.values[OTHER_STACKED_SERIES_LABEL] == pytest.approx(
-        (1 + 2 + 3) * 25.0 / 30.0
-    )
+def test_storage_series_is_complete_and_unbucketed() -> None:
+    # 16 databases (> old cap) => complete series: all 16 names, every point holds
+    # all 16 values, no synthetic "Other", and per-date sums still reconcile.
+    view = _storage_view_from_db_names(
+        [f"DB_{index:02}" for index in range(16)]
+    ).storage_spend
+
+    names = view.database_names
+    assert len(names) == 16
+    assert "Other" not in names
+    point = view.database_daily_series[0]
+    assert len(point.values) == 16
+    assert set(point.values) == set(names)
+    assert all(f"DB_{index:02}" in point.values for index in range(16))
     # Total is conserved: sum of stacked values equals the overall daily spend
-    # and the pre-bucketing KPI total.
+    # and the KPI total.
     stacked_sum = sum(point.values.values())
-    assert view.storage_spend.daily_series[0].spend == pytest.approx(stacked_sum)
+    assert view.daily_series[0].spend == pytest.approx(stacked_sum)
     expected_total = sum(range(1, 17)) * 25.0 / 30.0
-    assert view.storage_spend.total == pytest.approx(expected_total)
+    assert view.total == pytest.approx(expected_total)
+
+
+def test_storage_series_keeps_real_other_database() -> None:
+    # A REAL database named "Other" stays a normal category across 16 databases.
+    names = ["Other"] + [f"DB_{index:02}" for index in range(15)]
+    view = _storage_view_from_db_names(names).storage_spend
+
+    assert len(view.database_names) == 16
+    assert "Other" in view.database_names
+    for point in view.database_daily_series:
+        assert "Other" in point.values
+        assert len(point.values) == 16
 
 
 # --- 5. total / total_label ------------------------------------------------

@@ -12,7 +12,11 @@ import {
 } from "recharts";
 import type { CustomTooltipProps } from "@tremor/react";
 
-import { PRIMARY_CHART_COLOR, resolveChartColor } from "../../lib/chart-colors";
+import {
+  PRIMARY_CHART_COLOR,
+  resolveChartColor,
+  seriesDisplayLabel,
+} from "../../lib/chart-colors";
 import { ROLLING_AVERAGE_LABEL } from "../../lib/rolling-average";
 import { createChartTooltip } from "./dashboard-design-system";
 
@@ -109,7 +113,7 @@ export function StackedSpendBarChart({
               dataKey={category}
               fill={resolveChartColor(colors[index])}
               key={category}
-              name={category}
+              name={seriesDisplayLabel(category, categories)}
               stackId="spend"
             />
           ))}
