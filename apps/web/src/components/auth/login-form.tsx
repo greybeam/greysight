@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { isWorkEmail } from "../../lib/work-email";
 import type { BrowserAuthClient } from "../../lib/supabase-client";
+import { GENERIC_ERROR, friendlyAuthError } from "./auth-errors";
 import CodeSignIn from "./code-sign-in";
 
 type LoginFormProps = {
@@ -10,19 +11,7 @@ type LoginFormProps = {
 };
 
 const TERMS_URL = "https://www.greybeam.ai/terms";
-const GENERIC_ERROR = "Something went wrong. Please try again.";
-const RATE_LIMIT_ERROR = "Too many requests. Please wait a moment and try again.";
 const WORK_EMAIL_ERROR = "Please use your work email.";
-
-// Never surface provider/internal wording verbatim. Recognize the one
-// user-actionable case (rate limiting) and fall back to the generic message for
-// everything else.
-function friendlyAuthError(message?: string | null): string {
-  if (message && /rate limit|too many/i.test(message)) {
-    return RATE_LIMIT_ERROR;
-  }
-  return GENERIC_ERROR;
-}
 
 export default function LoginForm({ authClient }: LoginFormProps) {
   const [email, setEmail] = useState("");
