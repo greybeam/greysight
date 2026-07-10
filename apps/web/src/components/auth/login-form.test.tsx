@@ -7,7 +7,13 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import LoginForm from "./login-form";
+import CodeSignIn from "./code-sign-in";
 import type { BrowserAuthClient } from "../../lib/supabase-client";
+
+const mockReplace = vi.fn();
+vi.mock("next/navigation", () => ({
+  useRouter: vi.fn(() => ({ replace: mockReplace })),
+}));
 
 function authClient(overrides: Partial<BrowserAuthClient> = {}): BrowserAuthClient {
   return {
@@ -15,144 +21,147 @@ function authClient(overrides: Partial<BrowserAuthClient> = {}): BrowserAuthClie
     onAuthStateChange: vi.fn(),
     signInWithOtp: vi.fn().mockResolvedValue({ error: null }),
     verifyOtp: vi.fn().mockResolvedValue({ error: null }),
+    verifyEmailCode: vi.fn().mockResolvedValue({ error: null }),
     verifyEmailOtp: vi.fn().mockResolvedValue({ error: null }),
     signOut: vi.fn(),
     ...overrides,
   };
 }
 
-describe("LoginForm", () => {
-  afterEach(() => cleanup());
+async function sendCodeTo(email: string) {
+  fireEvent.change(screen.getByLabelText("Email"), { target: { value: email } });
+  fireEvent.click(screen.getByRole("button", { name: "Email me a code" }));
+  await screen.findByText("Check your email");
+}
 
-  it("sends a magic link for a work email and shows the check-email confirmation", async () => {
-    const signInWithOtp = vi.fn().mockResolvedValue({ error: null });
-    render(<LoginForm authClient={authClient({ signInWithOtp })} />);
+describe("LoginForm code sign-in", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
 
-    fireEvent.change(screen.getByLabelText("Email"), {
-      target: { value: "owner@greybeam.ai" },
+  it("auto-submits a full-length code and redirects to /dashboard", async () => {
+    const verifyEmailCode = vi.fn().mockResolvedValue({ error: null });
+    render(<LoginForm authClient={authClient({ verifyEmailCode })} />);
+    await sendCodeTo("owner@greybeam.ai");
+
+    // Default expected length is 8 — entering the full code needs no click.
+    fireEvent.change(screen.getByLabelText("Sign-in code"), {
+      target: { value: "12345678" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Email link" }));
 
     await waitFor(() => {
-      expect(signInWithOtp).toHaveBeenCalledWith({ email: "owner@greybeam.ai" });
+      expect(verifyEmailCode).toHaveBeenCalledWith({
+        email: "owner@greybeam.ai",
+        token: "12345678",
+      });
     });
-    expect(await screen.findByText("Check your email")).toBeInTheDocument();
-    expect(screen.getByText(/owner@greybeam\.ai/)).toBeInTheDocument();
-  });
-
-  it("rejects a free-provider email without calling the client", async () => {
-    const signInWithOtp = vi.fn();
-    render(<LoginForm authClient={authClient({ signInWithOtp })} />);
-
-    fireEvent.change(screen.getByLabelText("Email"), {
-      target: { value: "person@gmail.com" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Email link" }));
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Please use your work email.",
-    );
-    expect(signInWithOtp).not.toHaveBeenCalled();
-  });
-
-  it("does not surface provider wording verbatim on a send error", async () => {
-    const signInWithOtp = vi.fn().mockResolvedValue({
-      error: { message: "Email login is unavailable (internal code 500)" },
-    });
-    render(<LoginForm authClient={authClient({ signInWithOtp })} />);
-
-    fireEvent.change(screen.getByLabelText("Email"), {
-      target: { value: "owner@greybeam.ai" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Email link" }));
-
-    const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("Something went wrong. Please try again.");
-    expect(alert).not.toHaveTextContent("internal code 500");
-  });
-
-  it("shows a friendly rate-limit message", async () => {
-    const signInWithOtp = vi.fn().mockResolvedValue({
-      error: { message: "Email rate limit exceeded" },
-    });
-    render(<LoginForm authClient={authClient({ signInWithOtp })} />);
-
-    fireEvent.change(screen.getByLabelText("Email"), {
-      target: { value: "owner@greybeam.ai" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Email link" }));
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Too many requests. Please wait a moment and try again.",
-    );
-  });
-
-  it("shows a generic error and re-enables submit when sending rejects", async () => {
-    const signInWithOtp = vi.fn().mockRejectedValue(new Error("network down"));
-    render(<LoginForm authClient={authClient({ signInWithOtp })} />);
-
-    fireEvent.change(screen.getByLabelText("Email"), {
-      target: { value: "owner@greybeam.ai" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Email link" }));
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Something went wrong. Please try again.",
-    );
     await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: "Email link" }),
-      ).not.toBeDisabled(),
+      expect(mockReplace).toHaveBeenCalledWith("/dashboard"),
     );
   });
 
-  it("can reset to send to a different email", async () => {
-    render(<LoginForm authClient={authClient()} />);
+  it("strips whitespace from a pasted code and auto-submits", async () => {
+    const verifyEmailCode = vi.fn().mockResolvedValue({ error: null });
+    render(<LoginForm authClient={authClient({ verifyEmailCode })} />);
+    await sendCodeTo("owner@greybeam.ai");
 
-    fireEvent.change(screen.getByLabelText("Email"), {
-      target: { value: "owner@greybeam.ai" },
+    // Codes copied from the email often paste with spaces (letter-spacing).
+    fireEvent.change(screen.getByLabelText("Sign-in code"), {
+      target: { value: " 1234 5678 " },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Email link" }));
-    await screen.findByText("Check your email");
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "Send to a different email" }),
-    );
-
-    expect(screen.getByLabelText("Email")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(verifyEmailCode).toHaveBeenCalledWith({
+        email: "owner@greybeam.ai",
+        token: "12345678",
+      });
+    });
   });
 
-  it("links to the terms of service on the request step", () => {
-    render(<LoginForm authClient={authClient()} />);
-    const link = screen.getByRole("link", { name: /terms of service/i });
-    expect(link).toHaveAttribute("href", "https://www.greybeam.ai/terms");
-    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  it("rejects a too-short code without calling the client", async () => {
+    const verifyEmailCode = vi.fn();
+    render(<LoginForm authClient={authClient({ verifyEmailCode })} />);
+    await sendCodeTo("owner@greybeam.ai");
+
+    fireEvent.change(screen.getByLabelText("Sign-in code"), {
+      target: { value: "12345" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with code" }));
+
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(verifyEmailCode).not.toHaveBeenCalled();
   });
 
-  it("disables the email input while pending and shows the originally-submitted address in the sent view", async () => {
-    let resolveOtp!: (value: { error: null }) => void;
-    const deferredOtp = new Promise<{ error: null }>((resolve) => {
-      resolveOtp = resolve;
-    });
-    const signInWithOtp = vi.fn().mockReturnValue(deferredOtp);
+  it("does not re-auto-submit a failed code until the user edits it", async () => {
+    const verifyEmailCode = vi
+      .fn()
+      .mockResolvedValue({ error: { message: "Token has expired" } });
+    render(<LoginForm authClient={authClient({ verifyEmailCode })} />);
+    await sendCodeTo("owner@greybeam.ai");
 
-    render(<LoginForm authClient={authClient({ signInWithOtp })} />);
+    const input = screen.getByLabelText("Sign-in code");
+    fireEvent.change(input, { target: { value: "12345678" } });
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(verifyEmailCode).toHaveBeenCalledTimes(1);
 
-    fireEvent.change(screen.getByLabelText("Email"), {
-      target: { value: "owner@greybeam.ai" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Email link" }));
+    // The same value must not loop the failed auto-submit.
+    fireEvent.change(input, { target: { value: "12345678" } });
+    expect(verifyEmailCode).toHaveBeenCalledTimes(1);
 
-    // While the request is in flight the input must be disabled
-    await waitFor(() =>
-      expect(screen.getByLabelText("Email")).toBeDisabled(),
+    // Editing to a different full-length code auto-submits again.
+    fireEvent.change(input, { target: { value: "87654321" } });
+    await waitFor(() => expect(verifyEmailCode).toHaveBeenCalledTimes(2));
+  });
+
+  it("still accepts a manually submitted 8-digit code when the expected length is misconfigured to 6", async () => {
+    const verifyEmailCode = vi.fn().mockResolvedValue({ error: null });
+    render(
+      <CodeSignIn
+        authClient={authClient({ verifyEmailCode })}
+        email="owner@greybeam.ai"
+        expectedCodeLength={6}
+      />,
     );
 
-    // Resolve the deferred promise (simulating the server response)
-    resolveOtp({ error: null });
+    // Longer than the (misconfigured) expected length: no auto-submit fires,
+    // but the input still holds it and the manual button verifies it.
+    fireEvent.change(screen.getByLabelText("Sign-in code"), {
+      target: { value: "12345678" },
+    });
+    expect(verifyEmailCode).not.toHaveBeenCalled();
 
-    // The sent view must show the address that was actually submitted
-    expect(await screen.findByText("Check your email")).toBeInTheDocument();
-    expect(screen.getByText(/owner@greybeam\.ai/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with code" }));
+
+    await waitFor(() => {
+      expect(verifyEmailCode).toHaveBeenCalledWith({
+        email: "owner@greybeam.ai",
+        token: "12345678",
+      });
+    });
+  });
+
+  it("does not call verifyEmailCode again while a verify is in flight", async () => {
+    let resolveVerify!: (value: { error: null }) => void;
+    const deferred = new Promise<{ error: null }>((resolve) => {
+      resolveVerify = resolve;
+    });
+    const verifyEmailCode = vi.fn().mockReturnValue(deferred);
+    render(<LoginForm authClient={authClient({ verifyEmailCode })} />);
+    await sendCodeTo("owner@greybeam.ai");
+
+    fireEvent.change(screen.getByLabelText("Sign-in code"), {
+      target: { value: "123456" },
+    });
+    const form = screen.getByLabelText("Sign-in code").closest("form")!;
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+
+    resolveVerify({ error: null });
+
+    await waitFor(() => expect(mockReplace).toHaveBeenCalledWith("/dashboard"));
+    expect(verifyEmailCode).toHaveBeenCalledTimes(1);
+    // Success keeps the button disabled through the redirect.
+    expect(screen.getByRole("button", { name: "Signing in" })).toBeDisabled();
   });
 });

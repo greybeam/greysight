@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  configureBrowserAuthClient,
   createBrowserAuthClient,
   createSupabaseBrowserAuthClient,
   resetBrowserAuthClientFactory,
@@ -21,26 +20,6 @@ describe("supabase-client", () => {
   it("does not create a browser auth client without public Supabase env vars", () => {
     expect(createBrowserAuthClient({})).toBeNull();
     expect(createClient).not.toHaveBeenCalled();
-  });
-
-  it("preserves injectable auth clients for tests", () => {
-    const authClient = {
-      getSession: vi.fn(),
-      onAuthStateChange: vi.fn(),
-      signInWithOtp: vi.fn(),
-      verifyOtp: vi.fn(),
-      verifyEmailOtp: vi.fn(),
-      signOut: vi.fn(),
-    };
-
-    configureBrowserAuthClient(() => authClient);
-
-    expect(
-      createBrowserAuthClient({
-        NEXT_PUBLIC_SUPABASE_URL: "https://project.supabase.co",
-        NEXT_PUBLIC_SUPABASE_ANON_KEY: "anon-key",
-      }),
-    ).toBe(authClient);
   });
 
   it("creates a production Supabase browser auth client from public env vars", async () => {
@@ -152,6 +131,64 @@ describe("supabase-client", () => {
       email: "owner@example.com",
       token: "123456",
       type: "email",
+    });
+  });
+
+  it("verifies an emailed OTP code (primary sign-in flow)", async () => {
+    const verifyOtp = vi.fn().mockResolvedValue({ data: {}, error: null });
+    const supabaseClient = {
+      auth: {
+        getSession: vi.fn(),
+        onAuthStateChange: vi.fn(),
+        signInWithOtp: vi.fn().mockResolvedValue({ error: null }),
+        signOut: vi.fn(),
+        verifyOtp,
+      },
+    };
+    createClient.mockReturnValue(supabaseClient);
+
+    const authClient = createSupabaseBrowserAuthClient({
+      supabaseUrl: "https://project.supabase.co",
+      supabaseAnonKey: "anon-key",
+    });
+
+    await authClient.verifyEmailCode({
+      email: "owner@example.com",
+      token: "123456",
+    });
+
+    expect(verifyOtp).toHaveBeenCalledWith({
+      email: "owner@example.com",
+      token: "123456",
+      type: "email",
+    });
+  });
+
+  it("carries the provider error code and status through to callers", async () => {
+    const verifyOtp = vi.fn().mockResolvedValue({
+      data: {},
+      error: { message: "Token has expired", code: "otp_expired", status: 403 },
+    });
+    const supabaseClient = {
+      auth: {
+        getSession: vi.fn(),
+        onAuthStateChange: vi.fn(),
+        signInWithOtp: vi.fn(),
+        signOut: vi.fn(),
+        verifyOtp,
+      },
+    };
+    createClient.mockReturnValue(supabaseClient);
+
+    const authClient = createSupabaseBrowserAuthClient({
+      supabaseUrl: "https://project.supabase.co",
+      supabaseAnonKey: "anon-key",
+    });
+
+    await expect(
+      authClient.verifyEmailOtp({ tokenHash: "abc123", type: "email" }),
+    ).resolves.toEqual({
+      error: { message: "Token has expired", code: "otp_expired", status: 403 },
     });
   });
 

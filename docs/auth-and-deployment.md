@@ -1,9 +1,11 @@
 # Auth & Deployment
 
-Magic-link (Spec A) login for Greysight: email link → `/auth/confirm` →
-client-side token verification → verified Supabase session → bearer token
-attached to API calls → the API (the trust boundary) enforces auth and org
-membership live on every request.
+Email OTP (Spec A) login for Greysight: emailed code → entered on the
+sign-in page → client-side code verification → verified Supabase session →
+bearer token attached to API calls → the API (the trust boundary) enforces auth
+and org membership live on every request. (Magic links are deprecated; the
+click-gated `/auth/confirm` route remains only for links from already-sent
+emails.)
 
 This document covers the environment-variable split, the Supabase deployment
 checklist, the first-user bootstrap, and notes on hosting the FastAPI backend.
@@ -19,7 +21,7 @@ public-safe (they ship to the browser); API vars stay on the API host only.
 
 | Where | Env vars |
 | --- | --- |
-| Web (e.g. Vercel) | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_AUTH_REQUIRED` (all public-safe) |
+| Web (e.g. Vercel) | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_AUTH_REQUIRED`, `NEXT_PUBLIC_AUTH_CODE_LENGTH` (all public-safe) |
 | API (Vercel Python functions **or** Render/Fly/Cloud Run) | `SUPABASE_URL`, `SUPABASE_ANON_KEY` (token auth via `/auth/v1/user`), `SUPABASE_SERVICE_ROLE_KEY` (live membership lookup), `GREYSIGHT_CORS_ALLOWED_ORIGINS` (must list the web origin, else cross-origin bearer calls fail), `SNOWFLAKE_*` (server-only) |
 
 **Which dashboard key goes in which var.** New Supabase projects label the keys
@@ -46,24 +48,46 @@ Notes:
 
 1. **Enable email OTP.** In the Supabase dashboard, enable the Email provider
    and email OTP sign-in so `signInWithOtp` / `verifyOtp` work.
-2. **Point the Magic Link template at our confirm route.** Corporate email
-   security scanners (e.g. Avanan) perform a plain GET on the magic link URL and
-   consume Supabase's single-use token before the user clicks, causing
-   `otp_expired` errors. Fix: send users to `/auth/confirm` on our domain, where
-   a client-side script does the verification — a plain GET of that page verifies
-   nothing. In the Supabase dashboard, edit both the **Magic Link** and the
-   **Confirm signup** templates (since `signInWithOtp` creates new users) and
-   replace `{{ .ConfirmationURL }}` with:
+2. **Send only the code — no link.** Corporate email security scanners
+   (e.g. Avanan, Microsoft Defender Safe Links) fetch every URL in an email and
+   many of them *execute JavaScript*, so any single-use sign-in link — even one
+   gated behind a client-side confirm page — can be consumed before the user
+   ever sees it, causing `otp_expired` errors. Typing a code requires a human,
+   which is why the code is the sign-in flow: the user requests a code on
+   the login page and enters `{{ .Token }}` from the email on the same screen. In
+   the Supabase dashboard, edit both the **Magic Link** and the **Confirm
+   signup** templates (since `signInWithOtp` creates new users) so each contains
+   **only** the code — no confirmation URL:
 
-   ```
-   {{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email
+   ```html
+   <p>Enter this code on the Greysight sign-in page:</p>
+   <p><strong>{{ .Token }}</strong></p>
    ```
 
-3. **Set a short access-token lifetime.** Membership/authorization revocation is
+   The code length is configurable in Supabase (**Auth > Email OTP Length**,
+   6–10 digits); the sign-in UI accepts any 6–10 digit code. Set
+   `NEXT_PUBLIC_AUTH_CODE_LENGTH` (default `8`) on the web deployment to match
+   Supabase's Email OTP Length: the sign-in form auto-submits as soon as that
+   many digits are entered. On a mismatch the auto-submit may fire early or
+   late (or not at all), but the input always allows up to 10 digits and the
+   manual **Sign in with code** button always works for any 6–10 digit code.
+   Invalid or out-of-range values (outside 6–10) fall back to the default.
+
+   **Deprecation note:** the click-gated `/auth/confirm` route remains
+   temporarily so links from already-sent emails keep working. It can be removed
+   once the templates above are updated in all environments.
+
+3. **Verify OTP expiration and auth rate limits.** Brute-force protection for
+   the code lives in Supabase, not in the UI. In the dashboard's Auth
+   settings, keep the **Email OTP expiration** short (a code should not stay
+   valid for long) and confirm the **auth rate limits** (OTP sends and verify
+   attempts) are enabled so a code cannot be guessed by repeated
+   verification attempts.
+4. **Set a short access-token lifetime.** Membership/authorization revocation is
    immediate (the API re-reads the table every request), but the stateless
    Supabase JWT's *global sign-out* is bounded by its `exp`. Keep the
    access-token lifetime short to bound that window.
-4. **Set CORS to the web origin.** Set `GREYSIGHT_CORS_ALLOWED_ORIGINS` on the
+5. **Set CORS to the web origin.** Set `GREYSIGHT_CORS_ALLOWED_ORIGINS` on the
    API host to the web app's origin (e.g. `https://app.example.com`). Cross-origin
    bearer-token calls fail if the web origin is not allowed.
 
@@ -75,10 +99,9 @@ seeding required.
 
 The flow:
 
-1. **Sign in** via the magic link. Clicking the link lands on `/auth/confirm`,
-   where the token is verified client-side. A signed-in user with zero
-   memberships is shown the connect wizard (not a dead-end "no organization"
-   screen).
+1. **Sign in** with the emailed code, entered on the sign-in page. A
+   signed-in user with zero memberships is shown the connect wizard (not a
+   dead-end "no organization" screen).
 2. **Connect wizard.** The user enters their org name and Snowflake keypair
    credentials (see [`snowflake-setup.md`](./snowflake-setup.md) for the
    least-privilege setup SQL) and clicks **"Test connection & save"**.

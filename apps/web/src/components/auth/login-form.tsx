@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { isWorkEmail } from "../../lib/work-email";
 import type { BrowserAuthClient } from "../../lib/supabase-client";
+import CodeSignIn from "./code-sign-in";
 
 type LoginFormProps = {
   authClient: BrowserAuthClient | null;
@@ -83,10 +84,12 @@ export default function LoginForm({ authClient }: LoginFormProps) {
           Check your email
         </h2>
         <p className="text-sm text-slate-400">
-          We sent a sign-in link to{" "}
+          Enter the code we sent to{" "}
           <span className="font-medium text-slate-200">{sentEmail}</span>.
-          Click it to finish signing in.
         </p>
+        {authClient ? (
+          <CodeSignIn authClient={authClient} email={sentEmail} />
+        ) : null}
         <button
           className="text-sm font-medium text-slate-300 underline hover:text-slate-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-chart-purple"
           onClick={resetEmail}
@@ -121,7 +124,7 @@ export default function LoginForm({ authClient }: LoginFormProps) {
           disabled={pending}
           type="submit"
         >
-          {pending ? "Sending link" : "Email link"}
+          {pending ? "Sending code" : "Email me a code"}
         </button>
       </div>
       {error ? (

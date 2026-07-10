@@ -1,4 +1,10 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import AuthConfirm from "./auth-confirm";
 import type { BrowserAuthClient } from "../../lib/supabase-client";
@@ -18,10 +24,17 @@ function authClient(overrides: Partial<BrowserAuthClient> = {}): BrowserAuthClie
     onAuthStateChange: vi.fn(),
     signInWithOtp: vi.fn(),
     verifyOtp: vi.fn(),
+    verifyEmailCode: vi.fn(),
     verifyEmailOtp: vi.fn().mockResolvedValue({ error: null }),
     signOut: vi.fn(),
     ...overrides,
   };
+}
+
+function setParams(query: string) {
+  vi.mocked(useSearchParams).mockReturnValue(
+    new URLSearchParams(query) as unknown as ReturnType<typeof useSearchParams>,
+  );
 }
 
 afterEach(() => {
@@ -30,81 +43,90 @@ afterEach(() => {
 });
 
 describe("AuthConfirm", () => {
-  it("calls verifyEmailOtp with the token_hash from the URL and redirects to /dashboard on success", async () => {
+  it("does NOT call verifyEmailOtp on mount — it waits for a click", () => {
     const mockVerify = vi.fn().mockResolvedValue({ error: null });
-    const client = authClient({ verifyEmailOtp: mockVerify });
+    setParams("token_hash=abc123&type=email");
 
-    vi.mocked(useSearchParams).mockReturnValue(
-      new URLSearchParams("token_hash=abc123&type=email") as unknown as ReturnType<typeof useSearchParams>,
+    render(<AuthConfirm authClient={authClient({ verifyEmailOtp: mockVerify })} />);
+
+    expect(
+      screen.getByRole("button", { name: /confirm email address/i }),
+    ).toBeInTheDocument();
+    expect(mockVerify).not.toHaveBeenCalled();
+  });
+
+  it("verifies and redirects to /dashboard when the confirm button is clicked", async () => {
+    const mockVerify = vi.fn().mockResolvedValue({ error: null });
+    setParams("token_hash=abc123&type=email");
+
+    render(<AuthConfirm authClient={authClient({ verifyEmailOtp: mockVerify })} />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /confirm email address/i }),
     );
 
-    render(<AuthConfirm authClient={client} />);
-
     await waitFor(() => {
-      expect(mockVerify).toHaveBeenCalledWith({ tokenHash: "abc123", type: "email" });
+      expect(mockVerify).toHaveBeenCalledWith({
+        tokenHash: "abc123",
+        type: "email",
+      });
     });
     await waitFor(() => {
       expect(mockReplace).toHaveBeenCalledWith("/dashboard");
     });
   });
 
-  it("shows the error state when verifyEmailOtp returns an error", async () => {
-    const mockVerify = vi.fn().mockResolvedValue({ error: { message: "otp_expired" } });
-    const client = authClient({ verifyEmailOtp: mockVerify });
+  it("shows the expired copy when verification fails with an otp_expired code", async () => {
+    const mockVerify = vi.fn().mockResolvedValue({
+      error: { message: "Token has expired", code: "otp_expired" },
+    });
+    setParams("token_hash=expiredtoken&type=email");
 
-    vi.mocked(useSearchParams).mockReturnValue(
-      new URLSearchParams("token_hash=expiredtoken&type=email") as unknown as ReturnType<typeof useSearchParams>,
+    render(<AuthConfirm authClient={authClient({ verifyEmailOtp: mockVerify })} />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /confirm email address/i }),
     );
-
-    render(<AuthConfirm authClient={client} />);
 
     expect(await screen.findByText(/sign-in link has expired/i)).toBeInTheDocument();
     expect(screen.getByText(/return to sign in/i)).toBeInTheDocument();
     expect(mockReplace).not.toHaveBeenCalled();
   });
 
-  it("shows the error state and does NOT call verifyEmailOtp when token_hash is missing", () => {
-    const mockVerify = vi.fn();
-    const client = authClient({ verifyEmailOtp: mockVerify });
-
-    vi.mocked(useSearchParams).mockReturnValue(
-      new URLSearchParams("") as unknown as ReturnType<typeof useSearchParams>,
-    );
-
-    render(<AuthConfirm authClient={client} />);
-
-    expect(screen.getByText(/sign-in link has expired/i)).toBeInTheDocument();
-    expect(mockVerify).not.toHaveBeenCalled();
-    expect(mockReplace).not.toHaveBeenCalled();
-  });
-
-  it("shows the error state immediately and does NOT call verifyEmailOtp when authClient is null", () => {
-    const mockVerify = vi.fn();
-
-    vi.mocked(useSearchParams).mockReturnValue(
-      new URLSearchParams("token_hash=abc123&type=email") as unknown as ReturnType<typeof useSearchParams>,
-    );
-
-    render(<AuthConfirm authClient={null} />);
-
-    expect(screen.getByText(/sign-in link has expired/i)).toBeInTheDocument();
-    expect(screen.getByText(/return to sign in/i)).toBeInTheDocument();
-    expect(mockVerify).not.toHaveBeenCalled();
-    expect(mockReplace).not.toHaveBeenCalled();
-  });
-
-  it("shows the error state when verifyEmailOtp throws (network/runtime failure)", async () => {
+  it("shows generic copy for a non-otp failure (network/config)", async () => {
     const mockVerify = vi.fn().mockRejectedValue(new Error("Network failure"));
-    const client = authClient({ verifyEmailOtp: mockVerify });
+    setParams("token_hash=abc123&type=email");
 
-    vi.mocked(useSearchParams).mockReturnValue(
-      new URLSearchParams("token_hash=abc123&type=email") as unknown as ReturnType<typeof useSearchParams>,
+    render(<AuthConfirm authClient={authClient({ verifyEmailOtp: mockVerify })} />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /confirm email address/i }),
     );
 
-    render(<AuthConfirm authClient={client} />);
-
-    expect(await screen.findByText(/sign-in link has expired/i)).toBeInTheDocument();
-    expect(screen.getByText(/return to sign in/i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/something went wrong signing you in/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/sign-in link has expired/i)).not.toBeInTheDocument();
     expect(mockReplace).not.toHaveBeenCalled();
+  });
+
+  it("does not double-fire verification when the button is clicked twice", async () => {
+    let resolveVerify!: (value: { error: null }) => void;
+    const deferred = new Promise<{ error: null }>((resolve) => {
+      resolveVerify = resolve;
+    });
+    const mockVerify = vi.fn().mockReturnValue(deferred);
+    setParams("token_hash=abc123&type=email");
+
+    render(<AuthConfirm authClient={authClient({ verifyEmailOtp: mockVerify })} />);
+
+    const button = screen.getByRole("button", { name: /confirm email address/i });
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    resolveVerify({ error: null });
+
+    await waitFor(() => expect(mockReplace).toHaveBeenCalledWith("/dashboard"));
+    expect(mockVerify).toHaveBeenCalledTimes(1);
   });
 });
