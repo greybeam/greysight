@@ -44,6 +44,7 @@ function authClient(
     onAuthStateChange: vi.fn(() => ({ unsubscribe: vi.fn() })),
     signInWithOtp: vi.fn(),
     verifyOtp: vi.fn(),
+    verifyEmailCode: vi.fn(),
     verifyEmailOtp: vi.fn(),
     signOut: vi.fn().mockResolvedValue({ error: null }),
     ...overrides,
@@ -141,7 +142,7 @@ describe("OrgShell", () => {
         <p>dashboard</p>
       </OrgShell>,
     );
-    expect(await screen.findByRole("button", { name: "Email link" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Email me a code" })).toBeInTheDocument();
     // The "Greybeam" wordmark is rendered only by AuthCard, so asserting it
     // proves the login form is wrapped in the new card (the old shell rendered
     // no wordmark). This fails before Task 5's wiring and passes after.

@@ -15,25 +15,37 @@ export type AuthSession = {
 
 export type SessionChangeCallback = (session: AuthSession | null) => void;
 
+// Auth error surfaced to the UI. `code`/`status` are carried through (when the
+// provider supplies them) so callers can distinguish an expired/invalid OTP from
+// a transient network/config failure without matching on free-text messages.
+export type AuthError = {
+  message: string;
+  code?: string;
+  status?: number;
+};
+
 export type BrowserAuthClient = {
   getSession(): Promise<{
-    error?: { message: string } | null;
+    error?: AuthError | null;
     session: AuthSession | null;
   }>;
   onAuthStateChange(callback: SessionChangeCallback): {
     unsubscribe(): void;
   };
   signInWithOtp(input: { email: string }): Promise<{
-    error?: { message: string } | null;
+    error?: AuthError | null;
   }>;
   verifyOtp(input: { email: string; token: string }): Promise<{
-    error?: { message: string } | null;
+    error?: AuthError | null;
+  }>;
+  verifyEmailCode(input: { email: string; token: string }): Promise<{
+    error?: AuthError | null;
   }>;
   verifyEmailOtp(input: { tokenHash: string; type?: string }): Promise<{
-    error?: { message: string } | null;
+    error?: AuthError | null;
   }>;
   signOut(): Promise<{
-    error?: { message: string } | null;
+    error?: AuthError | null;
   }>;
 };
 
@@ -41,6 +53,17 @@ export type AuthClientFactory = (settings: {
   supabaseAnonKey: string;
   supabaseUrl: string;
 }) => BrowserAuthClient;
+
+function toAuthError(
+  error: { message: string; code?: string; status?: number } | null,
+): AuthError | null {
+  if (!error) return null;
+  return {
+    message: error.message,
+    ...(error.code ? { code: error.code } : {}),
+    ...(typeof error.status === "number" ? { status: error.status } : {}),
+  };
+}
 
 function toAuthSession(session: Session | null): AuthSession | null {
   if (!session) return null;
@@ -64,7 +87,7 @@ export const createSupabaseBrowserAuthClient: AuthClientFactory = ({
     async getSession() {
       const { data, error } = await supabase.auth.getSession();
       return {
-        error: error ? { message: error.message } : null,
+        error: toAuthError(error),
         session: toAuthSession(data.session),
       };
     },
@@ -81,7 +104,7 @@ export const createSupabaseBrowserAuthClient: AuthClientFactory = ({
     },
     async signInWithOtp(input) {
       const { error } = await supabase.auth.signInWithOtp({ email: input.email });
-      return { error: error ? { message: error.message } : null };
+      return { error: toAuthError(error) };
     },
     async verifyOtp(input) {
       const { error } = await supabase.auth.verifyOtp({
@@ -89,18 +112,26 @@ export const createSupabaseBrowserAuthClient: AuthClientFactory = ({
         token: input.token,
         type: "email",
       });
-      return { error: error ? { message: error.message } : null };
+      return { error: toAuthError(error) };
+    },
+    async verifyEmailCode(input) {
+      const { error } = await supabase.auth.verifyOtp({
+        email: input.email,
+        token: input.token,
+        type: "email",
+      });
+      return { error: toAuthError(error) };
     },
     async verifyEmailOtp(input) {
       const { error } = await supabase.auth.verifyOtp({
         token_hash: input.tokenHash,
         type: (input.type ?? "email") as "email",
       });
-      return { error: error ? { message: error.message } : null };
+      return { error: toAuthError(error) };
     },
     async signOut() {
       const { error } = await supabase.auth.signOut();
-      return { error: error ? { message: error.message } : null };
+      return { error: toAuthError(error) };
     },
   };
 };

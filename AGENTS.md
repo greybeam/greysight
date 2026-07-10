@@ -88,7 +88,14 @@ needed. Run shell commands through `rtk` when it is available.
 ## Core Principles
 
 1. **Every behavior change needs a test** that fails without the change and
-   passes with it.
+   passes with it — and **no tests that restate the implementation**. Before
+   writing a test, ask: "would this catch a real regression that a typecheck
+   or a glance at the JSX wouldn't?" If not, don't write it. Never write
+   tests that assert copy/labels, that a component renders, that props are
+   forwarded, or that a wrapper calls the function it wraps. Do write tests
+   for guards, state machines, edge cases, and error paths (e.g. double-submit
+   guards, retry-loop prevention, input normalization, error differentiation).
+   Fewer, sharper tests beat coverage-padding.
 2. **Execute only registry SQL.** Never construct or run Snowflake SQL
    outside the assets approved in `sql/dashboard_sources.yml`.
 3. **Never widen RLS.** Members read; owners/admins perform sensitive
