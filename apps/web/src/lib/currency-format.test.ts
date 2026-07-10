@@ -15,7 +15,7 @@ describe("formatCurrency", () => {
     expect(formatCurrency(1234.5, "GBP")).toBe("£1,234.50");
   });
   it("prefixes code currencies with a non-breaking space", () => {
-    expect(formatCurrency(1234.5, "CHF")).toBe("CHF 1,234.50");
+    expect(formatCurrency(1234.5, "CHF")).toBe("CHF 1,234.50");
   });
   it("uses compact decimals for HUF/IDR/JPY/KRW", () => {
     expect(formatCurrency(1200, "JPY")).toBe("¥1,200"); // trailing .00 stripped

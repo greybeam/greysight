@@ -12,7 +12,7 @@ const CURRENCY_CODE_PREFIXES = new Set([
   "CHF", "CZK", "DKK", "HUF", "IDR", "MYR", "NOK", "PLN", "SEK", "SGD",
   "THB", "TRY", "ZAR",
 ]);
-const CURRENCY_CODE_SEPARATOR = " ";
+const CURRENCY_CODE_SEPARATOR = " ";
 const CURRENCY_COMPACT_DECIMAL_CODES = new Set(["HUF", "IDR", "JPY", "KRW"]);
 
 // Group digits with a fixed 2-decimal, half-up rounding — matches Python's
