@@ -160,10 +160,22 @@ describe("AutomatedSavingsShell", () => {
     });
     expect(globalSwitch).not.toBeChecked();
 
+    // The row's `enabled` came from the server as true even though the
+    // global switch is off — the master switch must never locally fake a
+    // per-warehouse enrollment the server hasn't actually saved.
+    const rowSwitchBefore = await screen.findByRole("switch", { name: "WH1" });
+    expect(rowSwitchBefore).toBeChecked();
+
     fireEvent.click(globalSwitch);
 
     await waitFor(() => expect(globalSwitch).toBeChecked());
     expect(setGlobalSwitchMock).toHaveBeenCalledWith("org-1", true, { accessToken: "tok" });
+
+    // Flipping the master switch persists only global_enabled — it must not
+    // touch the per-row enabled state (no bulk local toggle of warehouses).
+    const rowSwitchAfter = await screen.findByRole("switch", { name: "WH1" });
+    expect(rowSwitchAfter).toBeChecked();
+    expect(toggleWarehouseMock).not.toHaveBeenCalled();
   });
 
   it("reloads status after agreeing from the opt-in gate", async () => {

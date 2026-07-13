@@ -13,7 +13,7 @@ import {
 } from "../../lib/automated-savings-api";
 import { Switch } from "../ui/switch";
 import OrgShell from "../org/org-shell";
-import { OptInGate, quoteIdent, UNKNOWN_ROLE_PLACEHOLDER } from "./opt-in-gate";
+import { normalizeRoleName, OptInGate, quoteIdent, UNKNOWN_ROLE_PLACEHOLDER } from "./opt-in-gate";
 import { WarehouseTable } from "./warehouse-table";
 
 type AutomatedSavingsShellProps = {
@@ -117,7 +117,7 @@ function AutomatedSavingsContent() {
         <div className="p-6">
           <OptInGate
             orgId={orgId}
-            roleName={status.roleName ?? UNKNOWN_ROLE_PLACEHOLDER}
+            roleName={normalizeRoleName(status.roleName) ?? UNKNOWN_ROLE_PLACEHOLDER}
             onAgreed={() => void load()}
           />
         </div>
@@ -125,14 +125,11 @@ function AutomatedSavingsContent() {
     );
   }
 
-  const noneEnabled = warehouses.every((row) => !row.enabled);
-
   async function handleGlobalToggle() {
     if (!orgId || !isAdmin || !status) return;
     const nextEnabled = !status.globalEnabled;
     await setGlobalSwitch(orgId, nextEnabled, { accessToken });
     setStatus({ ...status, globalEnabled: nextEnabled });
-    setWarehouses((prev) => prev.map((row) => ({ ...row, enabled: nextEnabled })));
   }
 
   async function handleCheckAccess() {
@@ -155,7 +152,7 @@ function AutomatedSavingsContent() {
     setWarehouses((prev) => prev.map((existing) => (existing.name === row.name ? row : existing)));
   }
 
-  const grantSql = `GRANT MANAGE WAREHOUSES ON ACCOUNT TO ROLE ${quoteIdent(status.roleName ?? UNKNOWN_ROLE_PLACEHOLDER)};`;
+  const grantSql = `GRANT MANAGE WAREHOUSES ON ACCOUNT TO ROLE ${quoteIdent(normalizeRoleName(status.roleName) ?? UNKNOWN_ROLE_PLACEHOLDER)};`;
 
   return (
     <SavingsChrome>
@@ -184,7 +181,7 @@ function AutomatedSavingsContent() {
             disabled={!isAdmin}
             onCheckedChange={() => void handleGlobalToggle()}
           />
-          {status.globalEnabled ? "All warehouses enabled" : noneEnabled ? "All warehouses disabled" : "Mixed"}
+          {status.globalEnabled ? "Automated Savings on" : "Automated Savings off"}
         </label>
         <button
           type="button"

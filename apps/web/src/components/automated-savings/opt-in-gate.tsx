@@ -25,6 +25,15 @@ export function quoteIdent(role: string): string {
 // obviously wrong if actually run) when no real role is available.
 export const UNKNOWN_ROLE_PLACEHOLDER = "<YOUR_SNOWFLAKE_ROLE>";
 
+// A blank/whitespace-only role name (e.g. an API quirk or a caller passing
+// "" instead of null) must never reach the GRANT SQL as an empty-quoted
+// identifier (`TO ROLE ""`) — normalize it to null so callers fall back to
+// UNKNOWN_ROLE_PLACEHOLDER instead.
+export function normalizeRoleName(roleName: string | null | undefined): string | null {
+  const trimmed = roleName?.trim();
+  return trimmed ? trimmed : null;
+}
+
 const REPO_URL = "https://github.com/greybeam-ai/greysight";
 
 export function OptInGate({ orgId, roleName, onAgreed }: OptInGateProps) {
@@ -38,7 +47,7 @@ export function OptInGate({ orgId, roleName, onAgreed }: OptInGateProps) {
   );
   const isAdmin = activeOrg?.role === "owner" || activeOrg?.role === "admin";
 
-  const grantSql = `GRANT MANAGE WAREHOUSES ON ACCOUNT TO ROLE ${quoteIdent(roleName)};`;
+  const grantSql = `GRANT MANAGE WAREHOUSES ON ACCOUNT TO ROLE ${quoteIdent(normalizeRoleName(roleName) ?? UNKNOWN_ROLE_PLACEHOLDER)};`;
 
   async function handleCopy() {
     await navigator.clipboard?.writeText(grantSql);

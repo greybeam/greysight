@@ -116,7 +116,11 @@ function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange }: 
 
   const unsupported = warehouse.type !== "STANDARD";
   const toggleDisabled = !isAdmin || !warehouse.autoResumeOk || unsupported || busy;
-  const editDisabled = !isAdmin || unsupported || busy;
+  // A warehouse that isn't enrolled (or has no captured managed default yet)
+  // has no server-side row to persist an edit against — editing the blank
+  // input would create stale/partial state that the next enroll overwrites.
+  const editDisabled =
+    !isAdmin || unsupported || busy || !warehouse.enabled || warehouse.managedDefault == null;
 
   async function commitManagedDefault() {
     const parsed = Number(draftValue);

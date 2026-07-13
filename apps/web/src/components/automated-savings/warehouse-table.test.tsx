@@ -36,6 +36,37 @@ describe("WarehouseTable", () => {
     expect(input.value).toBe("");
   });
 
+  it("disables the managed-default input for an unenrolled/null-default row even for an admin", () => {
+    // Editing a blank pre-enrollment input would create stale/partial state:
+    // there's no server-side row yet for the edit to persist against.
+    render(
+      <WarehouseTable
+        orgId="org-1"
+        isAdmin
+        warehouses={[{ ...base, managedDefault: null, enabled: false }]}
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.getByLabelText(/WH1 auto_suspend/i)).toBeDisabled();
+  });
+
+  it("disables the managed-default input when enrolled but no default has been captured yet", () => {
+    render(
+      <WarehouseTable
+        orgId="org-1"
+        isAdmin
+        warehouses={[{ ...base, managedDefault: null, enabled: true }]}
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.getByLabelText(/WH1 auto_suspend/i)).toBeDisabled();
+  });
+
+  it("keeps the managed-default input editable for an enrolled row with a captured default", () => {
+    render(<WarehouseTable orgId="org-1" isAdmin warehouses={[base]} onChange={() => {}} />);
+    expect(screen.getByLabelText(/WH1 auto_suspend/i)).not.toBeDisabled();
+  });
+
   it("disables the toggle and shows unsupported for non-STANDARD warehouses", () => {
     render(<WarehouseTable orgId="org-1" isAdmin warehouses={[{ ...base, type: "SNOWPARK-OPTIMIZED" }]} onChange={() => {}} />);
     expect(screen.getByRole("switch", { name: /WH1/i })).toBeDisabled();

@@ -123,6 +123,17 @@ describe("automated-savings-api", () => {
       .rejects.toThrow(/500/);
   });
 
+  it("surfaces the API's error detail when the shared fetchJson helper hits a non-ok response", async () => {
+    // fetchStatus (like fetchWarehouses/toggleWarehouse/reconcileWarehouse/
+    // checkAccess/agree) goes through the shared fetchJson helper, distinct
+    // from setManagedDefault's standalone fetch call above.
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ detail: "org not found" }), { status: 500 }),
+    );
+    await expect(fetchStatus("org-1", { accessToken: "t" }))
+      .rejects.toThrow(/500: org not found/);
+  });
+
   it("posts to agree at the API's actual route", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }));
