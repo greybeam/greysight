@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from app.auth import (
     AuthContext,
@@ -73,13 +74,22 @@ class WarehouseResponse(BaseModel):
     status: str
 
 
+@dataclass(frozen=True)
+class CapturedWarehouseDefaults:
+    stored_default: int | None
+    warehouse_created_on: str | None
+
+
 def capture_stored_default(
     *, organization_id: str, warehouse_name: str, settings: Settings
-) -> int | None:
-    """Indirection seam: fetch the warehouse's current AUTO_SUSPEND from Snowflake.
+) -> CapturedWarehouseDefaults:
+    """Indirection seam: fetch the warehouse's current AUTO_SUSPEND and
+    created_on from Snowflake in a single live lookup.
 
     Split out so tests can stub the Snowflake round-trip without touching the
-    resolver/connection plumbing.
+    resolver/connection plumbing. Both values are captured from the same live
+    row so the worker's drop+recreate detection (which keys off
+    `warehouse_created_on`) has a value to compare against.
     """
     from app.services.org_connection_resolver import resolve_snowflake_config
     from app.services.snowflake_runtime import get_connection_fetcher
@@ -94,8 +104,14 @@ def capture_stored_default(
     for row in live:
         if str(row.get("name", "")).upper() == warehouse_name.upper():
             value = row.get("auto_suspend")
-            return int(value) if value is not None else None
-    return None
+            created_on = row.get("created_on")
+            return CapturedWarehouseDefaults(
+                stored_default=int(value) if value is not None else None,
+                warehouse_created_on=(
+                    str(created_on) if created_on is not None else None
+                ),
+            )
+    return CapturedWarehouseDefaults(stored_default=None, warehouse_created_on=None)
 
 
 def _require_store():
@@ -252,7 +268,8 @@ def toggle_warehouse(
             status_code=502, detail="Could not read the warehouse's current AUTO_SUSPEND."
         ) from None
 
-    if captured is None or captured in _SENTINEL_DEFAULTS:
+    stored_default = captured.stored_default
+    if stored_default is None or stored_default in _SENTINEL_DEFAULTS:
         raise HTTPException(
             status_code=422,
             detail=(
@@ -267,9 +284,9 @@ def toggle_warehouse(
             organization_id,
             warehouse_name,
             enabled=True,
-            stored_default=captured,
-            managed_default=captured,
-            warehouse_created_on=None,
+            stored_default=stored_default,
+            managed_default=stored_default,
+            warehouse_created_on=captured.warehouse_created_on,
         )
     except AutomatedSavingsStoreError:
         raise HTTPException(
