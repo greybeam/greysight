@@ -197,13 +197,16 @@ class InMemoryStore:
         self._enrollments.pop((organization_id, warehouse_name), None)
 
     def worker_tenants(self) -> list[str]:
-        enabled_orgs = {
+        enabled_warehouse_orgs = {
+            org_id for (org_id, _wh), row in self._enrollments.items() if row.enabled
+        }
+        globally_enrolled_orgs = {
             row.organization_id
             for row in self._settings.values()
-            if row.global_enabled
+            if row.global_enabled and row.organization_id in enabled_warehouse_orgs
         }
         intent_orgs = {org_id for org_id, _wh in self._intents}
-        return sorted(enabled_orgs | intent_orgs)
+        return sorted(globally_enrolled_orgs | intent_orgs)
 
 
 class SupabaseStore:
@@ -249,7 +252,7 @@ class SupabaseStore:
 
     def list_enrollments(self, organization_id: str) -> list[EnrollmentRow]:
         rows = self._get(
-            "/automated_savings_enrollments", organization_id=organization_id
+            "/automated_savings_warehouses", organization_id=organization_id
         )
         return [_parse_enrollment(row) for row in rows]
 
@@ -330,7 +333,7 @@ class SupabaseStore:
         try:
             with self._client() as client:
                 response = client.delete(
-                    "/automated_savings_enrollments",
+                    "/automated_savings_warehouses",
                     params={
                         "organization_id": f"eq.{organization_id}",
                         "warehouse_name": f"eq.{warehouse_name}",
@@ -360,7 +363,13 @@ class SupabaseStore:
             raise StoreError() from exc
         if not isinstance(rows, list):
             raise StoreError()
-        return [str(row) for row in rows]
+        try:
+            return [
+                row["organization_id"] if isinstance(row, dict) else str(row)
+                for row in rows
+            ]
+        except (KeyError, TypeError) as exc:
+            raise StoreError() from exc
 
     def _get(self, path: str, *, organization_id: str) -> list[dict]:
         try:
@@ -391,7 +400,7 @@ class SupabaseStore:
         try:
             with self._client() as client:
                 response = client.patch(
-                    "/automated_savings_enrollments",
+                    "/automated_savings_warehouses",
                     params={
                         "organization_id": f"eq.{organization_id}",
                         "warehouse_name": f"eq.{warehouse_name}",

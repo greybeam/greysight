@@ -22,9 +22,26 @@ from auto_savings.store import SupabaseStore
 from auto_savings.tenant_loop import supervisor
 
 
+def _require_supabase_credentials(config: WorkerConfig) -> None:
+    """Fail fast if Supabase creds are missing, instead of making doomed requests."""
+    missing = [
+        name
+        for name, value in (
+            ("SUPABASE_URL", config.supabase_url),
+            ("SUPABASE_SERVICE_ROLE_KEY", config.supabase_service_role_key),
+        )
+        if not value
+    ]
+    if missing:
+        raise RuntimeError(
+            "Missing required environment variable(s): " + ", ".join(missing)
+        )
+
+
 async def main() -> None:
     """Build the worker's dependencies and run the supervisor forever."""
     config = WorkerConfig.from_environment()
+    _require_supabase_credentials(config)
     store = SupabaseStore(config)
     fetch_connection = SupabaseConnectionFetcher(
         supabase_url=config.supabase_url,

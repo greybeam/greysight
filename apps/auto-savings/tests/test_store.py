@@ -3,7 +3,29 @@ from datetime import datetime, timezone
 import httpx
 
 from auto_savings.config import WorkerConfig
-from auto_savings.store import InMemoryStore, SupabaseStore
+from auto_savings.store import EnrollmentRow, InMemoryStore, SettingsRow, SupabaseStore
+
+NOW = datetime(2026, 7, 12, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def _config() -> WorkerConfig:
+    return WorkerConfig(
+        supabase_url="https://x.supabase.co", supabase_service_role_key="svc"
+    )
+
+
+def _enrollment_row(organization_id: str, warehouse_name: str, enabled: bool) -> EnrollmentRow:
+    return EnrollmentRow(
+        organization_id=organization_id,
+        warehouse_name=warehouse_name,
+        enabled=enabled,
+        managed_auto_suspend=60,
+        stored_default_auto_suspend=300,
+        warehouse_created_on=NOW,
+        cooldown_ts=None,
+        drift_state="ok",
+        drifted_value=None,
+    )
 
 
 def test_in_memory_intent_lifecycle():
@@ -24,10 +46,122 @@ def test_supabase_store_writes_intent_via_postgrest():
         seen["auth"] = request.headers.get("authorization")
         return httpx.Response(201, json=[])
 
-    config = WorkerConfig(supabase_url="https://x.supabase.co", supabase_service_role_key="svc")
-    store = SupabaseStore(config, transport=httpx.MockTransport(handler))
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
     store.write_intent("org-1", "WH1", restore_to=300)
 
     assert "automated_savings_restore_intents" in seen["url"]
     assert seen["method"] == "POST"
     assert seen["auth"] == "Bearer svc"
+
+
+def test_supabase_store_list_enrollments_hits_warehouses_table():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "organization_id": "org-1",
+                    "warehouse_name": "WH1",
+                    "enabled": True,
+                    "managed_auto_suspend": 60,
+                    "stored_default_auto_suspend": 300,
+                    "warehouse_created_on": NOW.isoformat(),
+                    "cooldown_ts": None,
+                    "drift_state": "ok",
+                    "drifted_value": None,
+                }
+            ],
+        )
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+    [row] = store.list_enrollments("org-1")
+
+    assert "automated_savings_warehouses" in seen["url"]
+    assert "automated_savings_enrollments" not in seen["url"]
+    assert row.warehouse_name == "WH1"
+
+
+def test_supabase_store_patch_enrollment_hits_warehouses_table():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["method"] = request.method
+        return httpx.Response(204, json=[])
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+    store.set_cooldown("org-1", "WH1", NOW)
+
+    assert "automated_savings_warehouses" in seen["url"]
+    assert "automated_savings_enrollments" not in seen["url"]
+    assert seen["method"] == "PATCH"
+
+
+def test_supabase_store_clear_enrollment_hits_warehouses_table():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["method"] = request.method
+        return httpx.Response(204, json=[])
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+    store.clear_enrollment("org-1", "WH1")
+
+    assert "automated_savings_warehouses" in seen["url"]
+    assert "automated_savings_enrollments" not in seen["url"]
+    assert seen["method"] == "DELETE"
+
+
+def test_supabase_store_worker_tenants_parses_organization_id_rows():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{"organization_id": "org-1"}, {"organization_id": "org-2"}])
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+    tenants = store.worker_tenants()
+
+    assert tenants == ["org-1", "org-2"]
+
+
+def test_in_memory_worker_tenants_requires_enabled_warehouse():
+    store = InMemoryStore()
+    # global_enabled but no enabled warehouse -> not a worker tenant.
+    store.seed_settings(
+        SettingsRow(
+            organization_id="org-1",
+            agreed_at=NOW,
+            global_enabled=True,
+            grant_present=True,
+            grant_checked_at=NOW,
+        )
+    )
+    store.seed_enrollment(_enrollment_row("org-1", "WH1", enabled=False))
+
+    # global_enabled with an enabled warehouse -> worker tenant.
+    store.seed_settings(
+        SettingsRow(
+            organization_id="org-2",
+            agreed_at=NOW,
+            global_enabled=True,
+            grant_present=True,
+            grant_checked_at=NOW,
+        )
+    )
+    store.seed_enrollment(_enrollment_row("org-2", "WH1", enabled=True))
+
+    # outstanding intent but globally disabled -> still a worker tenant (drain).
+    store.seed_settings(
+        SettingsRow(
+            organization_id="org-3",
+            agreed_at=NOW,
+            global_enabled=False,
+            grant_present=True,
+            grant_checked_at=NOW,
+        )
+    )
+    store.write_intent("org-3", "WH1", restore_to=300)
+
+    assert store.worker_tenants() == ["org-2", "org-3"]
