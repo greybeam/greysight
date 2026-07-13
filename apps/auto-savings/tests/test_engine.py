@@ -99,3 +99,24 @@ def test_cooldown_blocks_reacquire():
     run_cycle("org-1", rows=_rows(), store=store, config=CONFIG, now=NOW,
               apply_alter=lambda n, v: calls.append((n, v)))
     assert calls == []
+
+
+def test_drift_this_tick_closes_race_with_stale_enrollment_snapshot():
+    # WH1 drifts THIS tick (live auto_suspend != managed, no prior intent).
+    # The engine's top-of-cycle enrollment copy still shows drift_state="ok"
+    # (stale — reconcile hasn't written the mark yet when decide reads it),
+    # so the per-warehouse ``is_drifted`` guard alone would miss it and
+    # should_force_suspend would force-suspend a warehouse we don't own the
+    # auto_suspend value of. The skip-gate (name in skip → continue) must
+    # catch what reconcile settled this cycle regardless of the stale read.
+    store = InMemoryStore()
+    _seed(store, drift_state="ok"); _seed_settings(store)
+    calls = []
+    run_cycle(
+        "org-1",
+        rows=_rows(auto_suspend=120, state="STARTED", running=0, queued=0),
+        store=store, config=CONFIG, now=NOW,
+        apply_alter=lambda n, v: calls.append((n, v)),
+    )
+    assert calls == []  # NOT force-suspended despite the stale "ok" read
+    assert store.list_enrollments("org-1")[0].drift_state == "drifted"

@@ -39,7 +39,7 @@ def reconcile(
         intent = intent_by_name.get(name)
         snapshot = snapshot_by_name.get(name)
 
-        _reconcile_one(
+        settled = _reconcile_one(
             org_id,
             name,
             snapshot,
@@ -52,7 +52,8 @@ def reconcile(
             orphan_grace_seconds=orphan_grace_seconds,
             apply_alter=apply_alter,
         )
-        skip.add(name)
+        if settled:
+            skip.add(name)
     return skip
 
 
@@ -69,13 +70,21 @@ def _reconcile_one(
     intent_hold_seconds: float,
     orphan_grace_seconds: float,
     apply_alter: ApplyAlter,
-) -> None:
+) -> bool:
+    """Reconcile a single warehouse.
+
+    Returns True when this warehouse is "settled" this tick — meaning the
+    decide step must not evaluate it for a new force-suspend (it belongs in
+    the skip-set). Returns False only for a healthy enrolled warehouse
+    sitting at its managed value with no outstanding intent — the one case
+    decide is allowed to act on.
+    """
     # Branch 0: absent from snapshot entirely (customer dropped it).
     if snapshot is None:
         if intent is not None and (now - intent.set_at).total_seconds() > orphan_grace_seconds:
             store.delete_intent(org_id, name)
             store.clear_enrollment(org_id, name)
-        return
+        return True
 
     # Branch 1: created_on mismatch — name reused by a recreated warehouse.
     if (
@@ -87,7 +96,7 @@ def _reconcile_one(
         if intent is not None:
             store.delete_intent(org_id, name)
         store.clear_enrollment(org_id, name)
-        return
+        return True
 
     live = snapshot.auto_suspend
 
@@ -104,22 +113,29 @@ def _reconcile_one(
             intent_hold_seconds=intent_hold_seconds,
             apply_alter=apply_alter,
         )
-        return
+        return True
 
     # Branch 3: no intent, warehouse became non-STANDARD.
     if snapshot.type != "STANDARD":
         store.mark_unsupported(org_id, name)
-        return
+        return True
 
     # Branch 4: no intent, drift vs. the LIVE managed restore target.
     managed = enrollment.managed_auto_suspend if enrollment is not None else None
     if live != 1 and live != managed:
         if live is not None:
             store.mark_drifted(org_id, name, drifted_value=live)
-        return
+        return True
 
-    # Branch 5: no intent, live == 1 (independent sentinel) — leave untouched.
-    return
+    # Branch 5: no intent, live == 1 (independent sentinel) — protect it. Only
+    # a durable intent row proves we own a sentinel; without one we must not
+    # let decide claim it.
+    if live == 1:
+        return True
+
+    # Healthy enrolled warehouse at its managed value, no intent, STANDARD —
+    # the one case decide MUST be allowed to evaluate for suspension.
+    return False
 
 
 def _reconcile_intent(

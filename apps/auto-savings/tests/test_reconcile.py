@@ -190,3 +190,20 @@ def test_non_standard_marked_unsupported():
     store = InMemoryStore()
     _reconcile(store, [_wh(type="SNOWPARK-OPTIMIZED", auto_suspend=300)], [_enroll()])
     assert store.list_enrollments("org-1")[0].drift_state == "unsupported"
+
+
+def test_healthy_idle_warehouse_is_not_in_skip_but_independent_one_is():
+    # A healthy STANDARD warehouse sitting at its managed value with no
+    # outstanding intent is NOT settled — decide must be free to evaluate it
+    # for a force-suspend. An independent live==1 sentinel (no intent) IS
+    # settled — reconcile must protect it from decide claiming ownership.
+    store = InMemoryStore()
+    skip, calls = _reconcile(
+        store,
+        [_wh(name="WH-HEALTHY", auto_suspend=300, state="STARTED"),
+         _wh(name="WH-INDEPENDENT", auto_suspend=1, state="SUSPENDED")],
+        [_enroll(name="WH-HEALTHY", managed=300), _enroll(name="WH-INDEPENDENT", managed=300)],
+    )
+    assert calls == []
+    assert "WH-HEALTHY" not in skip
+    assert "WH-INDEPENDENT" in skip

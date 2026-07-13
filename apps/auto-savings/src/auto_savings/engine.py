@@ -35,19 +35,15 @@ def run_cycle(
 
     # Reconcile ALWAYS — drains intents even when the switch is off.
     #
-    # NOTE: ``reconcile`` returns the set of warehouse names it processed this
-    # tick, and the plan describes gating the decide step on ``name not in
-    # skip``. But the committed reconcile (Task 8) adds *every* enrolled name to
-    # that set — including quiet no-ops (its case 5 / no-op case 4) that it
-    # never mutated. Honoring it as a hard decide gate would suppress *every*
-    # force-suspend, including a fresh idle warehouse (the authoritative
-    # ``test_idle_warehouse_gets_intent_then_alter_in_order`` case). The real
-    # double-action protection lives in the per-warehouse guards below, all
-    # derived from the single top-of-cycle store read: ``has_outstanding_intent``
-    # covers every warehouse reconcile drained/held (branch 2), ``in_cooldown``
-    # covers a just-restored one, ``is_drifted`` covers a flagged one, and
-    # ``should_force_suspend``'s own state/type checks cover unsupported/busy.
-    reconcile(
+    # ``reconcile`` returns the set of warehouse names settled this tick —
+    # every warehouse it mutated, cleared, or otherwise finished deciding
+    # about. A healthy idle warehouse at its managed value (no intent) is the
+    # one case left OUT of that set, so decide is still free to force-suspend
+    # it (see ``test_idle_warehouse_gets_intent_then_alter_in_order``). The
+    # skip-gate below closes the race where reconcile marks/clears a
+    # warehouse this tick but the engine's top-of-cycle enrollment snapshot
+    # is still stale.
+    skip = reconcile(
         org_id,
         snapshots,
         enrollments,
@@ -70,6 +66,8 @@ def run_cycle(
 
     for enrollment in enrollments:
         name = enrollment.warehouse_name
+        if name in skip:
+            continue
         if not enrollment.enabled:
             continue
         snapshot = snapshot_by_name.get(name)
