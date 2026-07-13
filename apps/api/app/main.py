@@ -11,6 +11,7 @@ from starlette.requests import Request
 
 from app import auth
 from app.config import Settings
+from app.routes.automated_savings import router as automated_savings_router
 from app.routes.dashboard_runs import router as dashboard_runs_router
 from app.routes.health import router as health_router
 from app.routes.onboarding import router as onboarding_router
@@ -18,6 +19,10 @@ from app.routes.organizations import router as organizations_router
 from app.routes.session import router as session_router
 from app.routes.snowflake import router as snowflake_router
 from app.services import query_concurrency
+from app.services.automated_savings_store import (
+    SupabaseAutomatedSavingsStore,
+    configure_automated_savings_store,
+)
 from app.services.org_invitations import (
     SupabaseMemberRpc,
     SupabaseUserInviter,
@@ -111,6 +116,28 @@ def _configure_dashboard_cache(settings: Settings) -> None:
         configure_run_cache_store(None)
 
 
+def _configure_automated_savings_store(settings: Settings) -> None:
+    # Same rationale as _configure_dashboard_cache: this store uses the
+    # Supabase service role and bypasses RLS, so the route-layer org-
+    # membership check is the only tenant boundary. That check no-ops when
+    # auth is disabled, so never wire the service-role store unless auth is
+    # required — otherwise an auth-off deployment could read/write any org's
+    # automated-savings data.
+    if (
+        settings.auth_required
+        and settings.supabase_url.strip()
+        and settings.supabase_service_role_key.strip()
+    ):
+        configure_automated_savings_store(
+            SupabaseAutomatedSavingsStore(
+                supabase_url=settings.supabase_url,
+                service_role_key=settings.supabase_service_role_key,
+            )
+        )
+    else:
+        configure_automated_savings_store(None)
+
+
 settings = Settings()
 auth.configure_supabase_session_verifier(settings)
 auth.configure_membership_lookup(settings)
@@ -118,6 +145,7 @@ _configure_org_provisioner(settings)
 _configure_org_disconnector(settings)
 _configure_invitations(settings)
 _configure_dashboard_cache(settings)
+_configure_automated_savings_store(settings)
 query_concurrency.configure(settings.query_concurrency)
 
 
@@ -194,3 +222,4 @@ app.include_router(dashboard_runs_router)
 app.include_router(session_router)
 app.include_router(onboarding_router)
 app.include_router(organizations_router)
+app.include_router(automated_savings_router)
