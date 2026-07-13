@@ -6,6 +6,7 @@ happen ONLY when launching the worker locally, never during pytest (tests stay
 hermetic).
 """
 
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -13,6 +14,15 @@ from dotenv import load_dotenv
 # apps/auto-savings/dev.py -> parents[2] is the monorepo root
 # (apps/auto-savings -> apps -> root).
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# The worker package lives under ``src/`` (src layout). pytest picks it up via
+# ``pythonpath = ["src"]`` in pyproject.toml, but that setting is pytest-only and
+# the project declares no build-system, so ``uv run python dev.py`` never puts
+# ``src`` on the import path. Add it here so the local launcher can import
+# ``auto_savings`` without an editable install.
+SRC_DIR = Path(__file__).resolve().parent / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 
 def load_local_env(root: Path) -> bool:

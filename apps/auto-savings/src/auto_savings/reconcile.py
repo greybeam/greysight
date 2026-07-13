@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Callable
 
-from auto_savings.store import EnrollmentRow, RestoreIntent, SavingsEvent, Store
+from auto_savings.store import (
+    EnrollmentRow,
+    RestoreIntent,
+    SavingsEvent,
+    Store,
+    StoreError,
+)
 from auto_savings.warehouse_snapshot import WarehouseSnapshot
 
 ApplyAlter = Callable[[str, int], None]
@@ -213,6 +220,23 @@ def _reconcile_intent(
         else:
             store.delete_intent(org_id, name)
         return
+
+    # Sentinel ownership must be durably confirmed before ANY terminal action.
+    # We ALTER AUTO_SUSPEND=1 to arm a sentinel, but the immediately-following SHOW
+    # can be stale and still report the restore target (or a mid-flight value). Until
+    # we have actually observed live == 1, treating that stale read as a completed
+    # restore / customer drift would delete the only ownership intent and strand the
+    # sentinel once SHOW catches up. So while unconfirmed:
+    #   live != 1 -> HOLD (no ALTER, drift, cooldown, or delete); retry next tick.
+    #   live == 1 -> the ALTER is now observable; durably confirm ownership, then
+    #                fall through to the normal decision logic in this same tick.
+    if not intent.sentinel_confirmed:
+        if live != 1:
+            return
+        if intent.cycle_id is None:
+            raise StoreError()
+        store.confirm_sentinel(org_id, name, intent.cycle_id)
+        intent = replace(intent, sentinel_confirmed=True)
 
     # Already restored (idempotent terminal): a prior delete_intent failed, or
     # the warehouse resumed to the restored value. No ALTER.

@@ -1,7 +1,9 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from auto_savings.reconcile import reconcile
-from auto_savings.store import EnrollmentRow, InMemoryStore
+from auto_savings.store import EnrollmentRow, InMemoryStore, StoreError
 from auto_savings.warehouse_snapshot import WarehouseSnapshot
 
 NOW = datetime(2026, 7, 12, 12, 0, 0, tzinfo=timezone.utc)
@@ -130,12 +132,95 @@ def test_failed_restore_alter_records_no_audit_event():
     assert store.list_intents("org-1") != []      # intent kept
 
 
-def test_idempotent_already_restored_records_no_event():
-    # live already == restore_to (no ALTER issued) → nothing to audit.
+def test_unconfirmed_sentinel_holds_when_stale_show_reports_restore_target():
+    # The race: ALTER AUTO_SUSPEND=1 succeeded, but the next SHOW is stale and
+    # still reports the restore target (300). An unconfirmed sentinel must NOT
+    # read that as an idempotently-completed restore — doing so deletes the only
+    # ownership intent and strands the later-visible AUTO_SUSPEND=1. HOLD instead:
+    # no ALTER, no cooldown, no drift, no event, intent retained.
+    store = InMemoryStore()
+    store.write_intent("org-1", "WH1", restore_to=300)  # fresh sentinel, unconfirmed
+    stale = _wh(auto_suspend=300, state="STARTED")       # SHOW hasn't caught up to 1
+    _, calls = _reconcile(store, [stale], [_enroll()])
+    assert calls == []                                              # no ALTER
+    assert store.list_intents("org-1") != []                       # intent HELD
+    assert store.list_enrollments("org-1")[0].cooldown_ts is None  # no cooldown
+    assert store.list_enrollments("org-1")[0].drift_state == "ok"  # no drift flagged
+    assert store.list_events("org-1") == []                        # no audit event
+
+
+def test_unconfirmed_sentinel_holds_when_live_looks_like_customer_drift():
+    # A value that is neither 1 nor the restore target (120) would, for a CONFIRMED
+    # sentinel, be customer drift -> mark_drifted + delete. But while unconfirmed we
+    # have not yet proven the ALTER landed; this may be a stale SHOW ahead of
+    # AUTO_SUSPEND=1. HOLD: never flag drift or drop the only ownership intent.
     store = InMemoryStore()
     store.write_intent("org-1", "WH1", restore_to=300)
-    _reconcile(store, [_wh(auto_suspend=300, state="STARTED")], [_enroll()])
+    drifting = _wh(auto_suspend=120, state="STARTED")
+    _, calls = _reconcile(store, [drifting], [_enroll()])
+    assert calls == []
+    assert store.list_intents("org-1") != []                        # intent HELD
+    assert store.list_enrollments("org-1")[0].drift_state == "ok"    # NOT flagged drift
+    assert store.list_enrollments("org-1")[0].cooldown_ts is None    # no cooldown
+
+
+def test_live_one_durably_confirms_ownership_before_restore_executes():
+    # Multi-tick: the first observation of AUTO_SUSPEND=1 proves the ALTER landed.
+    # We must durably confirm ownership on that tick — even when the outcome is a
+    # HOLD (idle, not aged) rather than a restore — so a later stale SHOW cannot
+    # strand the sentinel. A subsequent tick then restores on the confirmed intent.
+    store = InMemoryStore()
+    store.write_intent("org-1", "WH1", restore_to=300, set_at=NOW, baseline_resumed_on=None)
+
+    # Tick 1: live == 1, STARTED + idle + not aged -> confirm, then HOLD.
+    idle = WarehouseSnapshot(name="WH1", state="STARTED", type="STANDARD", size="X-Small",
+                             started_clusters=1, min_cluster_count=1, max_cluster_count=1,
+                             running=0, queued=0, auto_suspend=1, auto_resume=True,
+                             resumed_on=None, created_on=NOW - timedelta(days=1))
+    _, calls = _reconcile(store, [idle], [_enroll()], now=NOW, intent_hold_seconds=15.0)
+    assert calls == []                                          # no restore yet (held)
+    [held] = store.list_intents("org-1")
+    assert held.sentinel_confirmed is True                      # ownership durably confirmed
     assert store.list_events("org-1") == []
+
+    # Tick 2: confirmed intent, live == 1 + SUSPENDED -> restore executes.
+    _, calls2 = _reconcile(store, [_wh(auto_suspend=1, state="SUSPENDED")], [_enroll()], now=NOW)
+    assert calls2 == [("WH1", 300)]
+    assert store.list_intents("org-1") == []
+    assert store.list_events("org-1")[0].reason == "suspended"
+
+
+def test_replaced_intent_during_confirmation_prevents_terminal_restore():
+    class ReplacedOnConfirmationStore(InMemoryStore):
+        def confirm_sentinel(
+            self,
+            organization_id: str,
+            warehouse_name: str,
+            *args: object,
+        ) -> None:
+            self.write_intent(
+                organization_id,
+                warehouse_name,
+                restore_to=600,
+                cycle_id="replacement-cycle",
+            )
+            super().confirm_sentinel(organization_id, warehouse_name, *args)
+
+    store = ReplacedOnConfirmationStore()
+    store.write_intent(
+        "org-1", "WH1", restore_to=300, cycle_id="original-cycle"
+    )
+
+    with pytest.raises(StoreError):
+        _reconcile(
+            store,
+            [_wh(auto_suspend=1, state="SUSPENDED")],
+            [_enroll()],
+        )
+
+    assert store.list_intents("org-1")[0].cycle_id == "replacement-cycle"
+    assert store.list_events("org-1") == []
+    assert store.list_enrollments("org-1")[0].cooldown_ts is None
 
 
 def test_started_busy_restores_with_backoff_cooldown():
@@ -205,8 +290,11 @@ def test_started_idle_still_one_holds_intent_until_age_exceeds_bound():
 
 
 def test_intent_restore_detects_customer_edit_mid_suspend():
+    # A customer edit (live=120) is only distinguishable from a stale SHOW once we
+    # have confirmed the sentinel landed — so confirm first, then 120 is genuine drift.
     store = InMemoryStore()
-    store.write_intent("org-1", "WH1", restore_to=300)
+    store.write_intent("org-1", "WH1", restore_to=300, cycle_id="c1")
+    store.confirm_sentinel("org-1", "WH1", "c1")
     _, calls = _reconcile(store, [_wh(auto_suspend=120, state="STARTED")], [_enroll()])
     assert calls == []  # not stomped
     assert store.list_enrollments("org-1")[0].drift_state == "drifted"
@@ -254,8 +342,11 @@ def test_dropped_warehouse_within_grace_is_left_alone():
 def test_already_restored_intent_is_cleared_idempotently():
     # apply_alter succeeded but delete_intent failed last tick → live already == restore_to.
     # No matching subcase would leave the intent stuck forever (Codex R2.1 HIGH).
+    # Such a leftover intent is necessarily confirmed (we confirm before restoring),
+    # so live == restore_to here is a genuine completed restore, not a stale SHOW.
     store = InMemoryStore()
-    store.write_intent("org-1", "WH1", restore_to=300)
+    store.write_intent("org-1", "WH1", restore_to=300, cycle_id="c1")
+    store.confirm_sentinel("org-1", "WH1", "c1")
     live_restored = WarehouseSnapshot(name="WH1", state="STARTED", type="STANDARD", size="X-Small",
                                       started_clusters=1, min_cluster_count=1, max_cluster_count=1,
                                       running=0, queued=0, auto_suspend=300, auto_resume=True,

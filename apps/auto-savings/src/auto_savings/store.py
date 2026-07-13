@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Protocol
+from uuid import uuid4
 
 import httpx
 
@@ -47,6 +48,10 @@ class RestoreIntent:
     baseline_resumed_on: datetime | None = None
     cycle_id: str | None = None
     kind: str = "sentinel"  # 'sentinel' (worker suspend) | 'reapply' (admin re-apply)
+    # True only once reconcile has observed the sentinel land (live AUTO_SUSPEND
+    # == 1). While False, reconcile must not treat any live value as a terminal
+    # outcome — a stale SHOW ahead of the ALTER would otherwise strand the intent.
+    sentinel_confirmed: bool = False
 
 
 @dataclass(frozen=True)
@@ -95,6 +100,10 @@ class Store(Protocol):
     ) -> None: ...
 
     def record_event(self, event: SavingsEvent) -> None: ...
+
+    def confirm_sentinel(
+        self, organization_id: str, warehouse_name: str, cycle_id: str
+    ) -> None: ...
 
     def delete_intent(self, organization_id: str, warehouse_name: str) -> None: ...
 
@@ -166,7 +175,7 @@ class InMemoryStore:
             restore_to=restore_to,
             set_at=_now(set_at),
             baseline_resumed_on=baseline_resumed_on,
-            cycle_id=cycle_id,
+            cycle_id=cycle_id or uuid4().hex,
             kind=kind,
         )
 
@@ -175,6 +184,19 @@ class InMemoryStore:
 
     def list_events(self, organization_id: str) -> list[SavingsEvent]:
         return [e for e in self._events if e.organization_id == organization_id]
+
+    def confirm_sentinel(
+        self, organization_id: str, warehouse_name: str, cycle_id: str
+    ) -> None:
+        key = (organization_id, warehouse_name)
+        intent = self._intents.get(key)
+        if (
+            intent is None
+            or intent.cycle_id != cycle_id
+            or intent.kind != "sentinel"
+        ):
+            raise StoreError()
+        self._intents[key] = replace(intent, sentinel_confirmed=True)
 
     def delete_intent(self, organization_id: str, warehouse_name: str) -> None:
         self._intents.pop((organization_id, warehouse_name), None)
@@ -325,6 +347,10 @@ class SupabaseStore:
                 else None
             ),
             "kind": kind,
+            # Reset on every (upsert) write so a re-armed sentinel cannot inherit
+            # a prior row's confirmation — the merge-duplicates upsert would keep
+            # the stale value otherwise.
+            "sentinel_confirmed": False,
         }
         if cycle_id is not None:
             payload["cycle_id"] = cycle_id
@@ -371,6 +397,46 @@ class SupabaseStore:
         except httpx.HTTPError as exc:
             raise StoreError() from exc
         if response.status_code not in (200, 201, 204):
+            raise StoreError()
+
+    def confirm_sentinel(
+        self, organization_id: str, warehouse_name: str, cycle_id: str
+    ) -> None:
+        try:
+            with self._client() as client:
+                response = client.patch(
+                    "/automated_savings_restore_intents",
+                    params={
+                        "select": (
+                            "organization_id,warehouse_name,cycle_id,kind,"
+                            "sentinel_confirmed"
+                        ),
+                        "organization_id": f"eq.{organization_id}",
+                        "warehouse_name": f"eq.{warehouse_name}",
+                        "cycle_id": f"eq.{cycle_id}",
+                        "kind": "eq.sentinel",
+                    },
+                    json={"sentinel_confirmed": True},
+                    headers=self._headers(prefer="return=representation"),
+                )
+        except httpx.HTTPError as exc:
+            raise StoreError() from exc
+        if response.status_code != 200:
+            raise StoreError()
+        try:
+            rows = response.json()
+        except ValueError as exc:
+            raise StoreError() from exc
+        if not isinstance(rows, list) or len(rows) != 1:
+            raise StoreError()
+        row = rows[0]
+        if not isinstance(row, dict) or row != {
+            "organization_id": organization_id,
+            "warehouse_name": warehouse_name,
+            "cycle_id": cycle_id,
+            "kind": "sentinel",
+            "sentinel_confirmed": True,
+        }:
             raise StoreError()
 
     def delete_intent(self, organization_id: str, warehouse_name: str) -> None:
@@ -584,6 +650,8 @@ def _parse_intent(row: object) -> RestoreIntent:
                 str(row["cycle_id"]) if row.get("cycle_id") is not None else None
             ),
             kind=str(row.get("kind") or "sentinel"),
+            # Absent for pre-migration rows -> unconfirmed (safe default: HOLD).
+            sentinel_confirmed=bool(row.get("sentinel_confirmed", False)),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise StoreError() from exc

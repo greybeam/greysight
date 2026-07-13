@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from greysight_connect.snowflake_client import (
@@ -69,7 +70,11 @@ def _escape_role_identifier(role_name: str) -> str:
 def join_warehouse_view(
     live: list[dict[str, Any]],
     enrollments: list[Any],
+    *,
+    now: datetime | None = None,
 ) -> list[WarehouseView]:
+    # `now` is injectable for deterministic tests; default to wall-clock UTC.
+    now = now or datetime.now(timezone.utc)
     enrollment_by_name = {
         str(getattr(row, "warehouse_name", "")).upper(): row for row in enrollments
     }
@@ -124,6 +129,7 @@ def join_warehouse_view(
                     drift_state=drift_state,
                     cooldown_ts=cooldown_ts,
                     state=state,
+                    now=now,
                 ),
             )
         )
@@ -136,13 +142,39 @@ def _compute_status(
     drift_state: str,
     cooldown_ts: str | None,
     state: str | None,
+    now: datetime,
 ) -> str:
     if not supported:
         return "unsupported"
     if drift_state == "drifted":
         return "drifted"
-    if cooldown_ts:
+    if _cooldown_active(cooldown_ts, now):
         return "in_cooldown"
     if str(state or "").upper() in ("SUSPENDING", "RESUMING"):
         return "mid_suspend"
     return "idle"
+
+
+def _cooldown_active(cooldown_ts: str | None, now: datetime) -> bool:
+    """True only while the anti-thrash cooldown is still in the future.
+
+    The worker writes `cooldown_ts = restore_time + cooldown_seconds` and never
+    nulls it, so a bare truthiness check would pin the status to `in_cooldown`
+    forever after the first restore. Mirror the worker's own expiry check
+    (engine.py: `cooldown_ts is not None and cooldown_ts > now`): parse the
+    stored timestamp and compare it to `now`. An unparseable value is treated as
+    inactive rather than sticking the badge on."""
+    if not cooldown_ts:
+        return False
+    parsed = _coerce_utc(cooldown_ts)
+    if parsed is None:
+        return False
+    return parsed > now
+
+
+def _coerce_utc(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed

@@ -115,6 +115,7 @@ describe("WarehouseTable", () => {
     await waitFor(() => expect(input.value).toBe("300"));
     expect(setSpy).not.toHaveBeenCalled();
     expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(/can't go below 60s/i);
   });
 
   it("does not call the API when the managed-default value is unchanged", async () => {

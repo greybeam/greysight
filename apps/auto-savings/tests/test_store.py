@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 import httpx
+import pytest
 
 from auto_savings.config import WorkerConfig
 from auto_savings.store import (
@@ -8,6 +9,7 @@ from auto_savings.store import (
     InMemoryStore,
     SavingsEvent,
     SettingsRow,
+    StoreError,
     SupabaseStore,
 )
 
@@ -41,6 +43,41 @@ def test_in_memory_intent_lifecycle():
     assert intent.restore_to == 300
     store.delete_intent("org-1", "WH1")
     assert store.list_intents("org-1") == []
+
+
+def test_in_memory_confirm_sentinel_marks_current_intent_confirmed():
+    store = InMemoryStore()
+    store.write_intent("org-1", "WH1", restore_to=300, cycle_id="c1")
+    assert store.list_intents("org-1")[0].sentinel_confirmed is False
+    store.confirm_sentinel("org-1", "WH1", "c1")
+    assert store.list_intents("org-1")[0].sentinel_confirmed is True
+
+
+def test_write_intent_resets_sentinel_confirmed_to_false():
+    # An upsert over a confirmed intent must NOT inherit stale confirmation: a fresh
+    # write starts a new, unconfirmed ownership claim (so a re-armed sentinel cannot
+    # be read as already-confirmed by the stale-SHOW that armed it).
+    store = InMemoryStore()
+    store.write_intent("org-1", "WH1", restore_to=300, cycle_id="c1")
+    store.confirm_sentinel("org-1", "WH1", "c1")
+    store.write_intent("org-1", "WH1", restore_to=300)
+    assert store.list_intents("org-1")[0].sentinel_confirmed is False
+
+
+@pytest.mark.parametrize(
+    ("kind", "cycle_id"),
+    [("sentinel", "replacement"), ("reapply", "c1")],
+)
+def test_in_memory_confirm_sentinel_rejects_replaced_or_non_sentinel_intent(
+    kind: str, cycle_id: str
+):
+    store = InMemoryStore()
+    store.write_intent(
+        "org-1", "WH1", restore_to=300, cycle_id=cycle_id, kind=kind
+    )
+
+    with pytest.raises(StoreError):
+        store.confirm_sentinel("org-1", "WH1", "c1")
 
 
 def test_supabase_store_writes_intent_via_postgrest():
@@ -104,6 +141,154 @@ def test_supabase_store_write_intent_sends_null_baseline_resumed_on():
     store.write_intent("org-1", "WH1", restore_to=300)
 
     assert '"baseline_resumed_on":null' in seen["body"]
+
+
+def test_supabase_store_write_intent_sends_sentinel_confirmed_false():
+    # Upsert (merge-duplicates) must explicitly reset confirmation so a re-armed
+    # sentinel cannot inherit an earlier row's sentinel_confirmed=true.
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.read().decode()
+        return httpx.Response(201, json=[])
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+    store.write_intent("org-1", "WH1", restore_to=300)
+
+    assert '"sentinel_confirmed":false' in seen["body"]
+
+
+def test_supabase_store_confirm_sentinel_patches_restore_intent():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["method"] = request.method
+        seen["body"] = request.read().decode()
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "organization_id": "org-1",
+                    "warehouse_name": "WH1",
+                    "cycle_id": "c1",
+                    "kind": "sentinel",
+                    "sentinel_confirmed": True,
+                }
+            ],
+        )
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+    store.confirm_sentinel("org-1", "WH1", "c1")
+
+    assert "automated_savings_restore_intents" in seen["url"]
+    assert seen["method"] == "PATCH"
+    assert "organization_id=eq.org-1" in seen["url"]
+    assert "warehouse_name=eq.WH1" in seen["url"]
+    assert "cycle_id=eq.c1" in seen["url"]
+    assert "kind=eq.sentinel" in seen["url"]
+    assert '"sentinel_confirmed":true' in seen["body"]
+
+
+@pytest.mark.parametrize(
+    "response_json",
+    [
+        [],
+        {},
+        [
+            {
+                "organization_id": "org-1",
+                "warehouse_name": "WH1",
+                "cycle_id": "replacement",
+                "kind": "sentinel",
+                "sentinel_confirmed": True,
+            }
+        ],
+        [
+            {
+                "organization_id": "org-1",
+                "warehouse_name": "WH1",
+                "cycle_id": "c1",
+                "kind": "reapply",
+                "sentinel_confirmed": True,
+            }
+        ],
+        [
+            {
+                "organization_id": "org-1",
+                "warehouse_name": "WH1",
+                "cycle_id": "c1",
+                "kind": "sentinel",
+                "sentinel_confirmed": True,
+            },
+            {
+                "organization_id": "org-1",
+                "warehouse_name": "WH1",
+                "cycle_id": "c1",
+                "kind": "sentinel",
+                "sentinel_confirmed": True,
+            },
+        ],
+    ],
+)
+def test_supabase_store_confirm_sentinel_requires_exactly_one_matching_row(
+    response_json: object,
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=response_json)
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+
+    with pytest.raises(StoreError):
+        store.confirm_sentinel("org-1", "WH1", "c1")
+
+
+def test_supabase_store_list_intents_hydrates_sentinel_confirmed():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "organization_id": "org-1",
+                    "warehouse_name": "WH1",
+                    "restore_to": 300,
+                    "set_at": NOW.isoformat(),
+                    "baseline_resumed_on": None,
+                    "cycle_id": "c1",
+                    "kind": "sentinel",
+                    "sentinel_confirmed": True,
+                }
+            ],
+        )
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+    [intent] = store.list_intents("org-1")
+
+    assert intent.sentinel_confirmed is True
+
+
+def test_supabase_store_list_intents_defaults_sentinel_confirmed_false_when_absent():
+    # A pre-migration row (column absent) hydrates as unconfirmed, not an error.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "organization_id": "org-1",
+                    "warehouse_name": "WH1",
+                    "restore_to": 300,
+                    "set_at": NOW.isoformat(),
+                    "baseline_resumed_on": None,
+                    "cycle_id": "c1",
+                    "kind": "sentinel",
+                }
+            ],
+        )
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+    [intent] = store.list_intents("org-1")
+
+    assert intent.sentinel_confirmed is False
 
 
 def test_supabase_store_list_intents_hydrates_baseline_resumed_on():

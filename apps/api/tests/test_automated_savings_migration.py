@@ -4,8 +4,8 @@ MIGRATIONS_DIR = Path(__file__).resolve().parents[3] / "supabase" / "migrations"
 
 MIGRATION = (MIGRATIONS_DIR / "202607120001_automated_savings.sql").read_text()
 
-BASELINE_RESUMED_ON_MIGRATION = (
-    MIGRATIONS_DIR / "202607130002_automated_savings_baseline_resumed_on.sql"
+SENTINEL_CONFIRMED_MIGRATION = (
+    MIGRATIONS_DIR / "20260713223505_automated_savings_sentinel_confirmed.sql"
 ).read_text()
 
 
@@ -40,14 +40,15 @@ def test_restore_intent_has_baseline_resumed_on_column():
     assert "baseline_resumed_on timestamptz" in MIGRATION
 
 
-def test_baseline_resumed_on_additive_migration_adds_column_idempotently():
-    # Finding #1 (RoboRev): 202607120001 was already applied to environments
-    # before baseline_resumed_on was appended to it, so a standalone additive
-    # migration re-deploys the column for those databases.
+def test_sentinel_confirmed_additive_migration_adds_non_null_default_false_column():
+    # Prevent the stale-SHOW race: an unconfirmed sentinel must not be read as an
+    # idempotently-completed restore. A durable, non-null default-false flag lets
+    # reconcile HOLD until it observes AUTO_SUSPEND=1 and confirms ownership. Added
+    # as a separate additive migration because 202607120001 is already applied.
     assert (
         "alter table automated_savings_restore_intents\n"
-        "    add column if not exists baseline_resumed_on timestamptz;"
-    ) in BASELINE_RESUMED_ON_MIGRATION
+        "    add column if not exists sentinel_confirmed boolean not null default false;"
+    ) in SENTINEL_CONFIRMED_MIGRATION
 
 
 def test_restore_intent_has_cycle_id_for_event_pairing():
