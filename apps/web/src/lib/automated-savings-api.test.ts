@@ -48,11 +48,21 @@ describe("automated-savings-api", () => {
   it("maps snake_case status JSON to camelCase AutomatedSavingsStatus", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
       agreed: true, global_enabled: false, grant_present: true, grant_checked_at: "2026-01-01T00:00:00Z",
+      role_name: "GREYSIGHT_ROLE",
     }), { status: 200 }));
     const status = await fetchStatus("org-1", { accessToken: "t" });
     expect(status).toEqual({
       agreed: true, globalEnabled: false, grantPresent: true, grantCheckedAt: "2026-01-01T00:00:00Z",
+      roleName: "GREYSIGHT_ROLE",
     });
+  });
+
+  it("maps a missing role_name on status to null", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      agreed: true, global_enabled: false, grant_present: true, grant_checked_at: null,
+    }), { status: 200 }));
+    const status = await fetchStatus("org-1", { accessToken: "t" });
+    expect(status.roleName).toBeNull();
   });
 
   it("fetches status from the API's actual status route", async () => {
@@ -152,13 +162,23 @@ describe("automated-savings-api", () => {
 
   it("posts check-access to the API's actual route and parses the smaller shape", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
-      grant_present: false, grant_checked_at: "2026-01-01T00:00:00Z",
+      grant_present: false, grant_checked_at: "2026-01-01T00:00:00Z", role_name: "GREYSIGHT_ROLE",
     }), { status: 200 }));
     const result = await checkAccess("org-1", { accessToken: "t" });
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toContain("/api/automated-savings/org-1/check-access");
     expect(init?.method).toBe("POST");
-    expect(result).toEqual({ grantPresent: false, grantCheckedAt: "2026-01-01T00:00:00Z" });
+    expect(result).toEqual({
+      grantPresent: false, grantCheckedAt: "2026-01-01T00:00:00Z", roleName: "GREYSIGHT_ROLE",
+    });
+  });
+
+  it("maps a missing role_name on check-access to null", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      grant_present: true, grant_checked_at: null,
+    }), { status: 200 }));
+    const result = await checkAccess("org-1", { accessToken: "t" });
+    expect(result.roleName).toBeNull();
   });
 
   it("throws when the underlying request fails", async () => {

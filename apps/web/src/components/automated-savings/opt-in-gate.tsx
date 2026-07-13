@@ -18,13 +18,11 @@ export function quoteIdent(role: string): string {
   return `"${role.replace(/"/g, '""')}"`;
 }
 
-// The API's StatusResponse doesn't carry the org's Snowflake role (it only
-// has agreed/global_enabled/grant_present/grant_checked_at), and nothing in
-// the web app's account/connection context (MembershipOrganization,
-// AccountChrome) exposes it either — the role is collected once during
-// onboarding's connect flow but never surfaced back to the client. Until a
-// real source exists, callers fall back to this clearly-named placeholder so
-// the GRANT SQL is still renderable (and obviously wrong if actually run).
+// The API's StatusResponse/CheckAccessResponse carry `role_name`, but it's a
+// best-effort lookup: it's null when Snowflake isn't configured for the org
+// or resolution fails for any other reason. Callers fall back to this
+// clearly-named placeholder so the GRANT SQL is still renderable (and
+// obviously wrong if actually run) when no real role is available.
 export const UNKNOWN_ROLE_PLACEHOLDER = "<YOUR_SNOWFLAKE_ROLE>";
 
 const REPO_URL = "https://github.com/greybeam-ai/greysight";

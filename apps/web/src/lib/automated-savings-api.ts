@@ -18,6 +18,7 @@ export type AutomatedSavingsStatus = {
   globalEnabled: boolean;
   grantPresent: boolean;
   grantCheckedAt: string | null;
+  roleName: string | null;
 };
 
 // The API's check-access response (`CheckAccessResponse`) is a strict subset
@@ -25,6 +26,7 @@ export type AutomatedSavingsStatus = {
 export type CheckAccessResult = {
   grantPresent: boolean;
   grantCheckedAt: string | null;
+  roleName: string | null;
 };
 
 export type WarehouseRow = {
@@ -127,6 +129,7 @@ export function parseStatus(raw: unknown): AutomatedSavingsStatus {
     globalEnabled: asBoolean(record.global_enabled),
     grantPresent: asBoolean(record.grant_present),
     grantCheckedAt: asNullableString(record.grant_checked_at),
+    roleName: asNullableString(record.role_name),
   };
 }
 
@@ -137,6 +140,7 @@ export function parseCheckAccessResult(raw: unknown): CheckAccessResult {
   return {
     grantPresent: asBoolean(record.grant_present),
     grantCheckedAt: asNullableString(record.grant_checked_at),
+    roleName: asNullableString(record.role_name),
   };
 }
 

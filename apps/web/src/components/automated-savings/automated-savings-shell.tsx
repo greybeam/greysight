@@ -97,7 +97,7 @@ function AutomatedSavingsContent() {
       <div className="p-6">
         <OptInGate
           orgId={orgId}
-          roleName={UNKNOWN_ROLE_PLACEHOLDER}
+          roleName={status.roleName ?? UNKNOWN_ROLE_PLACEHOLDER}
           onAgreed={() => void load()}
         />
       </div>
@@ -125,6 +125,7 @@ function AutomatedSavingsContent() {
         ...status,
         grantPresent: result.grantPresent,
         grantCheckedAt: result.grantCheckedAt,
+        roleName: result.roleName,
       });
     } finally {
       setChecking(false);
@@ -135,7 +136,7 @@ function AutomatedSavingsContent() {
     setWarehouses((prev) => prev.map((existing) => (existing.name === row.name ? row : existing)));
   }
 
-  const grantSql = `GRANT MANAGE WAREHOUSES ON ACCOUNT TO ROLE ${quoteIdent(UNKNOWN_ROLE_PLACEHOLDER)};`;
+  const grantSql = `GRANT MANAGE WAREHOUSES ON ACCOUNT TO ROLE ${quoteIdent(status.roleName ?? UNKNOWN_ROLE_PLACEHOLDER)};`;
 
   return (
     <div className="space-y-4 p-6">
