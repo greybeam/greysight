@@ -47,6 +47,9 @@ class SupabaseAutomatedSavingsStore:
         self._settings_url = f"{base}/rest/v1/automated_savings_settings"
         self._warehouses_url = f"{base}/rest/v1/automated_savings_warehouses"
         self._intents_url = f"{base}/rest/v1/automated_savings_restore_intents"
+        self._upsert_enrollment_url = (
+            f"{base}/rest/v1/rpc/automated_savings_upsert_enrollment"
+        )
         self._service_role_key = service_role_key
         self._timeout_seconds = timeout_seconds
         self._transport = transport
@@ -168,27 +171,44 @@ class SupabaseAutomatedSavingsStore:
         managed_default: int,
         warehouse_created_on: str | None,
     ) -> None:
-        # On a warehouse's FIRST enroll, capture the customer's current
+        # On a warehouse's FIRST enroll (or a re-enroll of the SAME physical
+        # warehouse — i.e. its stored `warehouse_created_on` matches the
+        # freshly-captured live `created_on`), capture the customer's current
         # AUTO_SUSPEND as the immutable `stored_default` AND seed
-        # `managed_default` from it. On a RE-enroll (a row already exists
-        # with a captured `stored_default`), preserve both — never overwrite
-        # the immutable capture with a freshly-observed live default, and
-        # leave `managed_default` alone since it's independently editable
-        # via `set_managed_default`.
-        existing = self._get_warehouse(organization_id, warehouse_name)
-        preserve_capture = (
-            existing is not None and existing.stored_default_auto_suspend is not None
-        )
-        payload: dict[str, Any] = {
-            "organization_id": organization_id,
-            "warehouse_name": warehouse_name,
-            "enabled": enabled,
-            "warehouse_created_on": warehouse_created_on,
+        # `managed_default` from it, or preserve both across a re-enroll.
+        # On a re-enroll where the warehouse was dropped and recreated (same
+        # name, different `created_on`) — or where the stored `created_on` is
+        # unknown — treat it as a FRESH capture instead of inheriting a stale
+        # default from the old, now-gone warehouse.
+        #
+        # This decision (preserve vs. fresh-capture) is made atomically inside
+        # a single Postgres upsert (see `automated_savings_upsert_enrollment`
+        # in the migration) rather than via a read-then-upsert here: a
+        # read-then-upsert that omits the default columns to "preserve" them
+        # would, if the row were deleted between the read and the write,
+        # INSERT a brand-new enabled row with NULL defaults — which the
+        # worker cannot handle. The RPC's INSERT branch always carries the
+        # freshly-captured stored_default/managed_default, so that race can
+        # never produce a null-default row.
+        payload = {
+            "p_organization_id": organization_id,
+            "p_warehouse_name": warehouse_name,
+            "p_enabled": enabled,
+            "p_stored_default": stored_default,
+            "p_managed_default": managed_default,
+            "p_warehouse_created_on": warehouse_created_on,
         }
-        if not preserve_capture:
-            payload["stored_default_auto_suspend"] = stored_default
-            payload["managed_auto_suspend"] = managed_default
-        self._upsert_warehouse(payload)
+        try:
+            with self._client() as client:
+                response = client.post(
+                    self._upsert_enrollment_url,
+                    json=payload,
+                    headers=self._headers(),
+                )
+        except httpx.HTTPError as exc:
+            raise AutomatedSavingsStoreError() from exc
+        if response.status_code not in (200, 201, 204):
+            raise AutomatedSavingsStoreError()
 
     def set_managed_default(
         self, organization_id: str, warehouse_name: str, value: int

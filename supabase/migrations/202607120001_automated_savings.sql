@@ -138,3 +138,66 @@ $$;
 
 revoke all on function automated_savings_worker_tenants() from public;
 grant execute on function automated_savings_worker_tenants() to service_role;
+
+-- Atomic enroll/re-enroll upsert. Doing the preserve-or-capture decision in a
+-- single statement (rather than read-then-upsert in the API) closes a TOCTOU
+-- race: if the row is deleted between a read and a later write, a read-then-
+-- upsert that omits the default columns (to "preserve" them) would INSERT a
+-- brand-new enabled row with NULL stored_default_auto_suspend/managed_auto_suspend
+-- — which the worker cannot handle. Here the INSERT branch always carries the
+-- freshly-captured p_stored_default/p_managed_default, so that race can never
+-- produce NULL defaults.
+--
+-- On conflict (re-enroll), preserve the existing stored_default/managed_auto_suspend
+-- only when the stored warehouse_created_on matches the freshly-captured live
+-- created_on (same physical warehouse, so the original capture is still valid).
+-- When they differ, or the stored warehouse_created_on is null (unknown/never
+-- captured), treat this as a FRESH capture: overwrite stored_default_auto_suspend
+-- and seed managed_auto_suspend from the newly-captured value, so a dropped and
+-- recreated warehouse (same name) does not inherit a stale default.
+create or replace function automated_savings_upsert_enrollment(
+    p_organization_id uuid,
+    p_warehouse_name text,
+    p_enabled boolean,
+    p_stored_default integer,
+    p_managed_default integer,
+    p_warehouse_created_on timestamptz
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+    insert into automated_savings_warehouses (
+        organization_id, warehouse_name, enabled,
+        stored_default_auto_suspend, managed_auto_suspend, warehouse_created_on
+    )
+    values (
+        p_organization_id, p_warehouse_name, p_enabled,
+        p_stored_default, p_managed_default, p_warehouse_created_on
+    )
+    on conflict (organization_id, warehouse_name) do update
+    set enabled = excluded.enabled,
+        warehouse_created_on = excluded.warehouse_created_on,
+        stored_default_auto_suspend = case
+            when automated_savings_warehouses.warehouse_created_on is not null
+                 and automated_savings_warehouses.warehouse_created_on = excluded.warehouse_created_on
+            then automated_savings_warehouses.stored_default_auto_suspend
+            else excluded.stored_default_auto_suspend
+        end,
+        managed_auto_suspend = case
+            when automated_savings_warehouses.warehouse_created_on is not null
+                 and automated_savings_warehouses.warehouse_created_on = excluded.warehouse_created_on
+            then automated_savings_warehouses.managed_auto_suspend
+            else excluded.managed_auto_suspend
+        end;
+end;
+$$;
+
+revoke all on function automated_savings_upsert_enrollment(
+    uuid, text, boolean, integer, integer, timestamptz
+) from public;
+grant execute on function automated_savings_upsert_enrollment(
+    uuid, text, boolean, integer, integer, timestamptz
+) to service_role;
