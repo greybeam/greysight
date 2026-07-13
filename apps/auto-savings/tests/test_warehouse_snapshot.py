@@ -54,3 +54,27 @@ def test_naive_resumed_on_is_assumed_utc():
     [wh] = parse_warehouses([_row(resumed_on=datetime(2026, 7, 12, 11, 58, 30))], now=NOW)
     assert wh.resumed_on.tzinfo is not None
     assert uptime_seconds(wh, now=NOW) == 90.0
+
+
+def test_absent_cluster_columns_default_started_to_min_standard_edition():
+    # Task 0 spike: SHOW WAREHOUSES omits started_clusters/min_cluster_count/
+    # max_cluster_count entirely on Standard edition (Enterprise+-only columns). A
+    # single-cluster Standard warehouse must still be recognized as suspend-eligible,
+    # i.e. started_clusters must default to the SAME value as min_cluster_count (not 0).
+    row = {
+        "name": "WH1", "state": "STARTED", "type": "STANDARD",
+        "running": 0, "queued": 0, "auto_suspend": 60, "auto_resume": "true",
+        "resumed_on": NOW - timedelta(seconds=90), "created_on": NOW - timedelta(days=5),
+    }
+    [wh] = parse_warehouses([row], now=NOW)
+    assert wh.started_clusters == wh.min_cluster_count
+    assert wh.min_cluster_count == 1
+    assert wh.started_clusters == 1
+
+
+def test_present_started_clusters_is_not_overridden_by_min_default():
+    # Enterprise+ multi-cluster warehouse: the real started_clusters must be kept even
+    # though min_cluster_count differs, so scaled-up warehouses remain protected.
+    [wh] = parse_warehouses([_row(started_clusters=3, min_cluster_count=1, max_cluster_count=4)], now=NOW)
+    assert wh.started_clusters == 3
+    assert wh.min_cluster_count == 1

@@ -82,6 +82,18 @@ def join_warehouse_view(
         auto_resume_ok = str(auto_resume_raw).strip().lower() == "true"
         enrollment = enrollment_by_name.get(name.upper())
 
+        # `min_cluster_count`/`started_clusters`/`max_cluster_count` are Enterprise+-only
+        # columns; SHOW WAREHOUSES omits them on Standard edition (Task 0 spike,
+        # 2026-07-12), which would otherwise render the UI's "# clusters" column blank.
+        # A Standard-edition warehouse is always single-cluster, so default the absent
+        # started/min fields to 1 while preserving real values when present.
+        min_cluster_count = row.get("min_cluster_count")
+        if min_cluster_count is None:
+            min_cluster_count = 1
+        started_clusters = row.get("started_clusters")
+        if started_clusters is None:
+            started_clusters = 1
+
         enabled = bool(getattr(enrollment, "enabled", False))
         managed_default = getattr(enrollment, "managed_auto_suspend", None)
         stored_default = getattr(enrollment, "stored_default_auto_suspend", None)
@@ -97,9 +109,9 @@ def join_warehouse_view(
                 state=state,
                 type=warehouse_type,
                 supported=supported,
-                min_cluster_count=row.get("min_cluster_count"),
+                min_cluster_count=min_cluster_count,
                 max_cluster_count=row.get("max_cluster_count"),
-                started_clusters=row.get("started_clusters"),
+                started_clusters=started_clusters,
                 auto_resume_ok=auto_resume_ok,
                 managed_default=managed_default,
                 stored_default=stored_default,

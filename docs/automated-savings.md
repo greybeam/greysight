@@ -59,11 +59,22 @@ The worker reads environment variables at startup to configure behavior. All val
   - Set to 62 to provide a 2-second safety margin above Snowflake's 60-second billing floor.
   - Do not lower this value without understanding Snowflake's billing semantics.
 
-- **`AUTO_SAVINGS_MAX_INTENT_HOLD_TICKS`** (default: 5)
+- **`AUTO_SAVINGS_MAX_INTENT_HOLD_TICKS`** (default: 8, recommended: 8)
   - **CRITICAL:** This must be set based on measured suspend latency in your environment.
   - The worker uses a conditional restore strategy: when a warehouse remains idle after `AUTO_SUSPEND=1` is applied, it "holds" the restore intent for up to `MAX_INTENT_HOLD_TICKS` polling cycles before force-restoring to ensure Snowflake's suspend operation completes.
-  - **The default value of 5 ticks is a placeholder.** With the default 3-second poll interval, this gives 15 seconds of hold time. If your measured suspend latency is, for example, 8 seconds, set `MAX_INTENT_HOLD_TICKS` to at least 8 ÷ 3 = 3 ticks (rounded up to 4 for safety).
-  - To find the right value: measure how many seconds it takes for a warehouse to move from `STARTED` to `SUSPENDED` after `AUTO_SUSPEND=1` is applied. Divide by your `POLL_INTERVAL_SECONDS` and round up; then use at least 2–3× that to account for variance. The value must be set in the Task 0 spike verification and confirmed before shipping.
+  - **Recommended value: 8 ticks (24s at the default 3s poll interval)**, per the Task 0 spike (`docs/superpowers/plans/2026-07-12-automated-savings-spike-notes.md`). Rationale: measured worker-regime suspend latency (uptime already past the 62s floor) is sub-second (~0.26s median), so 8 ticks satisfies the ≥2–3× rule with huge margin; it also dominates the observed ~17–20s resume-floor latency (a freshly-resumed warehouse won't suspend for ~15–20s even if idle) as defense-in-depth, while still bounding anti-stranding recovery to ≤24s.
+  - To find the right value: measure how many seconds it takes for a warehouse to move from `STARTED` to `SUSPENDED` after `AUTO_SUSPEND=1` is applied, in the worker's actual precondition regime (uptime already ≥ `UPTIME_FLOOR_SECONDS`). Divide by your `POLL_INTERVAL_SECONDS` and round up; then use at least 2–3× that to account for variance. **Re-measure on the actual deploy target account, especially Enterprise/multi-cluster editions** — cluster columns and resume-floor behavior may differ from the Standard-edition account used for the Task 0 spike.
+
+- **Operational note — `SHOW WAREHOUSES` cluster columns on Standard edition:**
+  `started_clusters`, `min_cluster_count`, and `max_cluster_count` are Enterprise+-only
+  columns; on **Standard edition** `SHOW WAREHOUSES` omits them entirely (confirmed by the
+  Task 0 spike, not account-specific noise). The parser (`warehouse_snapshot.py`) treats an
+  absent `started_clusters` as equal to the resolved `min_cluster_count` (default 1) — i.e.
+  single-cluster — since a Standard-edition warehouse is always single-cluster and safe to
+  suspend. When the columns ARE present (Enterprise+), the parser and API layer
+  (`warehouse_directory.py`) use the real values so multi-cluster warehouses stay
+  protected. Re-verify this behavior on the actual deploy target, especially
+  Enterprise/multi-cluster accounts.
 
 - **`AUTO_SAVINGS_ORPHAN_GRACE_SECONDS`** (default: 120)
   - Grace period (in seconds) before the worker cleans up stale restore intents for warehouses that have been dropped from Snowflake.

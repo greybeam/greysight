@@ -23,7 +23,7 @@ class WorkerConfig:
     socket_timeout_seconds: int = 15
     cooldown_seconds: int = 60
     uptime_floor_seconds: int = 62
-    max_intent_hold_ticks: int = 5
+    max_intent_hold_ticks: int = 8
     orphan_grace_seconds: int = 120
     tenant_refresh_seconds: int = 30
     num_replicas: int = 1
@@ -51,7 +51,7 @@ class WorkerConfig:
             socket_timeout_seconds=_int("AUTO_SAVINGS_SOCKET_TIMEOUT_SECONDS", 15),
             cooldown_seconds=_int("AUTO_SAVINGS_COOLDOWN_SECONDS", 60),
             uptime_floor_seconds=_int("AUTO_SAVINGS_UPTIME_FLOOR_SECONDS", 62),
-            max_intent_hold_ticks=_int("AUTO_SAVINGS_MAX_INTENT_HOLD_TICKS", 5),
+            max_intent_hold_ticks=_int("AUTO_SAVINGS_MAX_INTENT_HOLD_TICKS", 8),
             orphan_grace_seconds=_int("AUTO_SAVINGS_ORPHAN_GRACE_SECONDS", 120),
             tenant_refresh_seconds=_int("AUTO_SAVINGS_TENANT_REFRESH_SECONDS", 30),
             num_replicas=_int("AUTO_SAVINGS_NUM_REPLICAS", 1),

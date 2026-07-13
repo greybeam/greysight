@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from auto_savings.decision import should_force_suspend
-from auto_savings.warehouse_snapshot import WarehouseSnapshot
+from auto_savings.warehouse_snapshot import WarehouseSnapshot, parse_warehouses
 
 NOW = datetime(2026, 7, 12, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -50,3 +50,37 @@ def test_maximized_fires_when_all_clusters_idle_at_floor():
 
 def test_autoscale_above_floor_does_not_fire():
     assert _decide(_wh(started_clusters=3, min_cluster_count=1, max_cluster_count=4)) is False
+
+
+def test_standard_edition_absent_cluster_columns_fires():
+    # Task 0 spike blocking defect: SHOW WAREHOUSES omits started_clusters/
+    # min_cluster_count/max_cluster_count entirely on Standard edition. Before the fix,
+    # started_clusters defaulted to 0 and min_cluster_count to 1, so the gate's
+    # `started_clusters == min_cluster_count` check was always False and the worker never
+    # suspended anything on Standard edition. Prove the fix makes this fire.
+    row = {
+        "name": "WH1", "state": "STARTED", "type": "STANDARD",
+        "running": 0, "queued": 0, "auto_suspend": 60, "auto_resume": "true",
+        "resumed_on": NOW - timedelta(seconds=90), "created_on": NOW - timedelta(days=5),
+    }
+    [wh] = parse_warehouses([row], now=NOW)
+    assert should_force_suspend(
+        wh, now=NOW, uptime_floor_seconds=62,
+        in_cooldown=False, is_drifted=False, has_outstanding_intent=False,
+    ) is True
+
+
+def test_present_multi_cluster_started_clusters_still_protected():
+    # Present started_clusters must still be honored (not overridden by min default),
+    # so a scaled-up Enterprise+ multi-cluster warehouse is not force-suspended.
+    row = {
+        "name": "WH1", "state": "STARTED", "type": "STANDARD",
+        "started_clusters": 2, "min_cluster_count": 1, "max_cluster_count": 4,
+        "running": 0, "queued": 0, "auto_suspend": 60, "auto_resume": "true",
+        "resumed_on": NOW - timedelta(seconds=90), "created_on": NOW - timedelta(days=5),
+    }
+    [wh] = parse_warehouses([row], now=NOW)
+    assert should_force_suspend(
+        wh, now=NOW, uptime_floor_seconds=62,
+        in_cooldown=False, is_drifted=False, has_outstanding_intent=False,
+    ) is False

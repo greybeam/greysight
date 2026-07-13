@@ -70,14 +70,29 @@ def parse_warehouses(rows: list[dict], *, now: datetime) -> list[WarehouseSnapsh
     snapshots: list[WarehouseSnapshot] = []
     for row in rows:
         auto_suspend_raw = _ci_get(row, "auto_suspend")
+        # `started_clusters`/`min_cluster_count`/`max_cluster_count` only exist on
+        # Enterprise+ editions; SHOW WAREHOUSES omits them entirely on Standard edition
+        # (Task 0 spike, 2026-07-12). A Standard-edition warehouse is always single-cluster
+        # and safe to suspend, so when the column is ABSENT default started_clusters to the
+        # resolved min_cluster_count (not a hardcoded 0) so should_force_suspend's
+        # `started_clusters == min_cluster_count` gate can pass. When the column IS present
+        # (Enterprise+), use its real value so a scaled-up multi-cluster warehouse stays
+        # protected.
+        min_cluster_count = _as_int(_ci_get(row, "min_cluster_count"), 1)
+        started_clusters_raw = _ci_get(row, "started_clusters")
+        started_clusters = (
+            min_cluster_count
+            if started_clusters_raw is None
+            else _as_int(started_clusters_raw, min_cluster_count)
+        )
         snapshots.append(
             WarehouseSnapshot(
                 name=str(_ci_get(row, "name", "")),
                 state=str(_ci_get(row, "state", "")),
                 type=str(_ci_get(row, "type", "")),
                 size=_ci_get(row, "size"),
-                started_clusters=_as_int(_ci_get(row, "started_clusters"), 0),
-                min_cluster_count=_as_int(_ci_get(row, "min_cluster_count"), 1),
+                started_clusters=started_clusters,
+                min_cluster_count=min_cluster_count,
                 max_cluster_count=_as_int(_ci_get(row, "max_cluster_count"), 1),
                 running=_as_int(_ci_get(row, "running"), 0),
                 queued=_as_int(_ci_get(row, "queued"), 0),
