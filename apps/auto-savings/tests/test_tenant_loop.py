@@ -74,11 +74,18 @@ async def test_genuinely_blocking_call_times_out_and_frees_the_loop():
         def __init__(self):
             super().__init__()
             self.started = threading.Event()
+            self._release = threading.Event()
 
         def show_warehouses(self):
             self.started.set()
-            threading.Event().wait(5)  # blocks well past the 0.2s timeout
+            # Blocks past the 0.2s timeout; close_hard() releases it, mirroring a
+            # socket close freeing a wedged recv (so the drain stays fast).
+            self._release.wait(5)
             return []
+
+        def close_hard(self):
+            super().close_hard()
+            self._release.set()
 
     # socket_timeout must stay strictly < poll_timeout (WorkerConfig invariant) and,
     # since config validation now requires every interval to be finite and strictly
@@ -91,6 +98,42 @@ async def test_genuinely_blocking_call_times_out_and_frees_the_loop():
         with pytest.raises((asyncio.TimeoutError, TimeoutError)):
             await run_tenant_once("org-1", session=session, store=InMemoryStore(),
                                   config=cfg, executor=executor, now_fn=lambda: NOW)
+    assert session.closed is True
+
+
+@pytest.mark.asyncio
+async def test_timed_out_tick_drains_abandoned_thread_before_returning():
+    # #2a: on timeout the pool thread running _tick can't be cancelled from
+    # Python. run_tenant_once must close_hard() (freeing the wedged thread) AND
+    # wait for that thread to terminate before returning, so the next tick never
+    # overlaps the abandoned thread on the same session.
+    import threading
+
+    class DrainProbe(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self._release = threading.Event()
+            self.finished = threading.Event()
+
+        def show_warehouses(self):
+            self._release.wait(5)  # blocks past the 0.2s watchdog
+            self.finished.set()  # only reachable AFTER close_hard() releases us
+            return []
+
+        def close_hard(self):
+            super().close_hard()
+            self._release.set()  # socket close frees the blocked recv
+
+    cfg = WorkerConfig(supabase_url="u", supabase_service_role_key="k",
+                       poll_timeout_seconds=0.2, socket_timeout_seconds=0.05)
+    session = DrainProbe()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with pytest.raises((asyncio.TimeoutError, TimeoutError)):
+            await run_tenant_once("org-1", session=session, store=InMemoryStore(),
+                                  config=cfg, executor=executor, now_fn=lambda: NOW)
+    # Drained: the abandoned thread ran to completion before we returned. Without
+    # the drain, finished could still be unset here (thread still running).
+    assert session.finished.is_set() is True
     assert session.closed is True
 
 
@@ -274,3 +317,148 @@ async def test_supervisor_isolates_a_failing_session_factory(stub_tenant_loop):
 
     assert stub_tenant_loop == ["org-good"]  # good tenant started despite bad one failing
     assert "org-bad" not in sessions
+
+
+@pytest.mark.asyncio
+async def test_supervisor_keeps_session_when_fingerprint_unchanged(stub_tenant_loop):
+    # #3: a stable connection fingerprint must NOT recreate the warm session.
+    state = {"tenants": {"org-1"}}
+    store = _ScriptedStore(state)
+    sessions: list[DrainableSession] = []
+    stop = asyncio.Event()
+    step = {"n": 0}
+
+    def factory(org_id):
+        s = DrainableSession()
+        sessions.append(s)
+        return s
+
+    def fingerprint(_org_id):
+        return "fp-stable"
+
+    async def fake_sleep(_delay):
+        step["n"] += 1
+        if step["n"] >= 2:  # let at least one revalidation pass run
+            stop.set()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        await supervisor(store=store, config=CONFIG, executor=executor,
+                         session_factory=factory, fingerprint_fn=fingerprint,
+                         sleep=fake_sleep, stop=stop)
+
+    assert len(sessions) == 1  # never recreated across refreshes
+    assert sessions[0].closed is True  # closed only on shutdown drain
+
+
+@pytest.mark.asyncio
+async def test_supervisor_recycles_session_when_fingerprint_changes(stub_tenant_loop):
+    # #3: a rotated account/credential (changed fingerprint) must close the old
+    # warm session and create a fresh one.
+    state = {"tenants": {"org-1"}}
+    store = _ScriptedStore(state)
+    sessions: list[DrainableSession] = []
+    stop = asyncio.Event()
+    step = {"n": 0}
+
+    def factory(org_id):
+        s = DrainableSession()
+        sessions.append(s)
+        return s
+
+    def fingerprint(_org_id):
+        # Stable on the first refresh (start + its revalidation), rotates after.
+        return "fp-A" if step["n"] == 0 else "fp-B"
+
+    async def fake_sleep(_delay):
+        step["n"] += 1
+        if step["n"] >= 2:
+            stop.set()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        await supervisor(store=store, config=CONFIG, executor=executor,
+                         session_factory=factory, fingerprint_fn=fingerprint,
+                         sleep=fake_sleep, stop=stop)
+
+    assert len(sessions) == 2  # old recycled, new created
+    assert sessions[0].closed is True  # old session closed on recycle
+    assert sessions[1].closed is True  # new session closed on shutdown
+
+
+@pytest.mark.asyncio
+async def test_supervisor_drops_session_when_connection_disappears(stub_tenant_loop):
+    # #3: if the connection resolve raises OrgConnectionNotConfiguredError, the
+    # warm session is dropped (like a vanished tenant) rather than kept.
+    from greysight_connect.org_connection_resolver import (
+        OrgConnectionNotConfiguredError,
+    )
+
+    state = {"tenants": {"org-1"}}
+    store = _ScriptedStore(state)
+    sessions: list[DrainableSession] = []
+    stop = asyncio.Event()
+    step = {"n": 0}
+
+    def factory(org_id):
+        s = DrainableSession()
+        sessions.append(s)
+        return s
+
+    def fingerprint(_org_id):
+        if step["n"] == 0:
+            return "fp-A"
+        raise OrgConnectionNotConfiguredError("disconnected")
+
+    async def fake_sleep(_delay):
+        step["n"] += 1
+        if step["n"] >= 2:
+            stop.set()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        await supervisor(store=store, config=CONFIG, executor=executor,
+                         session_factory=factory, fingerprint_fn=fingerprint,
+                         sleep=fake_sleep, stop=stop)
+
+    assert len(sessions) == 1  # never re-created while connection stays gone
+    assert sessions[0].closed is True  # dropped/closed on the revalidation pass
+
+
+@pytest.mark.asyncio
+async def test_supervisor_restarts_crashed_task(monkeypatch):
+    # #12b: a tenant loop task that exits unexpectedly must be detected (.done())
+    # and restarted so the tenant does not silently go dark.
+    starts: list[str] = []
+
+    async def crashing_then_parking_loop(
+        org_id, *, session, store, config, executor, sleep, stop
+    ):
+        starts.append(org_id)
+        if len(starts) == 1:
+            raise RuntimeError("loop crashed")  # first instance dies
+        await stop.wait()  # restarted instance parks
+
+    monkeypatch.setattr(tenant_loop_mod, "tenant_loop", crashing_then_parking_loop)
+
+    state = {"tenants": {"org-1"}}
+    store = _ScriptedStore(state)
+    sessions: list[DrainableSession] = []
+    stop = asyncio.Event()
+    step = {"n": 0}
+
+    def factory(org_id):
+        s = DrainableSession()
+        sessions.append(s)
+        return s
+
+    async def fake_sleep(_delay):
+        await asyncio.sleep(0)  # let the scheduled tenant task run (and crash)
+        step["n"] += 1
+        if step["n"] >= 2:
+            stop.set()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        await supervisor(store=store, config=CONFIG, executor=executor,
+                         session_factory=factory, sleep=fake_sleep, stop=stop)
+
+    assert starts == ["org-1", "org-1"]  # crashed loop detected + restarted
+    assert len(sessions) == 2
+    assert sessions[0].closed is True  # crashed session closed on restart

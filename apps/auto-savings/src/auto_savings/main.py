@@ -17,7 +17,7 @@ from greysight_connect.org_connection_resolver import (
 )
 
 from auto_savings.config import WorkerConfig
-from auto_savings.snowflake_session import TenantSession
+from auto_savings.snowflake_session import TenantSession, connection_fingerprint
 from auto_savings.store import SupabaseStore
 from auto_savings.tenant_loop import supervisor
 
@@ -58,12 +58,22 @@ async def main() -> None:
             socket_timeout_seconds=config.socket_timeout_seconds,
         )
 
+    def fingerprint_fn(org_id: str) -> str:
+        # Re-resolve on each refresh so a disconnected/rotated org is detected:
+        # a changed fingerprint recycles the warm session, and an
+        # OrgConnectionNotConfiguredError (propagated) drops it.
+        snowflake_config = resolve_snowflake_config(
+            org_id, config, fetch_connection=fetch_connection
+        )
+        return connection_fingerprint(snowflake_config)
+
     with ThreadPoolExecutor(max_workers=config.max_workers) as executor:
         await supervisor(
             store=store,
             config=config,
             executor=executor,
             session_factory=session_factory,
+            fingerprint_fn=fingerprint_fn,
         )
 
 

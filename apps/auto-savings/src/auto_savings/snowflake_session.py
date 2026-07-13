@@ -10,6 +10,7 @@ fails before the watchdog trips (see WorkerConfig.__post_init__).
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Callable, Optional
 
 try:
@@ -51,6 +52,12 @@ class TenantSession:
         kwargs["client_session_keep_alive"] = True
         kwargs["network_timeout"] = self.socket_timeout_seconds
         kwargs["socket_timeout"] = self.socket_timeout_seconds
+        # connector_kwargs() defaults login_timeout to the shared 120s query
+        # timeout, so a hung initial connect could outlive the poll watchdog even
+        # though socket/network reads time out in socket_timeout_seconds. Bound
+        # the connect the same way (socket_timeout_seconds is already validated
+        # to be < poll_timeout_seconds) so a wedged connect can't escape it.
+        kwargs["login_timeout"] = self.socket_timeout_seconds
         return kwargs
 
     def ensure_connected(self) -> None:
@@ -99,7 +106,32 @@ def next_backoff(
     base: float = 0.5,
     cap: float = 30.0,
     jitter: Callable[[], float],
+    max_attempt: int = 32,
 ) -> float:
-    """Jittered exponential backoff, bounded by `cap`."""
-    raw = min(cap, base * (2**attempt))
+    """Jittered exponential backoff, bounded by `cap`.
+
+    ``attempt`` is saturated to ``max_attempt`` BEFORE exponentiation. A long
+    outage can push ``attempt`` arbitrarily high, and ``2**attempt`` on a huge
+    integer is a real (unbounded) computation even though the result is capped;
+    clamping the exponent keeps ``2**attempt`` a small, bounded number.
+    """
+    safe_attempt = min(max(attempt, 0), max_attempt)
+    raw = min(cap, base * (2**safe_attempt))
     return min(cap, raw * jitter())
+
+
+def connection_fingerprint(config: Any) -> str:
+    """Stable hash of the identity-bearing fields of a Snowflake connection.
+
+    Used to detect when an org rotates its account, user, or private key: the
+    fingerprint changes, so a warm session bound to the OLD identity can be
+    recycled instead of continuing to ALTER a disconnected/rotated account.
+    """
+    parts = (
+        str(getattr(config, "account", None) or ""),
+        str(getattr(config, "account_locator", None) or ""),
+        str(getattr(config, "user", None) or ""),
+        str(getattr(config, "private_key_pem", None) or ""),
+        str(getattr(config, "private_key_path", None) or ""),
+    )
+    return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()

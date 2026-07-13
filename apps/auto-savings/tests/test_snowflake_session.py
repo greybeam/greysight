@@ -1,6 +1,10 @@
 from unittest.mock import Mock
 
-from auto_savings.snowflake_session import TenantSession, next_backoff
+from auto_savings.snowflake_session import (
+    TenantSession,
+    connection_fingerprint,
+    next_backoff,
+)
 
 
 def test_default_connect_passes_socket_timeouts_to_connector(monkeypatch):
@@ -28,6 +32,31 @@ def test_default_connect_passes_socket_timeouts_to_connector(monkeypatch):
     assert captured["network_timeout"] == 15
     assert captured["client_session_keep_alive"] is True
     assert captured["account"] == "ab12345"
+
+
+def test_default_connect_bounds_login_timeout_below_poll_watchdog(monkeypatch):
+    # #2b: a hung initial connect must not outlive the poll watchdog. login_timeout
+    # (defaulted to the 120s query timeout by connector_kwargs) is overridden down
+    # to socket_timeout_seconds, which config validation keeps < poll_timeout.
+    import snowflake.connector as sf
+
+    class Cfg:
+        def connector_kwargs(self):
+            return {"account": "ab12345", "user": "svc", "login_timeout": 120}
+
+    captured = {}
+
+    def fake_connect(**kwargs):
+        captured.update(kwargs)
+        return Mock()
+
+    monkeypatch.setattr(sf, "connect", fake_connect)
+
+    session = TenantSession(config=Cfg(), socket_timeout_seconds=15)
+    session.ensure_connected()
+
+    assert "login_timeout" in captured
+    assert captured["login_timeout"] <= 15  # <= socket_timeout_seconds (< poll_timeout)
 
 
 def test_show_warehouses_reuses_one_connection():
@@ -94,3 +123,25 @@ def test_close_hard_closes_old_connection_and_next_op_reconnects():
 def test_backoff_is_bounded_and_jittered():
     assert next_backoff(0, base=0.5, cap=30.0, jitter=lambda: 1.0) == 0.5
     assert next_backoff(10, base=0.5, cap=30.0, jitter=lambda: 1.0) == 30.0  # capped
+
+
+def test_backoff_saturates_huge_attempt_without_hanging():
+    # #12a: a very large attempt must not compute 2**attempt on a huge int. The
+    # exponent is clamped, so this returns the cap instantly.
+    assert next_backoff(10_000_000, base=0.5, cap=30.0, jitter=lambda: 1.0) == 30.0
+
+
+def test_connection_fingerprint_changes_when_identity_rotates():
+    class Cfg:
+        def __init__(self, account, user, pem):
+            self.account = account
+            self.account_locator = None
+            self.user = user
+            self.private_key_pem = pem
+            self.private_key_path = None
+
+    base = connection_fingerprint(Cfg("acct1", "svc", "PEM-A"))
+    assert base == connection_fingerprint(Cfg("acct1", "svc", "PEM-A"))  # stable
+    assert base != connection_fingerprint(Cfg("acct2", "svc", "PEM-A"))  # account
+    assert base != connection_fingerprint(Cfg("acct1", "other", "PEM-A"))  # user
+    assert base != connection_fingerprint(Cfg("acct1", "svc", "PEM-B"))  # key

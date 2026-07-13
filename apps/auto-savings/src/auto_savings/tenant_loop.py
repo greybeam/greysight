@@ -30,7 +30,9 @@ import logging
 import random
 from concurrent.futures import Executor
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Callable, NamedTuple
+
+from greysight_connect.org_connection_resolver import OrgConnectionNotConfiguredError
 
 from auto_savings.config import WorkerConfig
 from auto_savings.engine import run_cycle
@@ -44,6 +46,19 @@ NowFn = Callable[[], datetime]
 JitterFn = Callable[[], float]
 SleepFn = Callable[[float], "asyncio.Future[None]"]
 SessionFactory = Callable[[str], TenantSession]
+FingerprintFn = Callable[[str], str]
+
+
+class _RunningLoop(NamedTuple):
+    """A live per-tenant loop plus the state needed to supervise it."""
+
+    task: "asyncio.Task[None]"
+    stop_event: asyncio.Event
+    session: TenantSession
+    # Fingerprint of the Snowflake connection the session was built against, or
+    # None when no fingerprint function is wired. A change means the org rotated
+    # its account/credentials and the warm session must be recycled.
+    fingerprint: str | None
 
 # One asyncio.Lock per org so a slow tenant never overlaps its own polls, even
 # if two ticks are somehow dispatched concurrently for the same tenant.
@@ -97,16 +112,29 @@ async def run_tenant_once(
                 apply_alter=session.alter_auto_suspend,
             )
 
+        # Keep our own reference to the executor future. wait_for() cancels
+        # whatever it is awaiting on timeout, but a running pool thread cannot be
+        # cancelled from Python — so we shield the future from that cancellation
+        # and drain it ourselves below, guaranteeing the abandoned thread has
+        # terminated before this session can be reused by the next tick.
+        future = loop.run_in_executor(executor, _tick)
         try:
             return await asyncio.wait_for(
-                loop.run_in_executor(executor, _tick),
+                asyncio.shield(future),
                 timeout=config.poll_timeout_seconds,
             )
         except BaseException:
-            # Cleanup a possibly-wedged connection; the socket timeout frees the
-            # pool thread on its own. Re-raise so the loop backs off / the
-            # supervisor can decide the tenant's fate.
+            # Cleanup a possibly-wedged connection; closing the socket makes the
+            # blocked recv on the pool thread raise promptly.
             session.close_hard()
+            # Bounded drain: wait for the abandoned _tick thread to actually
+            # finish before returning, so the NEXT tick never overlaps it on the
+            # same session/connection (concurrent Supabase/Snowflake mutation).
+            # The socket close frees a wedged recv within socket_timeout_seconds;
+            # the small margin covers teardown after the error propagates.
+            await asyncio.wait(
+                {future}, timeout=config.socket_timeout_seconds + 5
+            )
             raise
 
 
@@ -169,18 +197,25 @@ async def supervisor(
     config: WorkerConfig,
     executor: Executor,
     session_factory: SessionFactory,
+    fingerprint_fn: FingerprintFn | None = None,
     sleep: SleepFn = asyncio.sleep,
     stop: asyncio.Event | None = None,
 ) -> None:
-    """Dynamically start/stop per-tenant loops as ownership changes.
+    """Dynamically start/stop/recycle per-tenant loops as ownership changes.
 
     Every ``tenant_refresh_seconds`` re-enumerate ``worker_tenants()`` filtered
-    by ``owns_tenant``. Start a loop for any newly-owned tenant; stop-signal,
-    drain, and release the warm session of any tenant that vanished so removed
-    tenants do not leak Snowflake sessions.
+    by ``owns_tenant``. Then, on each refresh:
+
+    * start a loop for any newly-owned tenant;
+    * stop-signal, drain, and release the warm session of any tenant that
+      vanished so removed tenants do not leak Snowflake sessions;
+    * restart any owned tenant whose loop task has crashed/exited (so a tenant
+      never silently goes dark);
+    * when ``fingerprint_fn`` is wired, re-resolve every owned tenant's
+      connection and recycle its warm session if the account/credentials
+      rotated, or drop it if the connection disappeared.
     """
-    # org_id -> (loop task, stop event, warm session)
-    running: dict[str, tuple[asyncio.Task[None], asyncio.Event, TenantSession]] = {}
+    running: dict[str, _RunningLoop] = {}
     try:
         while stop is None or not stop.is_set():
             try:
@@ -200,51 +235,141 @@ async def supervisor(
                 continue
 
             for org_id in owned - running.keys():
-                # Building a tenant's session can fail (e.g. no Snowflake config
-                # yet → OrgConnectionNotConfiguredError). Isolate that failure to
-                # THIS tenant: log and skip so every other tenant keeps running
-                # and the drain below is never reached. It retries next refresh.
-                try:
-                    session = session_factory(org_id)
-                except Exception:
-                    logger.exception(
-                        "Failed to start tenant loop for %s; skipping this refresh",
+                started = _start_loop(
+                    org_id,
+                    session_factory=session_factory,
+                    fingerprint_fn=fingerprint_fn,
+                    store=store,
+                    config=config,
+                    executor=executor,
+                    sleep=sleep,
+                )
+                if started is not None:
+                    running[org_id] = started
+
+            for org_id in [org for org in running if org not in owned]:
+                await _drain_loop(running.pop(org_id))
+
+            # Revalidate still-owned loops: restart crashed tasks (#12b) and
+            # recycle warm sessions whose connection rotated/vanished (#3).
+            for org_id in list(running.keys()):
+                entry = running[org_id]
+
+                # A loop that raised out of its while-loop is done but still
+                # recorded as running → the tenant is dark. Drain and recreate.
+                if entry.task.done():
+                    await _drain_loop(entry)
+                    running.pop(org_id)
+                    restarted = _start_loop(
                         org_id,
-                    )
-                    continue
-                stop_event = asyncio.Event()
-                task = asyncio.create_task(
-                    tenant_loop(
-                        org_id,
-                        session=session,
+                        session_factory=session_factory,
+                        fingerprint_fn=fingerprint_fn,
                         store=store,
                         config=config,
                         executor=executor,
                         sleep=sleep,
-                        stop=stop_event,
                     )
-                )
-                running[org_id] = (task, stop_event, session)
+                    if restarted is not None:
+                        running[org_id] = restarted
+                    continue
 
-            for org_id in [org for org in running if org not in owned]:
-                await _drain_loop(*running.pop(org_id))
+                if fingerprint_fn is None:
+                    continue
+                try:
+                    current = fingerprint_fn(org_id)
+                except OrgConnectionNotConfiguredError:
+                    # Connection disappeared (disconnected/invalidated): treat
+                    # like a vanished tenant — stop + close. It restarts on a
+                    # later refresh if the connection reappears.
+                    await _drain_loop(entry)
+                    running.pop(org_id)
+                    continue
+                except Exception:
+                    # A transient resolve failure must not kill the warm session
+                    # or the refresh; keep the current loop and retry next time.
+                    logger.exception(
+                        "Failed to revalidate connection for %s; keeping session",
+                        org_id,
+                    )
+                    continue
+                if current != entry.fingerprint:
+                    # Account/credentials rotated: the warm session targets the
+                    # OLD account. Stop + close it and start a fresh one.
+                    await _drain_loop(entry)
+                    running.pop(org_id)
+                    restarted = _start_loop(
+                        org_id,
+                        session_factory=session_factory,
+                        fingerprint_fn=fingerprint_fn,
+                        store=store,
+                        config=config,
+                        executor=executor,
+                        sleep=sleep,
+                    )
+                    if restarted is not None:
+                        running[org_id] = restarted
 
             await sleep(config.tenant_refresh_seconds)
     finally:
         # Shutdown: stop, drain, and release every remaining tenant loop.
         for org_id in list(running.keys()):
-            await _drain_loop(*running.pop(org_id))
+            await _drain_loop(running.pop(org_id))
 
 
-async def _drain_loop(
-    task: "asyncio.Task[None]",
-    stop_event: asyncio.Event,
-    session: TenantSession,
-) -> None:
-    """Stop a running tenant loop and release its warm session."""
-    stop_event.set()
+def _start_loop(
+    org_id: str,
+    *,
+    session_factory: SessionFactory,
+    fingerprint_fn: FingerprintFn | None,
+    store: Store,
+    config: WorkerConfig,
+    executor: Executor,
+    sleep: SleepFn,
+) -> _RunningLoop | None:
+    """Build a warm session and spawn its tenant loop, or None on failure.
+
+    Building a tenant's session (or fingerprinting its connection) can fail
+    (e.g. no Snowflake config yet → OrgConnectionNotConfiguredError). Isolate
+    that failure to THIS tenant: log, close any partially-built session, and
+    return None so every other tenant keeps running. It retries next refresh.
+    """
     try:
-        await task
+        session = session_factory(org_id)
+    except Exception:
+        logger.exception(
+            "Failed to start tenant loop for %s; skipping this refresh", org_id
+        )
+        return None
+
+    try:
+        fingerprint = fingerprint_fn(org_id) if fingerprint_fn is not None else None
+    except Exception:
+        logger.exception(
+            "Failed to fingerprint connection for %s; skipping this refresh", org_id
+        )
+        session.close_hard()
+        return None
+
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(
+        tenant_loop(
+            org_id,
+            session=session,
+            store=store,
+            config=config,
+            executor=executor,
+            sleep=sleep,
+            stop=stop_event,
+        )
+    )
+    return _RunningLoop(task, stop_event, session, fingerprint)
+
+
+async def _drain_loop(entry: _RunningLoop) -> None:
+    """Stop a running tenant loop and release its warm session."""
+    entry.stop_event.set()
+    try:
+        await entry.task
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -252,4 +377,4 @@ async def _drain_loop(
         # not fatal to the supervisor's shutdown.
         pass
     finally:
-        session.close_hard()
+        entry.session.close_hard()
