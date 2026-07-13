@@ -1,8 +1,11 @@
 from pathlib import Path
 
-MIGRATION = (
-    Path(__file__).resolve().parents[3]
-    / "supabase" / "migrations" / "202607120001_automated_savings.sql"
+MIGRATIONS_DIR = Path(__file__).resolve().parents[3] / "supabase" / "migrations"
+
+MIGRATION = (MIGRATIONS_DIR / "202607120001_automated_savings.sql").read_text()
+
+BASELINE_RESUMED_ON_MIGRATION = (
+    MIGRATIONS_DIR / "202607130002_automated_savings_baseline_resumed_on.sql"
 ).read_text()
 
 
@@ -35,6 +38,16 @@ def test_restore_intent_has_baseline_resumed_on_column():
     # Resume-aware restore: baseline resumed_on captured at set-time so reconcile
     # can detect a completed suspend→resume cycle under the sentinel.
     assert "baseline_resumed_on timestamptz" in MIGRATION
+
+
+def test_baseline_resumed_on_additive_migration_adds_column_idempotently():
+    # Finding #1 (RoboRev): 202607120001 was already applied to environments
+    # before baseline_resumed_on was appended to it, so a standalone additive
+    # migration re-deploys the column for those databases.
+    assert (
+        "alter table automated_savings_restore_intents\n"
+        "    add column if not exists baseline_resumed_on timestamptz;"
+    ) in BASELINE_RESUMED_ON_MIGRATION
 
 
 def test_restore_intent_has_cycle_id_for_event_pairing():
