@@ -14,7 +14,7 @@ type OptInGateProps = {
 // Escapes a Snowflake identifier for safe interpolation into double-quoted
 // SQL: a role containing a `"` can't break out of (or inject into) the
 // rendered GRANT statement.
-function quoteIdent(role: string): string {
+export function quoteIdent(role: string): string {
   return `"${role.replace(/"/g, '""')}"`;
 }
 

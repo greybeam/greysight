@@ -17,6 +17,11 @@ export type AutomatedSavingsStatus = {
   agreed: boolean;
   globalEnabled: boolean;
   grantPresent: boolean;
+  // The org's existing Snowflake connection role (spec §"the org's existing
+  // connection/role") — the role the GRANT SQL targets. Not covered by the
+  // Task 16 test fixtures, added so the shell (Task 19) can wire it into the
+  // opt-in gate's GRANT SQL without guessing at a source.
+  roleName: string;
 };
 
 export type WarehouseRow = {
@@ -116,6 +121,7 @@ export function parseStatus(raw: unknown): AutomatedSavingsStatus {
     agreed: asBoolean(record.agreed),
     globalEnabled: asBoolean(record.global_enabled),
     grantPresent: asBoolean(record.grant_present),
+    roleName: asString(record.role_name),
   };
 }
 
