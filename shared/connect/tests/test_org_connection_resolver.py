@@ -6,6 +6,7 @@ import pytest
 from greysight_connect.org_connection_resolver import (
     OrgConnectionNotConfiguredError,
     OrgConnectionRow,
+    OrgConnectionUnavailableError,
     SupabaseConnectionFetcher,
     resolve_snowflake_config,
 )
@@ -66,6 +67,35 @@ def test_fails_closed_when_lookup_errors_and_auth_required() -> None:
 
     with pytest.raises(OrgConnectionNotConfiguredError):
         resolve_snowflake_config("org-1", settings, fetch_connection=_boom)
+
+
+def test_transient_lookup_error_raises_unavailable_but_stays_fail_closed() -> None:
+    # A transient network/timeout error must be distinguishable
+    # (OrgConnectionUnavailableError) so the worker can KEEP a warm session — yet
+    # still fail closed for the API, which catches OrgConnectionNotConfiguredError.
+    settings = Settings(auth_required=True)
+
+    def _boom(_org_id: str) -> OrgConnectionRow | None:
+        raise TimeoutError("supabase timed out")
+
+    with pytest.raises(OrgConnectionUnavailableError):
+        resolve_snowflake_config("org-1", settings, fetch_connection=_boom)
+    # Subclass relationship preserves the API's fail-closed catch.
+    assert issubclass(OrgConnectionUnavailableError, OrgConnectionNotConfiguredError)
+
+
+def test_definitive_not_configured_from_fetcher_is_not_reclassified() -> None:
+    # A DEFINITIVE verdict the fetcher already made (e.g. malformed/duplicate)
+    # must propagate as-is (genuinely not configured), NOT as a transient error,
+    # so the worker drops it instead of keeping a dead session.
+    settings = Settings(auth_required=True)
+
+    def _misconfigured(_org_id: str) -> OrgConnectionRow | None:
+        raise OrgConnectionNotConfiguredError("multiple rows")
+
+    with pytest.raises(OrgConnectionNotConfiguredError) as excinfo:
+        resolve_snowflake_config("org-1", settings, fetch_connection=_misconfigured)
+    assert not isinstance(excinfo.value, OrgConnectionUnavailableError)
 
 
 def test_fails_closed_when_row_status_not_active() -> None:

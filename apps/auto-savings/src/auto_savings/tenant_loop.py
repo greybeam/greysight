@@ -32,7 +32,10 @@ from concurrent.futures import Executor
 from datetime import datetime, timezone
 from typing import Callable, NamedTuple
 
-from greysight_connect.org_connection_resolver import OrgConnectionNotConfiguredError
+from greysight_connect.org_connection_resolver import (
+    OrgConnectionNotConfiguredError,
+    OrgConnectionUnavailableError,
+)
 
 from auto_savings.config import WorkerConfig
 from auto_savings.engine import run_cycle
@@ -45,7 +48,10 @@ logger = logging.getLogger(__name__)
 NowFn = Callable[[], datetime]
 JitterFn = Callable[[], float]
 SleepFn = Callable[[float], "asyncio.Future[None]"]
-SessionFactory = Callable[[str], TenantSession]
+# A factory resolves an org's connection ONCE and returns both the warm session
+# and the fingerprint of that same resolved connection, so the two can never be
+# derived from separate reads that disagree after a rotation (finding #2).
+SessionFactory = Callable[[str], "tuple[TenantSession, str | None]"]
 FingerprintFn = Callable[[str], str]
 
 
@@ -127,14 +133,16 @@ async def run_tenant_once(
             # Cleanup a possibly-wedged connection; closing the socket makes the
             # blocked recv on the pool thread raise promptly.
             session.close_hard()
-            # Bounded drain: wait for the abandoned _tick thread to actually
-            # finish before returning, so the NEXT tick never overlaps it on the
-            # same session/connection (concurrent Supabase/Snowflake mutation).
-            # The socket close frees a wedged recv within socket_timeout_seconds;
-            # the small margin covers teardown after the error propagates.
-            await asyncio.wait(
-                {future}, timeout=config.socket_timeout_seconds + 5
-            )
+            # GUARANTEED drain: wait for the abandoned _tick thread to ACTUALLY
+            # terminate before returning, so the NEXT tick can never overlap it
+            # on the same session/connection (concurrent Supabase/Snowflake
+            # mutation). This await is unbounded on purpose but cannot hang: every
+            # blocking op the thread can run is bounded — Snowflake by
+            # socket_timeout_seconds (the close above frees a wedged recv) and
+            # every Supabase store call by store_timeout_seconds — so the thread
+            # is guaranteed to finish promptly. asyncio.wait never re-raises the
+            # future's own exception, so we surface the ORIGINAL error below.
+            await asyncio.wait({future})
             raise
 
 
@@ -216,6 +224,7 @@ async def supervisor(
       rotated, or drop it if the connection disappeared.
     """
     running: dict[str, _RunningLoop] = {}
+    loop = asyncio.get_running_loop()
     try:
         while stop is None or not stop.is_set():
             try:
@@ -238,7 +247,6 @@ async def supervisor(
                 started = _start_loop(
                     org_id,
                     session_factory=session_factory,
-                    fingerprint_fn=fingerprint_fn,
                     store=store,
                     config=config,
                     executor=executor,
@@ -263,7 +271,6 @@ async def supervisor(
                     restarted = _start_loop(
                         org_id,
                         session_factory=session_factory,
-                        fingerprint_fn=fingerprint_fn,
                         store=store,
                         config=config,
                         executor=executor,
@@ -276,16 +283,30 @@ async def supervisor(
                 if fingerprint_fn is None:
                     continue
                 try:
-                    current = fingerprint_fn(org_id)
+                    # In production fingerprint_fn does a SYNC Supabase HTTP call;
+                    # run it on the pool thread so the supervisor loop never blocks
+                    # on network I/O (which would delay sleeps and weaken the
+                    # watchdog across many tenants — finding #IMPORTANT-3).
+                    current = await loop.run_in_executor(executor, fingerprint_fn, org_id)
+                except OrgConnectionUnavailableError:
+                    # A TRANSIENT lookup failure (network/timeout/5xx): we cannot
+                    # tell whether the connection is gone. KEEP the warm session
+                    # and retry next refresh rather than dropping a healthy tenant.
+                    logger.warning(
+                        "Transient connection revalidation failure for %s; "
+                        "keeping session",
+                        org_id,
+                    )
+                    continue
                 except OrgConnectionNotConfiguredError:
-                    # Connection disappeared (disconnected/invalidated): treat
-                    # like a vanished tenant — stop + close. It restarts on a
-                    # later refresh if the connection reappears.
+                    # Connection DEFINITIVELY gone (disconnected/invalidated):
+                    # treat like a vanished tenant — stop + close. It restarts on
+                    # a later refresh if the connection reappears.
                     await _drain_loop(entry)
                     running.pop(org_id)
                     continue
                 except Exception:
-                    # A transient resolve failure must not kill the warm session
+                    # Any other unexpected error must not kill the warm session
                     # or the refresh; keep the current loop and retry next time.
                     logger.exception(
                         "Failed to revalidate connection for %s; keeping session",
@@ -300,7 +321,6 @@ async def supervisor(
                     restarted = _start_loop(
                         org_id,
                         session_factory=session_factory,
-                        fingerprint_fn=fingerprint_fn,
                         store=store,
                         config=config,
                         executor=executor,
@@ -320,34 +340,25 @@ def _start_loop(
     org_id: str,
     *,
     session_factory: SessionFactory,
-    fingerprint_fn: FingerprintFn | None,
     store: Store,
     config: WorkerConfig,
     executor: Executor,
     sleep: SleepFn,
 ) -> _RunningLoop | None:
-    """Build a warm session and spawn its tenant loop, or None on failure.
+    """Build a warm session (and its fingerprint) and spawn its tenant loop.
 
-    Building a tenant's session (or fingerprinting its connection) can fail
-    (e.g. no Snowflake config yet → OrgConnectionNotConfiguredError). Isolate
-    that failure to THIS tenant: log, close any partially-built session, and
-    return None so every other tenant keeps running. It retries next refresh.
+    The factory resolves the org's connection ONCE and returns both the session
+    and the fingerprint of that same connection, so they can never disagree
+    (finding #2). Building can fail (e.g. no Snowflake config yet →
+    OrgConnectionNotConfiguredError). Isolate that failure to THIS tenant: log
+    and return None so every other tenant keeps running. It retries next refresh.
     """
     try:
-        session = session_factory(org_id)
+        session, fingerprint = session_factory(org_id)
     except Exception:
         logger.exception(
             "Failed to start tenant loop for %s; skipping this refresh", org_id
         )
-        return None
-
-    try:
-        fingerprint = fingerprint_fn(org_id) if fingerprint_fn is not None else None
-    except Exception:
-        logger.exception(
-            "Failed to fingerprint connection for %s; skipping this refresh", org_id
-        )
-        session.close_hard()
         return None
 
     stop_event = asyncio.Event()

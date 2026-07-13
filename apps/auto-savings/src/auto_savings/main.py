@@ -42,21 +42,26 @@ async def main() -> None:
     """Build the worker's dependencies and run the supervisor forever."""
     config = WorkerConfig.from_environment()
     _require_supabase_credentials(config)
-    store = SupabaseStore(config)
+    store = SupabaseStore(config, timeout_seconds=config.store_timeout_seconds)
     fetch_connection = SupabaseConnectionFetcher(
         supabase_url=config.supabase_url,
         service_role_key=config.supabase_service_role_key,
     )
 
-    def session_factory(org_id: str) -> TenantSession:
+    def session_factory(org_id: str) -> tuple[TenantSession, str]:
         # Resolve each tenant's Snowflake config lazily, on first enrollment.
+        # Derive BOTH the warm session AND its fingerprint from this SINGLE
+        # resolve, so the session and the fingerprint it is compared against can
+        # never disagree (a rotation between two separate resolves would pin the
+        # old session to the new fingerprint forever — finding #2).
         snowflake_config = resolve_snowflake_config(
             org_id, config, fetch_connection=fetch_connection
         )
-        return TenantSession(
+        session = TenantSession(
             config=snowflake_config,
             socket_timeout_seconds=config.socket_timeout_seconds,
         )
+        return session, connection_fingerprint(snowflake_config)
 
     def fingerprint_fn(org_id: str) -> str:
         # Re-resolve on each refresh so a disconnected/rotated org is detected:

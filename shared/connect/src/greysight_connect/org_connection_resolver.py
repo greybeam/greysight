@@ -28,7 +28,24 @@ class OrgConnectionRow:
 
 
 class OrgConnectionNotConfiguredError(RuntimeError):
-    """Raised when an authenticated org has no usable Snowflake connection."""
+    """Raised when an authenticated org has no usable Snowflake connection.
+
+    This is a *definitive* verdict: the lookup succeeded and there is genuinely
+    no active connection row (or a malformed/duplicate one). Callers may treat it
+    as "the connection is gone" and drop any warm state.
+    """
+
+
+class OrgConnectionUnavailableError(OrgConnectionNotConfiguredError):
+    """Raised when the connection lookup itself failed *transiently*.
+
+    A network/timeout/5xx error means we could not determine whether the org has
+    a connection — NOT that it lacks one. It subclasses
+    ``OrgConnectionNotConfiguredError`` so existing callers (the API) keep their
+    fail-closed behavior unchanged, while callers that care (the worker's
+    supervisor) can catch this first and KEEP a still-configured warm session
+    instead of dropping it on a blip.
+    """
 
 
 FetchConnection = Callable[[str], OrgConnectionRow | None]
@@ -42,8 +59,16 @@ def resolve_snowflake_config(
 ) -> SnowflakeConnectionConfig:
     try:
         row = fetch_connection(organization_id)
-    except Exception as exc:  # fail closed: never fall through on a lookup error
-        raise OrgConnectionNotConfiguredError(
+    except OrgConnectionNotConfiguredError:
+        # The fetcher already made a definitive verdict (malformed / duplicate /
+        # missing secret) — propagate it as-is (genuinely not configured).
+        raise
+    except Exception as exc:
+        # A transient lookup failure (network/timeout/5xx): we could not tell
+        # whether a connection exists. Fail closed (the API still 409s because
+        # this subclasses OrgConnectionNotConfiguredError) but distinguishably,
+        # so the worker can KEEP a warm session across a blip instead of dropping.
+        raise OrgConnectionUnavailableError(
             "Could not load this organization's Snowflake connection."
         ) from exc
 

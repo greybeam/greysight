@@ -3,6 +3,7 @@ from greysight_connect.org_connection_resolver import (  # noqa: F401
     FetchConnection,
     OrgConnectionNotConfiguredError,
     OrgConnectionRow,
+    OrgConnectionUnavailableError,
     SupabaseConnectionFetcher,
     resolve_snowflake_config,
 )

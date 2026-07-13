@@ -276,7 +276,7 @@ async def test_supervisor_starts_newcomers_and_drains_vanished(stub_tenant_loop)
 
     def factory(org_id):
         sessions[org_id] = DrainableSession()
-        return sessions[org_id]
+        return sessions[org_id], None
 
     async def fake_sleep(_delay):
         step["n"] += 1
@@ -306,7 +306,7 @@ async def test_supervisor_isolates_a_failing_session_factory(stub_tenant_loop):
         if org_id == "org-bad":
             raise RuntimeError("no snowflake config")
         sessions[org_id] = DrainableSession()
-        return sessions[org_id]
+        return sessions[org_id], None
 
     async def fake_sleep(_delay):
         stop.set()
@@ -331,7 +331,8 @@ async def test_supervisor_keeps_session_when_fingerprint_unchanged(stub_tenant_l
     def factory(org_id):
         s = DrainableSession()
         sessions.append(s)
-        return s
+        # session + fingerprint from ONE resolve (finding #2)
+        return s, fingerprint(org_id)
 
     def fingerprint(_org_id):
         return "fp-stable"
@@ -363,7 +364,8 @@ async def test_supervisor_recycles_session_when_fingerprint_changes(stub_tenant_
     def factory(org_id):
         s = DrainableSession()
         sessions.append(s)
-        return s
+        # session + fingerprint from ONE resolve (finding #2)
+        return s, fingerprint(org_id)
 
     def fingerprint(_org_id):
         # Stable on the first refresh (start + its revalidation), rotates after.
@@ -401,7 +403,8 @@ async def test_supervisor_drops_session_when_connection_disappears(stub_tenant_l
     def factory(org_id):
         s = DrainableSession()
         sessions.append(s)
-        return s
+        # session + fingerprint from ONE resolve (finding #2)
+        return s, fingerprint(org_id)
 
     def fingerprint(_org_id):
         if step["n"] == 0:
@@ -447,7 +450,7 @@ async def test_supervisor_restarts_crashed_task(monkeypatch):
     def factory(org_id):
         s = DrainableSession()
         sessions.append(s)
-        return s
+        return s, None
 
     async def fake_sleep(_delay):
         await asyncio.sleep(0)  # let the scheduled tenant task run (and crash)
@@ -462,3 +465,160 @@ async def test_supervisor_restarts_crashed_task(monkeypatch):
     assert starts == ["org-1", "org-1"]  # crashed loop detected + restarted
     assert len(sessions) == 2
     assert sessions[0].closed is True  # crashed session closed on restart
+
+
+@pytest.mark.asyncio
+async def test_drain_awaits_bounded_store_call_to_completion():
+    # CRITICAL: the abandoned _tick thread can be blocked in a Supabase STORE
+    # call (run_cycle → list_enrollments), which close_hard() (Snowflake socket)
+    # does NOT unblock — only the store's own request timeout does. The drain
+    # must await the future to ACTUAL completion (guaranteed prompt because the
+    # store call is bounded by store_timeout_seconds) before returning, so the
+    # next tick can never overlap the abandoned thread on the same session.
+    import threading
+
+    store_unblocked = threading.Event()
+    tick_finished = threading.Event()
+
+    class BoundedStore(InMemoryStore):
+        def list_enrollments(self, organization_id):
+            # Model an in-flight Supabase request bounded by the httpx request
+            # timeout: it frees ITSELF (store timeout) — NOT via close_hard. The
+            # timer stands in for store_timeout_seconds firing.
+            threading.Timer(0.4, store_unblocked.set).start()
+            store_unblocked.wait(5)
+            tick_finished.set()  # reached only after the store call unblocks
+            return []
+
+    # poll_timeout (0.2) fires BEFORE the store unblocks (0.4): wait_for times
+    # out, close_hard() runs (does not free the store call), then the guaranteed
+    # drain must wait for the store timeout at 0.4 and the tick to finish.
+    cfg = WorkerConfig(
+        supabase_url="u", supabase_service_role_key="k",
+        poll_timeout_seconds=0.2, socket_timeout_seconds=0.05,
+    )
+    session = FakeSession(rows=[])
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with pytest.raises((asyncio.TimeoutError, TimeoutError)):
+            await run_tenant_once(
+                "org-1", session=session, store=BoundedStore(),
+                config=cfg, executor=executor, now_fn=lambda: NOW,
+            )
+    # The abandoned thread ran to completion BEFORE run_tenant_once returned:
+    # without the guaranteed drain, tick_finished could still be unset here.
+    assert tick_finished.is_set() is True
+    assert session.closed is True
+
+
+@pytest.mark.asyncio
+async def test_supervisor_keeps_session_on_transient_revalidation_error(
+    stub_tenant_loop,
+):
+    # IMPORTANT-1: a TRANSIENT resolve failure (OrgConnectionUnavailableError)
+    # during revalidation must KEEP the still-configured warm session, not drop
+    # it like a genuinely-gone connection.
+    from greysight_connect.org_connection_resolver import (
+        OrgConnectionUnavailableError,
+    )
+
+    state = {"tenants": {"org-1"}}
+    store = _ScriptedStore(state)
+    sessions: list[DrainableSession] = []
+    stop = asyncio.Event()
+    step = {"n": 0}
+
+    def factory(org_id):
+        s = DrainableSession()
+        sessions.append(s)
+        return s, fingerprint(org_id)
+
+    def fingerprint(_org_id):
+        if step["n"] == 0:
+            return "fp-A"
+        raise OrgConnectionUnavailableError("supabase timeout")
+
+    async def fake_sleep(_delay):
+        step["n"] += 1
+        if step["n"] >= 2:
+            stop.set()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        await supervisor(store=store, config=CONFIG, executor=executor,
+                         session_factory=factory, fingerprint_fn=fingerprint,
+                         sleep=fake_sleep, stop=stop)
+
+    assert len(sessions) == 1  # kept across the transient blip, never recreated
+    assert sessions[0].closed is True  # closed only on the shutdown drain
+
+
+@pytest.mark.asyncio
+async def test_start_uses_single_resolve_for_session_and_fingerprint(
+    stub_tenant_loop,
+):
+    # IMPORTANT-2: the session AND its fingerprint must come from ONE resolve
+    # (the factory), never a second separate read that could disagree after a
+    # rotation and pin the old session to the new fingerprint forever.
+    state = {"tenants": {"org-1"}}
+    store = _ScriptedStore(state)
+    resolves = {"n": 0}
+    sessions: list[DrainableSession] = []
+
+    def factory(org_id):
+        resolves["n"] += 1  # ONE resolve → session + fingerprint together
+        s = DrainableSession()
+        sessions.append(s)
+        return s, f"fp-{resolves['n']}"
+
+    def fingerprint(_org_id):
+        return "fp-1"  # revalidation sees the SAME fingerprint the session holds
+
+    stop = asyncio.Event()
+    step = {"n": 0}
+
+    async def fake_sleep(_delay):
+        step["n"] += 1
+        if step["n"] >= 2:  # allow a revalidation pass
+            stop.set()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        await supervisor(store=store, config=CONFIG, executor=executor,
+                         session_factory=factory, fingerprint_fn=fingerprint,
+                         sleep=fake_sleep, stop=stop)
+
+    assert resolves["n"] == 1  # session built from EXACTLY one resolve
+    assert len(sessions) == 1  # fingerprint consistent → never recycled
+    assert sessions[0].closed is True
+
+
+@pytest.mark.asyncio
+async def test_revalidation_runs_off_the_event_loop_thread(stub_tenant_loop):
+    # IMPORTANT-3: fingerprint revalidation does SYNC network I/O; it must run on
+    # the executor, not inline on the asyncio event loop thread.
+    import threading
+
+    loop_thread = threading.get_ident()
+    seen: dict[str, int] = {}
+
+    def factory(org_id):
+        return DrainableSession(), "fp"
+
+    def fingerprint(_org_id):
+        seen["thread"] = threading.get_ident()
+        return "fp"
+
+    stop = asyncio.Event()
+    step = {"n": 0}
+
+    async def fake_sleep(_delay):
+        step["n"] += 1
+        if step["n"] >= 2:  # allow a revalidation pass to run
+            stop.set()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        await supervisor(store=_ScriptedStore({"tenants": {"org-1"}}),
+                         config=CONFIG, executor=executor,
+                         session_factory=factory, fingerprint_fn=fingerprint,
+                         sleep=fake_sleep, stop=stop)
+
+    assert "thread" in seen  # revalidation actually ran
+    assert seen["thread"] != loop_thread  # ...off the event loop, on the executor

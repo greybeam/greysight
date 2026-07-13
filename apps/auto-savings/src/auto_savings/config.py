@@ -23,6 +23,12 @@ class WorkerConfig:
     intent_poll_interval_seconds: float = 1.0  # calibrated from Task 0 suspend latency
     poll_timeout_seconds: float = 20.0
     socket_timeout_seconds: int = 15
+    # Per-request timeout for the worker's Supabase (httpx) store calls. Bounds
+    # EVERY blocking store op the pool thread can run, so an abandoned timed-out
+    # tick is guaranteed to terminate promptly (Snowflake is bounded by
+    # socket_timeout_seconds; Supabase by this) and the guaranteed drain in
+    # run_tenant_once cannot hang.
+    store_timeout_seconds: float = 5.0
     cooldown_seconds: int = 60
     uptime_floor_seconds: int = 62
     max_intent_hold_ticks: int = 8
@@ -42,6 +48,7 @@ class WorkerConfig:
         "poll_interval_seconds",
         "poll_timeout_seconds",
         "socket_timeout_seconds",
+        "store_timeout_seconds",
         "cooldown_seconds",
         "intent_poll_interval_seconds",
         "uptime_floor_seconds",
@@ -84,6 +91,7 @@ class WorkerConfig:
             ),
             poll_timeout_seconds=_float("AUTO_SAVINGS_POLL_TIMEOUT_SECONDS", 20.0),
             socket_timeout_seconds=_int("AUTO_SAVINGS_SOCKET_TIMEOUT_SECONDS", 15),
+            store_timeout_seconds=_float("AUTO_SAVINGS_STORE_TIMEOUT_SECONDS", 5.0),
             cooldown_seconds=_int("AUTO_SAVINGS_COOLDOWN_SECONDS", 60),
             uptime_floor_seconds=_int("AUTO_SAVINGS_UPTIME_FLOOR_SECONDS", 62),
             max_intent_hold_ticks=_int("AUTO_SAVINGS_MAX_INTENT_HOLD_TICKS", 8),
