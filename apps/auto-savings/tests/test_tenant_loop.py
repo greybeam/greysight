@@ -4,9 +4,10 @@ from datetime import datetime, timezone
 
 import pytest
 
+import auto_savings.tenant_loop as tenant_loop_mod
 from auto_savings.config import WorkerConfig
 from auto_savings.store import EnrollmentRow, InMemoryStore, SettingsRow
-from auto_savings.tenant_loop import run_tenant_once
+from auto_savings.tenant_loop import run_tenant_once, supervisor, tenant_loop
 
 NOW = datetime(2026, 7, 12, 12, 0, 0, tzinfo=timezone.utc)
 CONFIG = WorkerConfig(supabase_url="u", supabase_service_role_key="k")
@@ -89,3 +90,135 @@ async def test_genuinely_blocking_call_times_out_and_frees_the_loop():
             await run_tenant_once("org-1", session=session, store=InMemoryStore(),
                                   config=cfg, executor=executor, now_fn=lambda: NOW)
     assert session.closed is True
+
+
+class ScriptedSession(FakeSession):
+    """show_warehouses() succeeds/fails per a scripted sequence."""
+
+    def __init__(self, script):
+        super().__init__(rows=[])
+        self._script = list(script)
+        self._i = 0
+
+    def show_warehouses(self):
+        outcome = self._script[self._i]
+        self._i += 1
+        if outcome == "fail":
+            raise RuntimeError("boom")
+        return []
+
+
+async def _run_loop(session, *, stop_after, jitter=lambda: 1.0):
+    """Drive tenant_loop for exactly ``stop_after`` ticks; return recorded sleeps."""
+    sleeps: list[float] = []
+    stop = asyncio.Event()
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+        if len(sleeps) >= stop_after:
+            stop.set()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        await tenant_loop(
+            "org-1", session=session, store=InMemoryStore(), config=CONFIG,
+            executor=executor, sleep=fake_sleep, stop=stop, now_fn=lambda: NOW,
+            jitter=jitter,
+        )
+    return sleeps
+
+
+@pytest.mark.asyncio
+async def test_loop_failure_sleeps_backoff_and_increments():
+    # jitter=1.0 → next_backoff(0)=0.5, next_backoff(1)=1.0 (increments each fail).
+    sleeps = await _run_loop(ScriptedSession(["fail", "fail"]), stop_after=2)
+    assert sleeps == [0.5, 1.0]
+
+
+@pytest.mark.asyncio
+async def test_loop_success_sleeps_interval_and_resets_backoff():
+    # fail → success → fail. Success sleeps poll_interval and resets attempt, so the
+    # trailing failure backs off from attempt 0 (0.5) again, not attempt 1 (1.0).
+    sleeps = await _run_loop(ScriptedSession(["fail", "ok", "fail"]), stop_after=3)
+    assert sleeps == [0.5, CONFIG.poll_interval_seconds, 0.5]
+
+
+class DrainableSession:
+    def __init__(self):
+        self.closed = False
+
+    def close_hard(self):
+        self.closed = True
+
+
+@pytest.fixture
+def stub_tenant_loop(monkeypatch):
+    """Replace the real per-tenant loop with one that just parks on its stop event."""
+    started: list[str] = []
+
+    async def fake_loop(org_id, *, session, store, config, executor, sleep, stop):
+        started.append(org_id)
+        await stop.wait()
+
+    monkeypatch.setattr(tenant_loop_mod, "tenant_loop", fake_loop)
+    return started
+
+
+class _ScriptedStore:
+    def __init__(self, state):
+        self._state = state
+
+    def worker_tenants(self):
+        return list(self._state["tenants"])
+
+
+@pytest.mark.asyncio
+async def test_supervisor_starts_newcomers_and_drains_vanished(stub_tenant_loop):
+    state = {"tenants": {"org-1"}}
+    store = _ScriptedStore(state)
+    sessions: dict[str, DrainableSession] = {}
+    stop = asyncio.Event()
+    step = {"n": 0}
+
+    def factory(org_id):
+        sessions[org_id] = DrainableSession()
+        return sessions[org_id]
+
+    async def fake_sleep(_delay):
+        step["n"] += 1
+        if step["n"] == 1:
+            state["tenants"] = set()  # org-1 vanishes → should be drained + closed
+        else:
+            stop.set()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        await supervisor(store=store, config=CONFIG, executor=executor,
+                         session_factory=factory, sleep=fake_sleep, stop=stop)
+
+    assert stub_tenant_loop == ["org-1"]
+    assert sessions["org-1"].closed is True
+
+
+@pytest.mark.asyncio
+async def test_supervisor_isolates_a_failing_session_factory(stub_tenant_loop):
+    # D1 regression: a factory that raises for one org must not stop the others
+    # from starting nor crash the refresh loop.
+    state = {"tenants": {"org-good", "org-bad"}}
+    store = _ScriptedStore(state)
+    sessions: dict[str, DrainableSession] = {}
+    stop = asyncio.Event()
+
+    def factory(org_id):
+        if org_id == "org-bad":
+            raise RuntimeError("no snowflake config")
+        sessions[org_id] = DrainableSession()
+        return sessions[org_id]
+
+    async def fake_sleep(_delay):
+        stop.set()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        await supervisor(store=store, config=CONFIG, executor=executor,
+                         session_factory=factory, sleep=fake_sleep, stop=stop)
+
+    assert stub_tenant_loop == ["org-good"]  # good tenant started despite bad one failing
+    assert "org-bad" not in sessions

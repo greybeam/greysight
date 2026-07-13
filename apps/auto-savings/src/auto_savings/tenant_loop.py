@@ -26,6 +26,7 @@ Three layers, cleanly separated so each is independently testable:
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 from concurrent.futures import Executor
 from datetime import datetime, timezone
@@ -36,6 +37,8 @@ from auto_savings.engine import run_cycle
 from auto_savings.sharding import owns_tenant
 from auto_savings.snowflake_session import TenantSession, next_backoff
 from auto_savings.store import Store
+
+logger = logging.getLogger(__name__)
 
 NowFn = Callable[[], datetime]
 JitterFn = Callable[[], float]
@@ -76,11 +79,13 @@ async def run_tenant_once(
     lock = _lock_for(org_id)
     async with lock:
         loop = asyncio.get_running_loop()
-        try:
-            rows = await asyncio.wait_for(
-                loop.run_in_executor(executor, session.show_warehouses),
-                timeout=config.poll_timeout_seconds,
-            )
+
+        def _tick() -> None:
+            # The ENTIRE blocking tick runs on a pool thread: the Snowflake
+            # SHOW WAREHOUSES *and* run_cycle (which does Supabase httpx reads
+            # and Snowflake ALTERs). Running run_cycle on the event loop would
+            # stall every other tenant and the supervisor.
+            rows = session.show_warehouses()
             run_cycle(
                 org_id,
                 rows=rows,
@@ -88,6 +93,12 @@ async def run_tenant_once(
                 config=config,
                 now=now_fn(),
                 apply_alter=session.alter_auto_suspend,
+            )
+
+        try:
+            await asyncio.wait_for(
+                loop.run_in_executor(executor, _tick),
+                timeout=config.poll_timeout_seconds,
             )
         except BaseException:
             # Cleanup a possibly-wedged connection; the socket timeout frees the
@@ -173,7 +184,18 @@ async def supervisor(
                 continue
 
             for org_id in owned - running.keys():
-                session = session_factory(org_id)
+                # Building a tenant's session can fail (e.g. no Snowflake config
+                # yet → OrgConnectionNotConfiguredError). Isolate that failure to
+                # THIS tenant: log and skip so every other tenant keeps running
+                # and the drain below is never reached. It retries next refresh.
+                try:
+                    session = session_factory(org_id)
+                except Exception:
+                    logger.exception(
+                        "Failed to start tenant loop for %s; skipping this refresh",
+                        org_id,
+                    )
+                    continue
                 stop_event = asyncio.Event()
                 task = asyncio.create_task(
                     tenant_loop(

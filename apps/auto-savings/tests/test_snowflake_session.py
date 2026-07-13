@@ -3,6 +3,33 @@ from unittest.mock import Mock
 from auto_savings.snowflake_session import TenantSession, next_backoff
 
 
+def test_default_connect_passes_socket_timeouts_to_connector(monkeypatch):
+    # D2 regression: the DEFAULT (non-injected) connect path must forward the
+    # socket/network timeouts to the real snowflake.connector.connect, or the
+    # wedge-escape never applies in production.
+    import snowflake.connector as sf
+
+    class Cfg:
+        def connector_kwargs(self):
+            return {"account": "ab12345", "user": "svc"}
+
+    captured = {}
+
+    def fake_connect(**kwargs):
+        captured.update(kwargs)
+        return Mock()
+
+    monkeypatch.setattr(sf, "connect", fake_connect)
+
+    session = TenantSession(config=Cfg(), socket_timeout_seconds=15)  # no `connect` injected
+    session.ensure_connected()
+
+    assert captured["socket_timeout"] == 15
+    assert captured["network_timeout"] == 15
+    assert captured["client_session_keep_alive"] is True
+    assert captured["account"] == "ab12345"
+
+
 def test_show_warehouses_reuses_one_connection():
     cursor = Mock()
     cursor.description = [("name",), ("state",)]

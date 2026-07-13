@@ -18,10 +18,10 @@ except ImportError:  # pragma: no cover - snowflake connector optional at import
     _snowflake_connector = None
 
 
-def _default_connect(config: Any) -> Any:
+def _connect_with_kwargs(kwargs: dict) -> Any:
     if _snowflake_connector is None:  # pragma: no cover
         raise RuntimeError("snowflake-connector-python is not installed")
-    return _snowflake_connector.connect(**config.connector_kwargs())
+    return _snowflake_connector.connect(**kwargs)
 
 
 def _quote_identifier(name: str) -> str:
@@ -40,7 +40,10 @@ class TenantSession:
     ) -> None:
         self._config = config
         self.socket_timeout_seconds = socket_timeout_seconds
-        self._connect = connect or _default_connect
+        # An injected `connect` (tests) receives the config and returns a
+        # connection. The default path builds the connection itself so it can
+        # pass the socket/network timeouts — the load-bearing wedge-escape.
+        self._connect = connect
         self._connection: Any = None
 
     def _connector_kwargs(self) -> dict:
@@ -52,7 +55,12 @@ class TenantSession:
 
     def ensure_connected(self) -> None:
         if self._connection is None:
-            self._connection = self._connect(self._config)
+            if self._connect is not None:
+                self._connection = self._connect(self._config)
+            else:
+                # Default path: pass the socket/network timeouts through to the
+                # real Snowflake connection so a wedged recv() times out on its own.
+                self._connection = _connect_with_kwargs(self._connector_kwargs())
 
     def show_warehouses(self) -> list[dict]:
         self.ensure_connected()
