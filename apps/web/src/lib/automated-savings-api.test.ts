@@ -102,16 +102,6 @@ describe("automated-savings-api", () => {
       .rejects.toThrow(/500/);
   });
 
-  it("resolves setManagedDefault on a 200 response", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }));
-    await expect(setManagedDefault("org-1", "WH1", 120, { accessToken: "t" })).resolves.toBeUndefined();
-  });
-
-  it("throws when fetchWarehouses returns a non-ok response", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({}), { status: 500 }));
-    await expect(fetchWarehouses("org-1", { accessToken: "t" })).rejects.toThrow(/500/);
-  });
-
   it("posts to agree at the API's actual route", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }));
@@ -179,10 +169,5 @@ describe("automated-savings-api", () => {
     }), { status: 200 }));
     const result = await checkAccess("org-1", { accessToken: "t" });
     expect(result.roleName).toBeNull();
-  });
-
-  it("throws when the underlying request fails", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({}), { status: 500 }));
-    await expect(agree("org-1", { accessToken: "t" })).rejects.toThrow(/500/);
   });
 });

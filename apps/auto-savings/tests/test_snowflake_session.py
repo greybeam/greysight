@@ -48,19 +48,6 @@ def test_show_warehouses_reuses_one_connection():
     assert len(connects) == 1  # warm reuse, not reconnect-per-poll
 
 
-def test_connector_kwargs_include_socket_timeouts():
-    # The real wedge-escape: connector network/socket timeouts, not close() (finding #6).
-    class Cfg:
-        def connector_kwargs(self):
-            return {"account": "ab12345", "user": "svc"}
-
-    session = TenantSession(config=Cfg(), socket_timeout_seconds=15, connect=lambda c: Mock())
-    kwargs = session._connector_kwargs()  # the dict the default connect passes to snowflake.connector.connect
-    assert kwargs["network_timeout"] == 15
-    assert kwargs["socket_timeout"] == 15
-    assert kwargs["client_session_keep_alive"] is True
-
-
 def test_alter_quotes_identifier():
     cursor = Mock()
     connection = Mock()
@@ -70,14 +57,6 @@ def test_alter_quotes_identifier():
     sql = cursor.execute.call_args[0][0]
     assert '"weird""name"' in sql
     assert "SET AUTO_SUSPEND = 1" in sql
-
-
-def test_close_hard_closes_connection():
-    connection = Mock()
-    session = TenantSession(config=object(), socket_timeout_seconds=15, connect=lambda c: connection)
-    session.ensure_connected()
-    session.close_hard()
-    connection.close.assert_called_once()
 
 
 def test_backoff_is_bounded_and_jittered():

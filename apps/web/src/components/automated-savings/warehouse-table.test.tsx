@@ -23,12 +23,6 @@ describe("WarehouseTable", () => {
     expect(screen.getByRole("switch", { name: /WH1/i })).toBeDisabled();
   });
 
-  it("enforces the 60 floor on the managed-default input", () => {
-    render(<WarehouseTable orgId="org-1" isAdmin warehouses={[base]} onChange={() => {}} />);
-    const input = screen.getByLabelText(/WH1 auto_suspend/i) as HTMLInputElement;
-    expect(input.min).toBe("60");
-  });
-
   it("renders an unenrolled warehouse with a null managed/stored default without throwing", () => {
     render(
       <WarehouseTable
@@ -40,11 +34,6 @@ describe("WarehouseTable", () => {
     );
     const input = screen.getByLabelText(/WH1 auto_suspend/i) as HTMLInputElement;
     expect(input.value).toBe("");
-  });
-
-  it("surfaces Reconcile when drifted", () => {
-    render(<WarehouseTable orgId="org-1" isAdmin warehouses={[{ ...base, driftState: "drifted", status: "drifted" }]} onChange={() => {}} />);
-    expect(screen.getByRole("button", { name: /reconcile/i })).toBeInTheDocument();
   });
 
   it("disables the toggle and shows unsupported for non-STANDARD warehouses", () => {

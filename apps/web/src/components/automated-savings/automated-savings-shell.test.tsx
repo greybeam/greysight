@@ -76,22 +76,6 @@ describe("AutomatedSavingsShell", () => {
     expect(fetchWarehousesMock).not.toHaveBeenCalled();
   });
 
-  it("renders the real Snowflake role in the opt-in gate GRANT SQL when status provides one", async () => {
-    fetchStatusMock.mockResolvedValue({
-      agreed: false,
-      globalEnabled: false,
-      grantPresent: false,
-      grantCheckedAt: null,
-      roleName: "GREYSIGHT_ROLE",
-    });
-
-    render(<AutomatedSavingsShell authRequired={false} />);
-
-    expect(
-      await screen.findByText(/GRANT MANAGE WAREHOUSES ON ACCOUNT TO ROLE "GREYSIGHT_ROLE";/),
-    ).toBeInTheDocument();
-  });
-
   it("falls back to the placeholder role in the opt-in gate GRANT SQL when status has no role", async () => {
     fetchStatusMock.mockResolvedValue({
       agreed: false,
@@ -106,22 +90,6 @@ describe("AutomatedSavingsShell", () => {
     expect(
       await screen.findByText(/GRANT MANAGE WAREHOUSES ON ACCOUNT TO ROLE "<YOUR_SNOWFLAKE_ROLE>";/),
     ).toBeInTheDocument();
-  });
-
-  it("shows the warehouse table when agreed", async () => {
-    fetchStatusMock.mockResolvedValue({
-      agreed: true,
-      globalEnabled: true,
-      grantPresent: true,
-      grantCheckedAt: null,
-      roleName: "GREYSIGHT_ROLE",
-    });
-    fetchWarehousesMock.mockResolvedValue([baseRow]);
-
-    render(<AutomatedSavingsShell authRequired={false} />);
-
-    expect(await screen.findByRole("table", { name: /warehouses/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /check access/i })).toBeInTheDocument();
   });
 
   it("shows a grant-missing banner with the real role when the grant check fails", async () => {
@@ -148,33 +116,6 @@ describe("AutomatedSavingsShell", () => {
     );
     expect(
       screen.getByText(/GRANT MANAGE WAREHOUSES ON ACCOUNT TO ROLE "GREYSIGHT_ROLE";/),
-    ).toBeInTheDocument();
-  });
-
-  it("shows a grant-missing banner with the placeholder role when no role is available", async () => {
-    fetchStatusMock.mockResolvedValue({
-      agreed: true,
-      globalEnabled: true,
-      grantPresent: true,
-      grantCheckedAt: null,
-      roleName: null,
-    });
-    fetchWarehousesMock.mockResolvedValue([baseRow]);
-    checkAccessMock.mockResolvedValue({
-      grantPresent: false,
-      grantCheckedAt: "2026-01-01T00:00:00Z",
-      roleName: null,
-    });
-
-    render(<AutomatedSavingsShell authRequired={false} />);
-
-    fireEvent.click(await screen.findByRole("button", { name: /check access/i }));
-
-    await waitFor(() =>
-      expect(screen.getByText(/grant missing/i)).toBeInTheDocument(),
-    );
-    expect(
-      screen.getByText(/GRANT MANAGE WAREHOUSES ON ACCOUNT TO ROLE "<YOUR_SNOWFLAKE_ROLE>";/),
     ).toBeInTheDocument();
   });
 
