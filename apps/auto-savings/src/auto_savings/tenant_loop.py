@@ -70,23 +70,25 @@ async def run_tenant_once(
     config: WorkerConfig,
     executor: Executor,
     now_fn: NowFn,
-) -> None:
+) -> bool:
     """One guarded poll → cycle tick for a single tenant.
 
-    On success runs the engine cycle. On ANY failure (including a timeout) the
-    warm session is force-closed and the error re-raised so the caller backs off.
+    On success runs the engine cycle and returns whether any restore-intent
+    remains outstanding (so the caller can fast-poll). On ANY failure (including
+    a timeout) the warm session is force-closed and the error re-raised so the
+    caller backs off.
     """
     lock = _lock_for(org_id)
     async with lock:
         loop = asyncio.get_running_loop()
 
-        def _tick() -> None:
+        def _tick() -> bool:
             # The ENTIRE blocking tick runs on a pool thread: the Snowflake
             # SHOW WAREHOUSES *and* run_cycle (which does Supabase httpx reads
             # and Snowflake ALTERs). Running run_cycle on the event loop would
             # stall every other tenant and the supervisor.
             rows = session.show_warehouses()
-            run_cycle(
+            return run_cycle(
                 org_id,
                 rows=rows,
                 store=store,
@@ -96,7 +98,7 @@ async def run_tenant_once(
             )
 
         try:
-            await asyncio.wait_for(
+            return await asyncio.wait_for(
                 loop.run_in_executor(executor, _tick),
                 timeout=config.poll_timeout_seconds,
             )
@@ -130,7 +132,7 @@ async def tenant_loop(
     attempt = 0
     while not stop.is_set():
         try:
-            await run_tenant_once(
+            has_intents = await run_tenant_once(
                 org_id,
                 session=session,
                 store=store,
@@ -144,7 +146,16 @@ async def tenant_loop(
             await sleep(delay)
         else:
             attempt = 0
-            await sleep(config.poll_interval_seconds)
+            # Fast-poll while an intent is outstanding to shrink the
+            # AUTO_SUSPEND=1-live window; ±15% jitter avoids phase-locking the
+            # executor across tenants.
+            base = (
+                config.intent_poll_interval_seconds
+                if has_intents
+                else config.poll_interval_seconds
+            )
+            delay = base * (0.85 + 0.30 * jitter())
+            await sleep(delay)
 
 
 async def supervisor(

@@ -176,14 +176,25 @@ def _reconcile_intent(
         return
 
     if snapshot.state == "STARTED" and (snapshot.running > 0 or snapshot.queued > 0):
-        # A query landed — restore, no cooldown (backed off).
+        # A query landed — restore, then back off with a cooldown. A warehouse
+        # that resumed under our sentinel just proved it is bursty; the cooldown
+        # bounds how often it can re-enter the AUTO_SUSPEND=1-live window.
         apply_alter(name, restore_to)
         store.delete_intent(org_id, name)
+        store.set_cooldown(org_id, name, now + timedelta(seconds=cooldown_seconds))
         return
 
-    # STARTED and idle and live == 1: suspend hasn't landed yet → HOLD,
-    # unless the intent has aged past the hold bound (anti-stranding backstop).
-    if (now - intent.set_at).total_seconds() > intent_hold_seconds:
+    # STARTED and idle and live == 1: HOLD unless (a) it already completed a
+    # suspend→resume cycle since we set the sentinel (resumed_on advanced), or
+    # (b) the intent aged past the backstop. Guard both-non-None so a snapshot
+    # with resumed_on=None (or a baseline-less intent) still HOLDs until aged.
+    resumed_since = (
+        intent.baseline_resumed_on is not None
+        and snapshot.resumed_on is not None
+        and snapshot.resumed_on != intent.baseline_resumed_on
+    )
+    aged_out = (now - intent.set_at).total_seconds() > intent_hold_seconds
+    if resumed_since or aged_out:
         apply_alter(name, restore_to)
         store.delete_intent(org_id, name)
         store.set_cooldown(org_id, name, now + timedelta(seconds=cooldown_seconds))

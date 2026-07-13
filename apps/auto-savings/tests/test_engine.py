@@ -39,11 +39,22 @@ def test_idle_warehouse_gets_intent_then_alter_in_order():
     store = InMemoryStore()
     _seed(store); _seed_settings(store)
     calls = []
-    run_cycle("org-1", rows=_rows(), store=store, config=CONFIG, now=NOW,
-              apply_alter=lambda n, v: calls.append((n, v)))
+    has_intents = run_cycle("org-1", rows=_rows(), store=store, config=CONFIG, now=NOW,
+                            apply_alter=lambda n, v: calls.append((n, v)))
     # Intent restore target is the LIVE managed default; intent written before the ALTER.
     assert store.list_intents("org-1")[0].restore_to == 300
     assert calls == [("WH1", 1)]
+    assert has_intents is True  # outstanding intent → fast-poll
+
+
+def test_run_cycle_returns_false_when_no_intents_outstanding():
+    store = InMemoryStore()
+    _seed(store, cooldown_ts=NOW + timedelta(seconds=100)); _seed_settings(store)
+    # In cooldown → no new suspend, no intent written → normal cadence.
+    has_intents = run_cycle("org-1", rows=_rows(), store=store, config=CONFIG, now=NOW,
+                            apply_alter=lambda n, v: None)
+    assert store.list_intents("org-1") == []
+    assert has_intents is False
 
 
 def test_kill_switch_off_stops_decide_but_still_drains():

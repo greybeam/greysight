@@ -19,6 +19,7 @@ class WorkerConfig:
     supabase_url: str
     supabase_service_role_key: str
     poll_interval_seconds: float = 3.0
+    intent_poll_interval_seconds: float = 1.0  # calibrated from Task 0 suspend latency
     poll_timeout_seconds: float = 20.0
     socket_timeout_seconds: int = 15
     cooldown_seconds: int = 60
@@ -47,6 +48,9 @@ class WorkerConfig:
             supabase_url=os.environ.get("SUPABASE_URL", ""),
             supabase_service_role_key=os.environ.get("SUPABASE_SERVICE_ROLE_KEY", ""),
             poll_interval_seconds=_float("AUTO_SAVINGS_POLL_INTERVAL_SECONDS", 3.0),
+            intent_poll_interval_seconds=_float(
+                "AUTO_SAVINGS_INTENT_POLL_INTERVAL_SECONDS", 1.0
+            ),
             poll_timeout_seconds=_float("AUTO_SAVINGS_POLL_TIMEOUT_SECONDS", 20.0),
             socket_timeout_seconds=_int("AUTO_SAVINGS_SOCKET_TIMEOUT_SECONDS", 15),
             cooldown_seconds=_int("AUTO_SAVINGS_COOLDOWN_SECONDS", 60),

@@ -31,6 +31,12 @@ def test_one_restore_intent_per_warehouse():
     assert "primary key (organization_id, warehouse_name)" in MIGRATION
 
 
+def test_restore_intent_has_baseline_resumed_on_column():
+    # Resume-aware restore: baseline resumed_on captured at set-time so reconcile
+    # can detect a completed suspend→resume cycle under the sentinel.
+    assert "baseline_resumed_on timestamptz" in MIGRATION
+
+
 def test_drift_state_constraint():
     assert "check (drift_state in ('ok','drifted','unsupported'))" in MIGRATION
 

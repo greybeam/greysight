@@ -20,12 +20,15 @@ def run_cycle(
     config: WorkerConfig,
     now: datetime,
     apply_alter: ApplyAlter,
-) -> None:
+) -> bool:
     """Run one per-tenant engine cycle over a single ``SHOW WAREHOUSES`` result.
 
     Order of operations: snapshot → reconcile-always → decide-when-enabled → act.
     Reconcile drains outstanding intents regardless of the global switch; the
     decide step (new force-suspends) runs only when the kill switch is on.
+
+    Returns ``True`` when any restore-intent remains outstanding after the cycle
+    (the caller should fast-poll to shrink the ``AUTO_SUSPEND=1``-live window).
     """
     snapshots = parse_warehouses(rows, now=now)
 
@@ -59,7 +62,7 @@ def run_cycle(
     # Decide ONLY when the kill switch is on.
     settings = store.get_settings(org_id)
     if settings is None or not settings.global_enabled:
-        return
+        return bool(store.list_intents(org_id))
 
     snapshot_by_name = {snap.name: snap for snap in snapshots}
     intent_names = {intent.warehouse_name for intent in intents}
@@ -95,5 +98,9 @@ def run_cycle(
                 name,
                 restore_to=enrollment.managed_auto_suspend,
                 set_at=now,
+                baseline_resumed_on=snapshot.resumed_on,
             )
             apply_alter(name, 1)
+
+    # Fast-poll while any intent is outstanding to shrink the live window.
+    return bool(store.list_intents(org_id))

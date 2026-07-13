@@ -38,6 +38,11 @@ The worker reads environment variables at startup to configure behavior. All val
   - How often (in seconds) the worker polls `SHOW WAREHOUSES` per tenant.
   - Affects cloud-services cost; increase to reduce overhead if needed.
 
+- **`AUTO_SAVINGS_INTENT_POLL_INTERVAL_SECONDS`** (default: 1)
+  - Faster poll interval used *only* while a restore-intent is outstanding (a warehouse currently sits at `AUTO_SUSPEND=1` under our sentinel).
+  - Shrinks the window during which a bursty warehouse could resume-storm before the worker observes `SUSPENDED`/busy and restores the managed default. Applied with ±15% jitter to avoid phase-locking tenants.
+  - Does **not** affect the anti-stranding backstop: intent hold time stays pinned to the normal `AUTO_SAVINGS_POLL_INTERVAL_SECONDS` × `AUTO_SAVINGS_MAX_INTENT_HOLD_TICKS`.
+
 - **`AUTO_SAVINGS_POLL_TIMEOUT_SECONDS`** (default: 20)
   - Watchdog timeout for each tenant's poll cycle.
   - If a cycle takes longer than this, the worker logs a warning and moves to the next tenant.

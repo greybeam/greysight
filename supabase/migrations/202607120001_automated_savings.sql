@@ -31,8 +31,12 @@ create table automated_savings_restore_intents (
     warehouse_name text not null,
     restore_to integer not null,
     set_at timestamptz not null default now(),
+    baseline_resumed_on timestamptz,
     primary key (organization_id, warehouse_name)
 );
+-- baseline_resumed_on: warehouse resumed_on captured at set-time. A later poll
+-- observing an advanced resumed_on proves a suspend→resume cycle completed under
+-- the sentinel, so reconcile restores early instead of holding for another cycle.
 
 create trigger set_automated_savings_settings_updated_at
     before update on automated_savings_settings

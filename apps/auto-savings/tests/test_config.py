@@ -21,8 +21,17 @@ def test_defaults_are_safe(monkeypatch):
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "svc")
     config = WorkerConfig.from_environment()
     assert config.poll_interval_seconds == 3.0
+    assert config.intent_poll_interval_seconds == 1.0
     assert config.cooldown_seconds == 60
     assert config.num_replicas == 1
+
+
+def test_intent_poll_interval_env_override(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "svc")
+    monkeypatch.setenv("AUTO_SAVINGS_INTENT_POLL_INTERVAL_SECONDS", "0.5")
+    config = WorkerConfig.from_environment()
+    assert config.intent_poll_interval_seconds == 0.5
 
 
 def test_socket_timeout_must_be_below_poll_timeout():

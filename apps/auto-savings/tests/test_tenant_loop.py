@@ -108,7 +108,7 @@ class ScriptedSession(FakeSession):
         return []
 
 
-async def _run_loop(session, *, stop_after, jitter=lambda: 1.0):
+async def _run_loop(session, *, stop_after, jitter=lambda: 1.0, store=None):
     """Drive tenant_loop for exactly ``stop_after`` ticks; return recorded sleeps."""
     sleeps: list[float] = []
     stop = asyncio.Event()
@@ -120,7 +120,8 @@ async def _run_loop(session, *, stop_after, jitter=lambda: 1.0):
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         await tenant_loop(
-            "org-1", session=session, store=InMemoryStore(), config=CONFIG,
+            "org-1", session=session,
+            store=store if store is not None else InMemoryStore(), config=CONFIG,
             executor=executor, sleep=fake_sleep, stop=stop, now_fn=lambda: NOW,
             jitter=jitter,
         )
@@ -137,9 +138,46 @@ async def test_loop_failure_sleeps_backoff_and_increments():
 @pytest.mark.asyncio
 async def test_loop_success_sleeps_interval_and_resets_backoff():
     # fail → success → fail. Success sleeps poll_interval and resets attempt, so the
-    # trailing failure backs off from attempt 0 (0.5) again, not attempt 1 (1.0).
-    sleeps = await _run_loop(ScriptedSession(["fail", "ok", "fail"]), stop_after=3)
-    assert sleeps == [0.5, CONFIG.poll_interval_seconds, 0.5]
+    # trailing failure backs off from attempt 0 again, not attempt 1.
+    # jitter=0.5 → success cadence factor 0.85+0.30*0.5 = 1.0 (exactly poll_interval);
+    # next_backoff(0)=0.5*0.5=0.25 both times (reset proven by the two equal backoffs).
+    sleeps = await _run_loop(
+        ScriptedSession(["fail", "ok", "fail"]), stop_after=3, jitter=lambda: 0.5
+    )
+    assert sleeps == [0.25, CONFIG.poll_interval_seconds, 0.25]
+
+
+def _idle_sentinel_rows():
+    # STARTED & idle & live==1 with resumed_on matching the seeded baseline → HELD,
+    # so the intent survives the cycle and run_cycle reports intents outstanding.
+    return [{"name": "WH1", "state": "STARTED", "type": "STANDARD",
+             "started_clusters": 1, "min_cluster_count": 1, "max_cluster_count": 1,
+             "running": 0, "queued": 0, "auto_suspend": 1, "auto_resume": "true",
+             "resumed_on": NOW.replace(hour=11, minute=59)}]
+
+
+@pytest.mark.asyncio
+async def test_success_fast_polls_while_intent_outstanding():
+    store = InMemoryStore()
+    store.seed_enrollment(EnrollmentRow(
+        organization_id="org-1", warehouse_name="WH1", enabled=True,
+        managed_auto_suspend=300, stored_default_auto_suspend=300,
+        warehouse_created_on=NOW, cooldown_ts=None, drift_state="ok", drifted_value=None))
+    store.write_intent("org-1", "WH1", restore_to=300, set_at=NOW,
+                       baseline_resumed_on=NOW.replace(hour=11, minute=59))
+    session = FakeSession(rows=_idle_sentinel_rows())
+    # jitter=0.5 → factor exactly 1.0, so sleep == intent_poll_interval_seconds.
+    sleeps = await _run_loop(session, stop_after=1, jitter=lambda: 0.5, store=store)
+    assert sleeps == [CONFIG.intent_poll_interval_seconds]
+
+
+@pytest.mark.asyncio
+async def test_success_normal_cadence_when_no_intent_outstanding():
+    # Empty store, warehouse cycle leaves nothing outstanding → normal interval.
+    sleeps = await _run_loop(
+        ScriptedSession(["ok"]), stop_after=1, jitter=lambda: 0.5
+    )
+    assert sleeps == [CONFIG.poll_interval_seconds]
 
 
 class DrainableSession:

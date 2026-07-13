@@ -44,6 +44,7 @@ class RestoreIntent:
     warehouse_name: str
     restore_to: int
     set_at: datetime
+    baseline_resumed_on: datetime | None = None
 
 
 class StoreError(RuntimeError):
@@ -66,6 +67,7 @@ class Store(Protocol):
         restore_to: int,
         *,
         set_at: datetime | None = None,
+        baseline_resumed_on: datetime | None = None,
     ) -> None: ...
 
     def delete_intent(self, organization_id: str, warehouse_name: str) -> None: ...
@@ -127,12 +129,14 @@ class InMemoryStore:
         restore_to: int,
         *,
         set_at: datetime | None = None,
+        baseline_resumed_on: datetime | None = None,
     ) -> None:
         self._intents[(organization_id, warehouse_name)] = RestoreIntent(
             organization_id=organization_id,
             warehouse_name=warehouse_name,
             restore_to=restore_to,
             set_at=_now(set_at),
+            baseline_resumed_on=baseline_resumed_on,
         )
 
     def delete_intent(self, organization_id: str, warehouse_name: str) -> None:
@@ -269,12 +273,18 @@ class SupabaseStore:
         restore_to: int,
         *,
         set_at: datetime | None = None,
+        baseline_resumed_on: datetime | None = None,
     ) -> None:
         payload = {
             "organization_id": organization_id,
             "warehouse_name": warehouse_name,
             "restore_to": restore_to,
             "set_at": _now(set_at).isoformat(),
+            "baseline_resumed_on": (
+                baseline_resumed_on.isoformat()
+                if baseline_resumed_on is not None
+                else None
+            ),
         }
         try:
             with self._client() as client:
@@ -479,6 +489,7 @@ def _parse_intent(row: object) -> RestoreIntent:
             warehouse_name=str(row["warehouse_name"]),
             restore_to=int(row["restore_to"]),
             set_at=_parse_ts(row["set_at"]),
+            baseline_resumed_on=_parse_optional_ts(row.get("baseline_resumed_on")),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise StoreError() from exc

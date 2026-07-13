@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from auto_savings.reconcile import reconcile
-from auto_savings.store import EnrollmentRow, InMemoryStore, RestoreIntent
+from auto_savings.store import EnrollmentRow, InMemoryStore
 from auto_savings.warehouse_snapshot import WarehouseSnapshot
 
 NOW = datetime(2026, 7, 12, 12, 0, 0, tzinfo=timezone.utc)
@@ -46,17 +46,52 @@ def test_intent_restores_and_cools_down_when_suspended():
     assert "WH1" in skip
 
 
-def test_started_busy_restores_without_cooldown():
-    # A query landed → back off, restore default, but do NOT burn cooldown.
+def test_started_busy_restores_with_backoff_cooldown():
+    # A query landed under our sentinel → restore, then back off with a cooldown:
+    # a warehouse that resumed proved it is bursty, so bound how often it can
+    # re-enter the AUTO_SUSPEND=1-live window (intended contract change).
     store = InMemoryStore()
-    store.write_intent("org-1", "WH1", restore_to=300)
+    store.write_intent("org-1", "WH1", restore_to=300, baseline_resumed_on=None)
     busy = WarehouseSnapshot(name="WH1", state="STARTED", type="STANDARD", size="X-Small",
                              started_clusters=1, min_cluster_count=1, max_cluster_count=1,
                              running=1, queued=0, auto_suspend=1, auto_resume=True,
                              resumed_on=None, created_on=NOW - timedelta(days=1))
     _, calls = _reconcile(store, [busy], [_enroll()])
     assert calls == [("WH1", 300)]
-    assert store.list_enrollments("org-1")[0].cooldown_ts is None  # not cooled down
+    assert store.list_enrollments("org-1")[0].cooldown_ts == NOW + timedelta(seconds=60)
+
+
+def test_resume_aware_restore_when_resumed_on_advanced():
+    # STARTED & idle & live==1 but resumed_on advanced past the baseline → the
+    # warehouse already completed a suspend→resume cycle under our sentinel.
+    # Restore early (holding just invites another costly cycle), set cooldown.
+    store = InMemoryStore()
+    t0 = NOW - timedelta(seconds=30)
+    t1 = NOW - timedelta(seconds=2)  # resumed AFTER we set the sentinel
+    store.write_intent("org-1", "WH1", restore_to=300, set_at=NOW, baseline_resumed_on=t0)
+    cycled = WarehouseSnapshot(name="WH1", state="STARTED", type="STANDARD", size="X-Small",
+                               started_clusters=1, min_cluster_count=1, max_cluster_count=1,
+                               running=0, queued=0, auto_suspend=1, auto_resume=True,
+                               resumed_on=t1, created_on=NOW - timedelta(days=1))
+    # Fresh intent (not aged) — would normally HOLD, but the resume advance forces restore.
+    _, calls = _reconcile(store, [cycled], [_enroll()], now=NOW, intent_hold_seconds=15.0)
+    assert calls == [("WH1", 300)]
+    assert store.list_intents("org-1") == []
+    assert store.list_enrollments("org-1")[0].cooldown_ts == NOW + timedelta(seconds=60)
+
+
+def test_started_idle_holds_when_resumed_on_unchanged_from_baseline():
+    # resumed_on matches the baseline (no new cycle) and intent is fresh → HOLD.
+    store = InMemoryStore()
+    t0 = NOW - timedelta(seconds=5)
+    store.write_intent("org-1", "WH1", restore_to=300, set_at=NOW, baseline_resumed_on=t0)
+    idle = WarehouseSnapshot(name="WH1", state="STARTED", type="STANDARD", size="X-Small",
+                             started_clusters=1, min_cluster_count=1, max_cluster_count=1,
+                             running=0, queued=0, auto_suspend=1, auto_resume=True,
+                             resumed_on=t0, created_on=NOW - timedelta(days=1))
+    _, calls = _reconcile(store, [idle], [_enroll()], now=NOW, intent_hold_seconds=15.0)
+    assert calls == []
+    assert store.list_intents("org-1") != []  # still held
 
 
 def test_started_idle_still_one_holds_intent_until_age_exceeds_bound():
