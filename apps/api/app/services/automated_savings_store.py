@@ -307,6 +307,9 @@ class SupabaseAutomatedSavingsStore:
             "organization_id": organization_id,
             "warehouse_name": warehouse_name,
             "restore_to": restore_to,
+            # 'reapply' tells the worker to overwrite the drifted live value with
+            # restore_to instead of treating the mismatch as a fresh customer edit.
+            "kind": "reapply",
         }
         try:
             with self._client() as client:

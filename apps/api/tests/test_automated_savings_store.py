@@ -154,6 +154,9 @@ def test_reconcile_reject_enqueues_restore_intent_and_clears_drift() -> None:
     assert len(intent_writes) == 1
     intent_payload = json.loads(intent_writes[0].content)
     assert intent_payload["restore_to"] == 300  # the managed_auto_suspend, not drifted_value
+    # kind='reapply' so the worker overwrites the drifted live value instead of
+    # re-flagging drift and never applying the ALTER (the accept=False bug fix).
+    assert intent_payload["kind"] == "reapply"
 
     assert len(warehouse_writes) == 1
     warehouse_payload = json.loads(warehouse_writes[0].content)

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from typing import Callable
 
 from auto_savings.config import WorkerConfig
 from auto_savings.decision import should_force_suspend
 from auto_savings.reconcile import reconcile
-from auto_savings.store import Store
+from auto_savings.store import SavingsEvent, Store
 from auto_savings.warehouse_snapshot import parse_warehouses
 
 ApplyAlter = Callable[[str, int], None]
@@ -93,14 +94,34 @@ def run_cycle(
         ):
             # Durability before mutation: write the restore-intent row FIRST
             # (restore target is the LIVE managed default), THEN the ALTER.
+            # The cycle_id ties this set_sentinel to its eventual restore event.
+            cycle_id = uuid.uuid4().hex
             store.write_intent(
                 org_id,
                 name,
                 restore_to=enrollment.managed_auto_suspend,
                 set_at=now,
                 baseline_resumed_on=snapshot.resumed_on,
+                cycle_id=cycle_id,
             )
             apply_alter(name, 1)
+            # Audit the mutation AFTER the ALTER succeeded (best-effort trail).
+            store.record_event(
+                SavingsEvent(
+                    organization_id=org_id,
+                    warehouse_name=name,
+                    action="set_sentinel",
+                    reason="decide",
+                    from_value=snapshot.auto_suspend,
+                    to_value=1,
+                    observed_state=snapshot.state,
+                    observed_running=snapshot.running,
+                    observed_queued=snapshot.queued,
+                    observed_resumed_on=snapshot.resumed_on,
+                    observed_at=now,
+                    cycle_id=cycle_id,
+                )
+            )
 
     # Fast-poll while any intent is outstanding to shrink the live window.
     return bool(store.list_intents(org_id))

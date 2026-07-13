@@ -45,6 +45,28 @@ class RestoreIntent:
     restore_to: int
     set_at: datetime
     baseline_resumed_on: datetime | None = None
+    cycle_id: str | None = None
+    kind: str = "sentinel"  # 'sentinel' (worker suspend) | 'reapply' (admin re-apply)
+
+
+@dataclass(frozen=True)
+class SavingsEvent:
+    """An append-only audit record of one AUTO_SUSPEND mutation the worker
+    issued on a customer warehouse. ``cycle_id`` pairs a ``set_sentinel`` with
+    its later ``restore`` so reclaimed idle time can be derived downstream."""
+
+    organization_id: str
+    warehouse_name: str
+    action: str  # 'set_sentinel' | 'restore'
+    reason: str  # 'decide' | 'suspended' | 'busy' | 'resume_aware' | 'aged_out'
+    to_value: int
+    observed_at: datetime
+    from_value: int | None = None
+    observed_state: str | None = None
+    observed_running: int | None = None
+    observed_queued: int | None = None
+    observed_resumed_on: datetime | None = None
+    cycle_id: str | None = None
 
 
 class StoreError(RuntimeError):
@@ -68,7 +90,11 @@ class Store(Protocol):
         *,
         set_at: datetime | None = None,
         baseline_resumed_on: datetime | None = None,
+        cycle_id: str | None = None,
+        kind: str = "sentinel",
     ) -> None: ...
+
+    def record_event(self, event: SavingsEvent) -> None: ...
 
     def delete_intent(self, organization_id: str, warehouse_name: str) -> None: ...
 
@@ -98,6 +124,7 @@ class InMemoryStore:
         self._enrollments: dict[tuple[str, str], EnrollmentRow] = {}
         self._settings: dict[str, SettingsRow] = {}
         self._intents: dict[tuple[str, str], RestoreIntent] = {}
+        self._events: list[SavingsEvent] = []
 
     def seed_enrollment(self, row: EnrollmentRow) -> None:
         self._enrollments[(row.organization_id, row.warehouse_name)] = row
@@ -130,6 +157,8 @@ class InMemoryStore:
         *,
         set_at: datetime | None = None,
         baseline_resumed_on: datetime | None = None,
+        cycle_id: str | None = None,
+        kind: str = "sentinel",
     ) -> None:
         self._intents[(organization_id, warehouse_name)] = RestoreIntent(
             organization_id=organization_id,
@@ -137,7 +166,15 @@ class InMemoryStore:
             restore_to=restore_to,
             set_at=_now(set_at),
             baseline_resumed_on=baseline_resumed_on,
+            cycle_id=cycle_id,
+            kind=kind,
         )
+
+    def record_event(self, event: SavingsEvent) -> None:
+        self._events.append(event)
+
+    def list_events(self, organization_id: str) -> list[SavingsEvent]:
+        return [e for e in self._events if e.organization_id == organization_id]
 
     def delete_intent(self, organization_id: str, warehouse_name: str) -> None:
         self._intents.pop((organization_id, warehouse_name), None)
@@ -274,6 +311,8 @@ class SupabaseStore:
         *,
         set_at: datetime | None = None,
         baseline_resumed_on: datetime | None = None,
+        cycle_id: str | None = None,
+        kind: str = "sentinel",
     ) -> None:
         payload = {
             "organization_id": organization_id,
@@ -285,7 +324,10 @@ class SupabaseStore:
                 if baseline_resumed_on is not None
                 else None
             ),
+            "kind": kind,
         }
+        if cycle_id is not None:
+            payload["cycle_id"] = cycle_id
         try:
             with self._client() as client:
                 response = client.post(
@@ -294,6 +336,37 @@ class SupabaseStore:
                     headers=self._headers(
                         prefer="resolution=merge-duplicates,return=minimal"
                     ),
+                )
+        except httpx.HTTPError as exc:
+            raise StoreError() from exc
+        if response.status_code not in (200, 201, 204):
+            raise StoreError()
+
+    def record_event(self, event: SavingsEvent) -> None:
+        payload = {
+            "organization_id": event.organization_id,
+            "warehouse_name": event.warehouse_name,
+            "cycle_id": event.cycle_id,
+            "action": event.action,
+            "reason": event.reason,
+            "from_value": event.from_value,
+            "to_value": event.to_value,
+            "observed_state": event.observed_state,
+            "observed_running": event.observed_running,
+            "observed_queued": event.observed_queued,
+            "observed_resumed_on": (
+                event.observed_resumed_on.isoformat()
+                if event.observed_resumed_on is not None
+                else None
+            ),
+            "observed_at": event.observed_at.isoformat(),
+        }
+        try:
+            with self._client() as client:
+                response = client.post(
+                    "/automated_savings_events",
+                    json=payload,
+                    headers=self._headers(prefer="return=minimal"),
                 )
         except httpx.HTTPError as exc:
             raise StoreError() from exc
@@ -490,6 +563,10 @@ def _parse_intent(row: object) -> RestoreIntent:
             restore_to=int(row["restore_to"]),
             set_at=_parse_ts(row["set_at"]),
             baseline_resumed_on=_parse_optional_ts(row.get("baseline_resumed_on")),
+            cycle_id=(
+                str(row["cycle_id"]) if row.get("cycle_id") is not None else None
+            ),
+            kind=str(row.get("kind") or "sentinel"),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise StoreError() from exc

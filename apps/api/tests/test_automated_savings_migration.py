@@ -37,6 +37,31 @@ def test_restore_intent_has_baseline_resumed_on_column():
     assert "baseline_resumed_on timestamptz" in MIGRATION
 
 
+def test_restore_intent_has_cycle_id_for_event_pairing():
+    # A set_sentinel event and its restore event share the intent's cycle_id.
+    assert "cycle_id uuid not null default gen_random_uuid()" in MIGRATION
+
+
+def test_restore_intent_kind_discriminates_sentinel_from_reapply():
+    # A reapply intent (admin "re-apply old default") must be distinguishable so
+    # the worker overwrites the drifted value instead of re-flagging drift.
+    assert "kind text not null default 'sentinel' check (kind in ('sentinel', 'reapply'))" in MIGRATION
+
+
+def test_events_audit_table_created_append_only():
+    assert "create table automated_savings_events" in MIGRATION
+    # Constrained action/reason (no free text), and a member-read-only policy —
+    # the log is written solely by the worker (service role).
+    assert "action in ('set_sentinel', 'restore')" in MIGRATION
+    assert "reason in ('decide', 'suspended', 'busy', 'resume_aware', 'aged_out', 'reconcile_reapply')" in MIGRATION
+    assert (
+        "create policy automated_savings_events_read on automated_savings_events\n"
+        "    for select to authenticated using (is_organization_member(organization_id));"
+    ) in MIGRATION
+    # No authenticated write policy on the audit table (append-only, worker-only).
+    assert "on automated_savings_events\n    for all" not in MIGRATION
+
+
 def test_drift_state_constraint():
     assert "check (drift_state in ('ok','drifted','unsupported'))" in MIGRATION
 

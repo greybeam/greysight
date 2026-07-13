@@ -120,7 +120,11 @@ These settings are inherited from the broader Greysight deployment:
 
 - **`SUPABASE_SERVICE_ROLE_KEY`**
   - Supabase service-role key with permissions to read/write automation state (no default; required).
-  - This key must have access to `automated_savings_settings`, `automated_savings_warehouses`, and `automated_savings_restore_intents` tables.
+  - This key must have access to `automated_savings_settings`, `automated_savings_warehouses`, `automated_savings_restore_intents`, and `automated_savings_events` tables.
+
+## Audit Log
+
+Every `AUTO_SUSPEND` mutation the worker applies to a customer warehouse is recorded in the append-only `automated_savings_events` table (one row per successful `ALTER`): `set_sentinel` when the sentinel is set, `restore` when the managed default is put back (with the reason: `suspended` / `busy` / `resume_aware` / `aged_out`). Each row snapshots the observed warehouse state, and a `set_sentinel` shares a `cycle_id` with its matching `restore` so a suspend can be paired with its restore. The log is never updated or deleted; members can read it via RLS, and only the worker (service role) writes it. It is the durable trail for debugging, customer trust, and the future savings-analytics surface.
 
 ## Runbook
 

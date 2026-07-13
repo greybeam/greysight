@@ -3,7 +3,13 @@ from datetime import datetime, timezone
 import httpx
 
 from auto_savings.config import WorkerConfig
-from auto_savings.store import EnrollmentRow, InMemoryStore, SettingsRow, SupabaseStore
+from auto_savings.store import (
+    EnrollmentRow,
+    InMemoryStore,
+    SavingsEvent,
+    SettingsRow,
+    SupabaseStore,
+)
 
 NOW = datetime(2026, 7, 12, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -52,6 +58,48 @@ def test_supabase_store_writes_intent_via_postgrest():
     assert "automated_savings_restore_intents" in seen["url"]
     assert seen["method"] == "POST"
     assert seen["auth"] == "Bearer svc"
+
+
+def test_in_memory_records_and_lists_events():
+    store = InMemoryStore()
+    event = SavingsEvent(
+        organization_id="org-1", warehouse_name="WH1", action="set_sentinel",
+        reason="decide", to_value=1, observed_at=NOW, from_value=300, cycle_id="c1",
+    )
+    store.record_event(event)
+    assert store.list_events("org-1") == [event]
+    assert store.list_events("org-2") == []
+
+
+def test_write_intent_persists_cycle_id_for_pairing():
+    store = InMemoryStore()
+    store.write_intent("org-1", "WH1", restore_to=300, cycle_id="c1")
+    [intent] = store.list_intents("org-1")
+    assert intent.cycle_id == "c1"
+
+
+def test_supabase_store_record_event_posts_to_events_table():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["method"] = request.method
+        seen["body"] = request.read().decode()
+        return httpx.Response(201, json=[])
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+    store.record_event(
+        SavingsEvent(
+            organization_id="org-1", warehouse_name="WH1", action="restore",
+            reason="suspended", to_value=300, observed_at=NOW, from_value=1,
+            observed_state="SUSPENDED", cycle_id="c1",
+        )
+    )
+
+    assert "automated_savings_events" in seen["url"]
+    assert seen["method"] == "POST"
+    assert '"reason":"suspended"' in seen["body"]
+    assert '"cycle_id":"c1"' in seen["body"]
 
 
 def test_supabase_store_list_enrollments_hits_warehouses_table():

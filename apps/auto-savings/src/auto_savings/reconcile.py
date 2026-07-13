@@ -3,10 +3,53 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Callable
 
-from auto_savings.store import EnrollmentRow, RestoreIntent, Store
+from auto_savings.store import EnrollmentRow, RestoreIntent, SavingsEvent, Store
 from auto_savings.warehouse_snapshot import WarehouseSnapshot
 
 ApplyAlter = Callable[[str, int], None]
+
+
+def _restore(
+    store: Store,
+    org_id: str,
+    name: str,
+    snapshot: WarehouseSnapshot,
+    intent: RestoreIntent,
+    *,
+    reason: str,
+    now: datetime,
+    cooldown_seconds: int | None,
+    apply_alter: ApplyAlter,
+) -> None:
+    """Restore the intent's target value, audit the mutation, then clear the intent.
+
+    Ordering is deliberate: ``apply_alter`` may raise (leaving the intent for the
+    next tick to retry), and the audit event is recorded BEFORE ``delete_intent``
+    so a failed event write also leaves the intent to retry rather than losing the
+    record of a mutation we already made. ``cooldown_seconds=None`` skips the
+    anti-thrash cooldown (used by the admin reapply path, which is a one-off config
+    correction, not a suspend cycle).
+    """
+    apply_alter(name, intent.restore_to)
+    store.record_event(
+        SavingsEvent(
+            organization_id=org_id,
+            warehouse_name=name,
+            action="restore",
+            reason=reason,
+            from_value=snapshot.auto_suspend,
+            to_value=intent.restore_to,
+            observed_state=snapshot.state,
+            observed_running=snapshot.running,
+            observed_queued=snapshot.queued,
+            observed_resumed_on=snapshot.resumed_on,
+            observed_at=now,
+            cycle_id=intent.cycle_id,
+        )
+    )
+    store.delete_intent(org_id, name)
+    if cooldown_seconds is not None:
+        store.set_cooldown(org_id, name, now + timedelta(seconds=cooldown_seconds))
 
 
 def reconcile(
@@ -153,6 +196,18 @@ def _reconcile_intent(
     live = snapshot.auto_suspend
     restore_to = intent.restore_to
 
+    # Admin-requested re-apply of the managed default over a drifted value (via the
+    # API's reconcile(accept=False)). Unlike a worker sentinel, the live value here
+    # is EXPECTED to differ from restore_to (it's the drifted value) and we DO
+    # overwrite it — never treat the mismatch as drift. Idempotent if already applied.
+    if intent.kind == "reapply":
+        if live != restore_to:
+            _restore(store, org_id, name, snapshot, intent, reason="reconcile_reapply",
+                     now=now, cooldown_seconds=None, apply_alter=apply_alter)
+        else:
+            store.delete_intent(org_id, name)
+        return
+
     # Already restored (idempotent terminal): a prior delete_intent failed, or
     # the warehouse resumed to the restored value. No ALTER.
     if live == restore_to:
@@ -170,18 +225,16 @@ def _reconcile_intent(
     # live == 1: decide restore vs. hold by live state.
     if snapshot.state == "SUSPENDED":
         # Savings captured — restore then cooldown.
-        apply_alter(name, restore_to)
-        store.delete_intent(org_id, name)
-        store.set_cooldown(org_id, name, now + timedelta(seconds=cooldown_seconds))
+        _restore(store, org_id, name, snapshot, intent, reason="suspended",
+                 now=now, cooldown_seconds=cooldown_seconds, apply_alter=apply_alter)
         return
 
     if snapshot.state == "STARTED" and (snapshot.running > 0 or snapshot.queued > 0):
         # A query landed — restore, then back off with a cooldown. A warehouse
         # that resumed under our sentinel just proved it is bursty; the cooldown
         # bounds how often it can re-enter the AUTO_SUSPEND=1-live window.
-        apply_alter(name, restore_to)
-        store.delete_intent(org_id, name)
-        store.set_cooldown(org_id, name, now + timedelta(seconds=cooldown_seconds))
+        _restore(store, org_id, name, snapshot, intent, reason="busy",
+                 now=now, cooldown_seconds=cooldown_seconds, apply_alter=apply_alter)
         return
 
     # STARTED and idle and live == 1: HOLD unless (a) it already completed a
@@ -195,7 +248,7 @@ def _reconcile_intent(
     )
     aged_out = (now - intent.set_at).total_seconds() > intent_hold_seconds
     if resumed_since or aged_out:
-        apply_alter(name, restore_to)
-        store.delete_intent(org_id, name)
-        store.set_cooldown(org_id, name, now + timedelta(seconds=cooldown_seconds))
+        _restore(store, org_id, name, snapshot, intent,
+                 reason="resume_aware" if resumed_since else "aged_out",
+                 now=now, cooldown_seconds=cooldown_seconds, apply_alter=apply_alter)
     return

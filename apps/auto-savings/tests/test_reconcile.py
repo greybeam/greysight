@@ -46,6 +46,98 @@ def test_intent_restores_and_cools_down_when_suspended():
     assert "WH1" in skip
 
 
+def test_reapply_intent_overwrites_drifted_value_without_flagging_drift():
+    # Admin "re-apply old default": intent.kind='reapply', live sits at the drifted
+    # value (120), restore_to is the managed default (300). The worker MUST ALTER
+    # 120 -> 300 and clear the intent — not re-flag drift (the accept=False bug fix).
+    store = InMemoryStore()
+    store.write_intent("org-1", "WH1", restore_to=300, kind="reapply")
+    drifted = WarehouseSnapshot(name="WH1", state="STARTED", type="STANDARD", size="X-Small",
+                                started_clusters=1, min_cluster_count=1, max_cluster_count=1,
+                                running=0, queued=0, auto_suspend=120, auto_resume=True,
+                                resumed_on=None, created_on=NOW - timedelta(days=1))
+    _, calls = _reconcile(store, [drifted], [_enroll(managed=300)])
+    assert calls == [("WH1", 300)]                                  # applied, not stomped-as-drift
+    assert store.list_intents("org-1") == []                        # intent cleared
+    assert store.list_enrollments("org-1")[0].drift_state == "ok"   # NOT re-flagged drifted
+    assert store.list_enrollments("org-1")[0].cooldown_ts is None   # correction, no cooldown
+    [event] = store.list_events("org-1")
+    assert event.action == "restore" and event.reason == "reconcile_reapply"
+    assert event.from_value == 120 and event.to_value == 300
+
+
+def test_reapply_intent_idempotent_when_already_at_target():
+    # Worker already applied it last tick (live == restore_to) → just clear, no ALTER.
+    store = InMemoryStore()
+    store.write_intent("org-1", "WH1", restore_to=300, kind="reapply")
+    _, calls = _reconcile(store, [_wh(auto_suspend=300, state="STARTED")], [_enroll(managed=300)])
+    assert calls == []
+    assert store.list_intents("org-1") == []
+    assert store.list_events("org-1") == []
+
+
+def test_restore_records_audit_event_with_reason_and_cycle_id():
+    store = InMemoryStore()
+    store.write_intent("org-1", "WH1", restore_to=300, cycle_id="c1")
+    _reconcile(store, [_wh(auto_suspend=1, state="SUSPENDED")], [_enroll()])
+    [event] = store.list_events("org-1")
+    assert event.action == "restore"
+    assert event.reason == "suspended"       # captured savings
+    assert event.from_value == 1 and event.to_value == 300
+    assert event.cycle_id == "c1"            # paired to its set_sentinel
+
+
+def test_hold_restore_reasons_distinguish_resume_aware_from_aged_out():
+    # resumed_on advanced past baseline → 'resume_aware'.
+    store = InMemoryStore()
+    store.write_intent("org-1", "WH1", restore_to=300, set_at=NOW,
+                       baseline_resumed_on=NOW - timedelta(minutes=5))
+    idle_resumed = WarehouseSnapshot(name="WH1", state="STARTED", type="STANDARD", size="X-Small",
+                                     started_clusters=1, min_cluster_count=1, max_cluster_count=1,
+                                     running=0, queued=0, auto_suspend=1, auto_resume=True,
+                                     resumed_on=NOW, created_on=NOW - timedelta(days=1))
+    _reconcile(store, [idle_resumed], [_enroll()], now=NOW)
+    assert store.list_events("org-1")[0].reason == "resume_aware"
+
+    # No resume, just aged past the hold bound → 'aged_out'.
+    store2 = InMemoryStore()
+    store2.write_intent("org-1", "WH1", restore_to=300, set_at=NOW, baseline_resumed_on=None)
+    idle_still = WarehouseSnapshot(name="WH1", state="STARTED", type="STANDARD", size="X-Small",
+                                   started_clusters=1, min_cluster_count=1, max_cluster_count=1,
+                                   running=0, queued=0, auto_suspend=1, auto_resume=True,
+                                   resumed_on=None, created_on=NOW - timedelta(days=1))
+    _reconcile(store2, [idle_still], [_enroll()],
+               now=NOW + timedelta(seconds=30), intent_hold_seconds=15.0)
+    assert store2.list_events("org-1")[0].reason == "aged_out"
+
+
+def test_failed_restore_alter_records_no_audit_event():
+    # apply_alter raises → no mutation happened → no audit row, intent kept for retry.
+    store = InMemoryStore()
+    store.write_intent("org-1", "WH1", restore_to=300)
+    store.seed_enrollment(_enroll())
+
+    def boom(name, val):
+        raise RuntimeError("ALTER failed")
+
+    try:
+        reconcile("org-1", [_wh(auto_suspend=1, state="SUSPENDED")], [_enroll()],
+                  store.list_intents("org-1"), store, now=NOW, cooldown_seconds=60,
+                  intent_hold_seconds=15.0, orphan_grace_seconds=120.0, apply_alter=boom)
+    except RuntimeError:
+        pass
+    assert store.list_events("org-1") == []       # no event for a mutation that didn't happen
+    assert store.list_intents("org-1") != []      # intent kept
+
+
+def test_idempotent_already_restored_records_no_event():
+    # live already == restore_to (no ALTER issued) → nothing to audit.
+    store = InMemoryStore()
+    store.write_intent("org-1", "WH1", restore_to=300)
+    _reconcile(store, [_wh(auto_suspend=300, state="STARTED")], [_enroll()])
+    assert store.list_events("org-1") == []
+
+
 def test_started_busy_restores_with_backoff_cooldown():
     # A query landed under our sentinel → restore, then back off with a cooldown:
     # a warehouse that resumed proved it is bursty, so bound how often it can

@@ -47,6 +47,21 @@ def test_idle_warehouse_gets_intent_then_alter_in_order():
     assert has_intents is True  # outstanding intent → fast-poll
 
 
+def test_set_sentinel_records_audit_event_sharing_intent_cycle_id():
+    store = InMemoryStore()
+    _seed(store); _seed_settings(store)
+    run_cycle("org-1", rows=_rows(), store=store, config=CONFIG, now=NOW,
+              apply_alter=lambda n, v: None)
+    [event] = store.list_events("org-1")
+    assert event.action == "set_sentinel"
+    assert event.reason == "decide"
+    assert event.from_value == 300 and event.to_value == 1
+    # The audit event and the restore-intent share a cycle_id so a later restore
+    # event can be paired back to this suspend.
+    assert event.cycle_id is not None
+    assert event.cycle_id == store.list_intents("org-1")[0].cycle_id
+
+
 def test_run_cycle_returns_false_when_no_intents_outstanding():
     store = InMemoryStore()
     _seed(store, cooldown_ts=NOW + timedelta(seconds=100)); _seed_settings(store)
