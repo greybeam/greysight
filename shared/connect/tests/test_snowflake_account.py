@@ -1,6 +1,6 @@
 import pytest
 
-from app.services.snowflake_account import (
+from greysight_connect.snowflake_account import (
     InvalidSnowflakeAccountError,
     validate_account_identifier,
 )

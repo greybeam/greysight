@@ -1,13 +1,20 @@
+from dataclasses import dataclass
+
 import httpx
 import pytest
 
-from app.config import Settings
-from app.services.org_connection_resolver import (
+from greysight_connect.org_connection_resolver import (
     OrgConnectionNotConfiguredError,
     OrgConnectionRow,
     SupabaseConnectionFetcher,
     resolve_snowflake_config,
 )
+
+
+@dataclass
+class Settings:
+    auth_required: bool = False
+    query_timeout_seconds: int = 120
 
 
 def _row() -> OrgConnectionRow:

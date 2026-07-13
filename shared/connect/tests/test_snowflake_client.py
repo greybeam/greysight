@@ -3,8 +3,8 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from app.services import snowflake_client
-from app.services.snowflake_client import (
+from greysight_connect import snowflake_client
+from greysight_connect.snowflake_client import (
     SnowflakeConfigurationError,
     SnowflakeConnectionConfig,
     SnowflakeQueryError,
@@ -33,7 +33,7 @@ def test_execute_source_query_uses_named_bind_params() -> None:
     )
     with (
         patch(
-            "app.services.snowflake_client.snowflake.connector.connect",
+            "greysight_connect.snowflake_client.snowflake.connector.connect",
             return_value=connection,
         ) as connect,
         patch.object(
@@ -56,7 +56,7 @@ def test_execute_source_query_uses_named_bind_params() -> None:
 
 
 def test_execute_source_query_rejects_invalid_window_before_connecting() -> None:
-    with patch("app.services.snowflake_client.snowflake.connector.connect") as connect:
+    with patch("greysight_connect.snowflake_client.snowflake.connector.connect") as connect:
         with pytest.raises(ValueError, match="window_days"):
             execute_source_query(
                 "select %(window_days)s as window_days",
@@ -69,7 +69,7 @@ def test_execute_source_query_rejects_invalid_window_before_connecting() -> None
 def test_validation_maps_raw_snowflake_errors_to_user_safe_messages() -> None:
     with (
         patch(
-            "app.services.snowflake_client.snowflake.connector.connect",
+            "greysight_connect.snowflake_client.snowflake.connector.connect",
             side_effect=PermissionError("raw private backend detail"),
         ),
         patch.object(SnowflakeConnectionConfig, "connector_kwargs", return_value={}),
@@ -110,7 +110,7 @@ def test_validation_maps_known_failure_modes_to_safe_messages(
 ) -> None:
     with (
         patch(
-            "app.services.snowflake_client.snowflake.connector.connect",
+            "greysight_connect.snowflake_client.snowflake.connector.connect",
             side_effect=raw_error,
         ),
         patch.object(SnowflakeConnectionConfig, "connector_kwargs", return_value={}),
@@ -141,7 +141,7 @@ def test_default_connection_uses_environment_config(
 
     with (
         patch(
-            "app.services.snowflake_client.snowflake.connector.connect",
+            "greysight_connect.snowflake_client.snowflake.connector.connect",
             return_value=connection,
         ) as connect,
         patch.object(
@@ -379,7 +379,7 @@ def test_repr_does_not_leak_key_material() -> None:
 
 
 def test_connector_kwargs_rejects_malformed_account() -> None:
-    from app.services.snowflake_account import InvalidSnowflakeAccountError
+    from greysight_connect.snowflake_account import InvalidSnowflakeAccountError
 
     pem = _generate_pem()
     config = SnowflakeConnectionConfig(
@@ -461,7 +461,7 @@ class _Conn:
 
 
 def test_object_does_not_exist_raises_object_unavailable():
-    from app.services.snowflake_client import SnowflakeObjectUnavailableError
+    from greysight_connect.snowflake_client import SnowflakeObjectUnavailableError
 
     exc = _FakeProgrammingError("Object 'X' does not exist", errno=2003)
     with pytest.raises(SnowflakeObjectUnavailableError):
@@ -471,7 +471,7 @@ def test_object_does_not_exist_raises_object_unavailable():
 
 
 def test_insufficient_privileges_raises_object_unavailable():
-    from app.services.snowflake_client import SnowflakeObjectUnavailableError
+    from greysight_connect.snowflake_client import SnowflakeObjectUnavailableError
 
     exc = _FakeProgrammingError("Insufficient privileges to operate", errno=3001)
     with pytest.raises(SnowflakeObjectUnavailableError):
