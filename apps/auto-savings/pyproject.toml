@@ -1,0 +1,21 @@
+[project]
+name = "greysight-auto-savings"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "greysight-connect",
+    "httpx==0.28.1",
+    "snowflake-connector-python==3.12.4",
+    "python-dotenv",
+]
+
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio", "pytest-cov", "ruff"]
+
+[tool.uv.sources]
+greysight-connect = { path = "../../shared/connect", editable = true }
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
