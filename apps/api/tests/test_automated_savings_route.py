@@ -1,8 +1,11 @@
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
 
 from app.auth import AuthContext, require_auth_context
 from app.main import app
 from app.services.membership_directory import Organization
+from app.services.org_connection_resolver import OrgConnectionNotConfiguredError
 from app.routes import automated_savings
 
 
@@ -76,3 +79,55 @@ def test_enroll_persists_live_warehouse_created_on(monkeypatch):
     assert resp.status_code == 200
     assert captured_kwargs["warehouse_created_on"] == "2026-01-01T00:00:00Z"
     assert captured_kwargs["warehouse_created_on"] is not None
+
+
+def test_status_includes_role_name(monkeypatch):
+    app.dependency_overrides[require_auth_context] = _member_ctx
+    monkeypatch.setattr(
+        "app.services.org_connection_resolver.resolve_snowflake_config",
+        lambda organization_id, settings, *, fetch_connection: SimpleNamespace(
+            role="ANALYST_ROLE"
+        ),
+    )
+    client = TestClient(app)
+    resp = client.get("/api/automated-savings/org-1/status")
+    app.dependency_overrides.clear()
+    assert resp.status_code == 200
+    assert resp.json()["role_name"] == "ANALYST_ROLE"
+
+
+def test_status_role_name_null_when_snowflake_not_configured(monkeypatch):
+    app.dependency_overrides[require_auth_context] = _member_ctx
+
+    def _raise(organization_id, settings, *, fetch_connection):
+        raise OrgConnectionNotConfiguredError("no config")
+
+    monkeypatch.setattr(
+        "app.services.org_connection_resolver.resolve_snowflake_config", _raise
+    )
+    client = TestClient(app)
+    resp = client.get("/api/automated-savings/org-1/status")
+    app.dependency_overrides.clear()
+    assert resp.status_code == 200
+    assert resp.json()["role_name"] is None
+
+
+def test_check_access_includes_role_name(monkeypatch):
+    app.dependency_overrides[require_auth_context] = _member_ctx
+    monkeypatch.setattr(
+        "app.services.org_connection_resolver.resolve_snowflake_config",
+        lambda organization_id, settings, *, fetch_connection: SimpleNamespace(
+            role="ANALYST_ROLE"
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.warehouse_directory.check_manage_warehouses_grant",
+        lambda config, role_name: True,
+    )
+    client = TestClient(app)
+    resp = client.post("/api/automated-savings/org-1/check-access")
+    app.dependency_overrides.clear()
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["role_name"] == "ANALYST_ROLE"
+    assert body["grant_present"] is True

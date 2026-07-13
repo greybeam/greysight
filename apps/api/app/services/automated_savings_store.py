@@ -168,19 +168,27 @@ class SupabaseAutomatedSavingsStore:
         managed_default: int,
         warehouse_created_on: str | None,
     ) -> None:
-        # Enroll captures the customer's current AUTO_SUSPEND as the immutable
-        # `stored_default` AND seeds `managed_default` from it — the live
-        # restore target the worker reads.
-        self._upsert_warehouse(
-            {
-                "organization_id": organization_id,
-                "warehouse_name": warehouse_name,
-                "enabled": enabled,
-                "stored_default_auto_suspend": stored_default,
-                "managed_auto_suspend": managed_default,
-                "warehouse_created_on": warehouse_created_on,
-            }
+        # On a warehouse's FIRST enroll, capture the customer's current
+        # AUTO_SUSPEND as the immutable `stored_default` AND seed
+        # `managed_default` from it. On a RE-enroll (a row already exists
+        # with a captured `stored_default`), preserve both — never overwrite
+        # the immutable capture with a freshly-observed live default, and
+        # leave `managed_default` alone since it's independently editable
+        # via `set_managed_default`.
+        existing = self._get_warehouse(organization_id, warehouse_name)
+        preserve_capture = (
+            existing is not None and existing.stored_default_auto_suspend is not None
         )
+        payload: dict[str, Any] = {
+            "organization_id": organization_id,
+            "warehouse_name": warehouse_name,
+            "enabled": enabled,
+            "warehouse_created_on": warehouse_created_on,
+        }
+        if not preserve_capture:
+            payload["stored_default_auto_suspend"] = stored_default
+            payload["managed_auto_suspend"] = managed_default
+        self._upsert_warehouse(payload)
 
     def set_managed_default(
         self, organization_id: str, warehouse_name: str, value: int

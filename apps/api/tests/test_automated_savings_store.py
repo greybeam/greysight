@@ -167,6 +167,9 @@ def test_enroll_seeds_managed_default_from_stored_default() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
+        if request.method == "GET":
+            # No prior row: first enroll.
+            return httpx.Response(200, json=[])
         return httpx.Response(204)
 
     store = _store(handler)
@@ -179,6 +182,54 @@ def test_enroll_seeds_managed_default_from_stored_default() -> None:
         warehouse_created_on=None,
     )
 
-    payload = json.loads(requests[0].content)
+    writes = [r for r in requests if r.method == "POST"]
+    assert len(writes) == 1
+    payload = json.loads(writes[0].content)
     assert payload["stored_default_auto_suspend"] == 300
     assert payload["managed_auto_suspend"] == 300
+
+
+def test_reenroll_preserves_stored_default_after_live_default_changes() -> None:
+    # Simulates: enroll (captures 300) -> unenroll -> customer changes the
+    # live Snowflake AUTO_SUSPEND to 900 -> re-enroll. The freshly-observed
+    # live default (900) must NOT overwrite the immutable stored_default
+    # already on the row (300).
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "organization_id": "org-1",
+                        "warehouse_name": "WH1",
+                        "enabled": False,
+                        "managed_auto_suspend": 300,
+                        "stored_default_auto_suspend": 300,
+                        "warehouse_created_on": None,
+                        "cooldown_ts": None,
+                        "drift_state": "ok",
+                        "drifted_value": None,
+                    }
+                ],
+            )
+        return httpx.Response(204)
+
+    store = _store(handler)
+    store.upsert_enrollment(
+        "org-1",
+        "WH1",
+        enabled=True,
+        stored_default=900,  # freshly captured live default, now different
+        managed_default=900,
+        warehouse_created_on=None,
+    )
+
+    writes = [r for r in requests if r.method == "POST"]
+    assert len(writes) == 1
+    payload = json.loads(writes[0].content)
+    assert "stored_default_auto_suspend" not in payload
+    assert "managed_auto_suspend" not in payload
+    assert payload["enabled"] is True

@@ -32,6 +32,7 @@ class StatusResponse(BaseModel):
     global_enabled: bool
     grant_present: bool
     grant_checked_at: str | None
+    role_name: str | None = None
 
 
 class GlobalSwitchRequest(BaseModel):
@@ -53,6 +54,7 @@ class ReconcileRequest(BaseModel):
 class CheckAccessResponse(BaseModel):
     grant_present: bool
     grant_checked_at: str | None
+    role_name: str | None = None
 
 
 class WarehouseResponse(BaseModel):
@@ -114,6 +116,31 @@ def capture_stored_default(
     return CapturedWarehouseDefaults(stored_default=None, warehouse_created_on=None)
 
 
+def _resolve_role_name(organization_id: str, settings: Settings) -> str | None:
+    """Best-effort lookup of the org's Snowflake role for display purposes.
+
+    Never raises: status must render even when Snowflake isn't configured or
+    the resolution fails for any other reason.
+    """
+    from app.services.org_connection_resolver import (
+        OrgConnectionNotConfiguredError,
+        resolve_snowflake_config,
+    )
+    from app.services.snowflake_runtime import get_connection_fetcher
+
+    try:
+        config = resolve_snowflake_config(
+            organization_id,
+            settings,
+            fetch_connection=get_connection_fetcher(settings),
+        )
+    except OrgConnectionNotConfiguredError:
+        return None
+    except Exception:  # noqa: BLE001 — status must not fail on resolution errors
+        return None
+    return config.role
+
+
 def _require_store():
     store = get_automated_savings_store()
     if store is None:
@@ -129,6 +156,7 @@ def get_status(
     auth_context: AuthContext = Depends(require_auth_context),
 ) -> StatusResponse:
     require_org_membership(auth_context, organization_id)
+    role_name = _resolve_role_name(organization_id, Settings())
     store = get_automated_savings_store()
     if store is None:
         return StatusResponse(
@@ -136,6 +164,7 @@ def get_status(
             global_enabled=False,
             grant_present=False,
             grant_checked_at=None,
+            role_name=role_name,
         )
     settings_row = store.get_settings(organization_id)
     return StatusResponse(
@@ -143,6 +172,7 @@ def get_status(
         global_enabled=settings_row.global_enabled,
         grant_present=settings_row.grant_present,
         grant_checked_at=settings_row.grant_checked_at,
+        role_name=role_name,
     )
 
 
@@ -387,4 +417,6 @@ def check_access(
                 status_code=502, detail="Could not persist the grant status."
             ) from None
 
-    return CheckAccessResponse(grant_present=present, grant_checked_at=checked_at)
+    return CheckAccessResponse(
+        grant_present=present, grant_checked_at=checked_at, role_name=role_name
+    )
