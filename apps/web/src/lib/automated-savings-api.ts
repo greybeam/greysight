@@ -17,11 +17,14 @@ export type AutomatedSavingsStatus = {
   agreed: boolean;
   globalEnabled: boolean;
   grantPresent: boolean;
-  // The org's existing Snowflake connection role (spec §"the org's existing
-  // connection/role") — the role the GRANT SQL targets. Not covered by the
-  // Task 16 test fixtures, added so the shell (Task 19) can wire it into the
-  // opt-in gate's GRANT SQL without guessing at a source.
-  roleName: string;
+  grantCheckedAt: string | null;
+};
+
+// The API's check-access response (`CheckAccessResponse`) is a strict subset
+// of StatusResponse — it does not include `agreed`/`global_enabled`.
+export type CheckAccessResult = {
+  grantPresent: boolean;
+  grantCheckedAt: string | null;
 };
 
 export type WarehouseRow = {
@@ -34,8 +37,10 @@ export type WarehouseRow = {
   maxClusterCount: number;
   startedClusters: number;
   autoResumeOk: boolean;
-  managedDefault: number;
-  storedDefault: number;
+  // Null for warehouses that have never been enrolled — the API only
+  // populates these once an enrollment row exists.
+  managedDefault: number | null;
+  storedDefault: number | null;
   enabled: boolean;
   driftState: DriftState;
   driftedValue: number | null;
@@ -104,8 +109,8 @@ export function parseWarehouseRow(raw: unknown): WarehouseRow {
     maxClusterCount: asNumber(record.max_cluster_count),
     startedClusters: asNumber(record.started_clusters),
     autoResumeOk: asBoolean(record.auto_resume_ok),
-    managedDefault: asNumber(record.managed_default),
-    storedDefault: asNumber(record.stored_default),
+    managedDefault: asNullableNumber(record.managed_default),
+    storedDefault: asNullableNumber(record.stored_default),
     enabled: asBoolean(record.enabled),
     driftState: asString(record.drift_state) as DriftState,
     driftedValue: asNullableNumber(record.drifted_value),
@@ -121,7 +126,17 @@ export function parseStatus(raw: unknown): AutomatedSavingsStatus {
     agreed: asBoolean(record.agreed),
     globalEnabled: asBoolean(record.global_enabled),
     grantPresent: asBoolean(record.grant_present),
-    roleName: asString(record.role_name),
+    grantCheckedAt: asNullableString(record.grant_checked_at),
+  };
+}
+
+// The check-access contract (`CheckAccessResponse`) is a strict subset of
+// StatusResponse — parse it separately instead of requiring the full shape.
+export function parseCheckAccessResult(raw: unknown): CheckAccessResult {
+  const record = asRecord(raw);
+  return {
+    grantPresent: asBoolean(record.grant_present),
+    grantCheckedAt: asNullableString(record.grant_checked_at),
   };
 }
 
@@ -153,7 +168,7 @@ export async function fetchStatus(
   options: AutomatedSavingsApiOptions = {},
 ): Promise<AutomatedSavingsStatus> {
   const payload = await fetchJson(
-    `/api/organizations/${orgId}/automated-savings/status`,
+    `/api/automated-savings/${orgId}/status`,
     {},
     options,
   );
@@ -165,7 +180,7 @@ export async function fetchWarehouses(
   options: AutomatedSavingsApiOptions = {},
 ): Promise<WarehouseRow[]> {
   const payload = await fetchJson(
-    `/api/organizations/${orgId}/automated-savings/warehouses`,
+    `/api/automated-savings/${orgId}/warehouses`,
     {},
     options,
   );
@@ -180,7 +195,7 @@ export async function agree(
   options: AutomatedSavingsApiOptions = {},
 ): Promise<void> {
   await fetchJson(
-    `/api/organizations/${orgId}/automated-savings/agree`,
+    `/api/automated-savings/${orgId}/agree`,
     { method: "POST" },
     options,
   );
@@ -192,9 +207,9 @@ export async function setGlobalSwitch(
   options: AutomatedSavingsApiOptions = {},
 ): Promise<void> {
   await fetchJson(
-    `/api/organizations/${orgId}/automated-savings/global-switch`,
+    `/api/automated-savings/${orgId}/global-switch`,
     {
-      method: "PUT",
+      method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ enabled }),
     },
@@ -209,9 +224,9 @@ export async function toggleWarehouse(
   options: AutomatedSavingsApiOptions = {},
 ): Promise<void> {
   await fetchJson(
-    `/api/organizations/${orgId}/automated-savings/warehouses/${encodeURIComponent(name)}/toggle`,
+    `/api/automated-savings/${orgId}/warehouses/${encodeURIComponent(name)}/toggle`,
     {
-      method: "PUT",
+      method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ enabled }),
     },
@@ -230,10 +245,10 @@ export async function setManagedDefault(
   });
   const response = await fetch(
     resolveApiUrl(
-      `/api/organizations/${orgId}/automated-savings/warehouses/${encodeURIComponent(name)}/managed-default`,
+      `/api/automated-savings/${orgId}/warehouses/${encodeURIComponent(name)}/managed-default`,
     ),
     {
-      method: "PUT",
+      method: "POST",
       headers,
       body: JSON.stringify({ value }),
       cache: "no-store",
@@ -256,7 +271,7 @@ export async function reconcileWarehouse(
   options: AutomatedSavingsApiOptions = {},
 ): Promise<void> {
   await fetchJson(
-    `/api/organizations/${orgId}/automated-savings/warehouses/${encodeURIComponent(name)}/reconcile`,
+    `/api/automated-savings/${orgId}/warehouses/${encodeURIComponent(name)}/reconcile`,
     {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -269,11 +284,11 @@ export async function reconcileWarehouse(
 export async function checkAccess(
   orgId: string,
   options: AutomatedSavingsApiOptions = {},
-): Promise<AutomatedSavingsStatus> {
+): Promise<CheckAccessResult> {
   const payload = await fetchJson(
-    `/api/organizations/${orgId}/automated-savings/check-access`,
+    `/api/automated-savings/${orgId}/check-access`,
     { method: "POST" },
     options,
   );
-  return parseStatus(payload);
+  return parseCheckAccessResult(payload);
 }

@@ -92,7 +92,11 @@ type WarehouseRowViewProps = {
 
 function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange }: WarehouseRowViewProps) {
   const inputId = useId();
-  const [draftValue, setDraftValue] = useState(String(warehouse.managedDefault));
+  // Unenrolled warehouses have a null managed_default — show an empty input
+  // rather than coercing to a misleading number.
+  const [draftValue, setDraftValue] = useState(
+    warehouse.managedDefault === null ? "" : String(warehouse.managedDefault),
+  );
   const [floorWarning, setFloorWarning] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -104,7 +108,9 @@ function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange }: 
     const parsed = Number(draftValue);
     if (!Number.isFinite(parsed) || parsed < MANAGED_DEFAULT_FLOOR) {
       setFloorWarning(true);
-      setDraftValue(String(warehouse.managedDefault));
+      setDraftValue(
+        warehouse.managedDefault === null ? "" : String(warehouse.managedDefault),
+      );
       return;
     }
     setFloorWarning(false);
@@ -158,6 +164,7 @@ function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange }: 
             id={inputId}
             type="number"
             min={MANAGED_DEFAULT_FLOOR}
+            placeholder="—"
             disabled={editDisabled}
             value={draftValue}
             className="w-20 rounded border border-hairline bg-canvas px-2 py-1 text-slate-100 disabled:opacity-50"
@@ -170,7 +177,9 @@ function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange }: 
               }
             }}
           />
-          {floorWarning || warehouse.managedDefault <= MANAGED_DEFAULT_FLOOR ? (
+          {floorWarning ||
+          (warehouse.managedDefault !== null &&
+            warehouse.managedDefault <= MANAGED_DEFAULT_FLOOR) ? (
             <span
               className="cursor-help text-amber-400"
               role="img"

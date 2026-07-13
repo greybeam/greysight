@@ -12,7 +12,7 @@ import {
   type WarehouseRow,
 } from "../../lib/automated-savings-api";
 import OrgShell from "../org/org-shell";
-import { OptInGate, quoteIdent } from "./opt-in-gate";
+import { OptInGate, quoteIdent, UNKNOWN_ROLE_PLACEHOLDER } from "./opt-in-gate";
 import { WarehouseTable } from "./warehouse-table";
 
 type AutomatedSavingsShellProps = {
@@ -95,7 +95,11 @@ function AutomatedSavingsContent() {
   if (!status.agreed) {
     return (
       <div className="p-6">
-        <OptInGate orgId={orgId} roleName={status.roleName} onAgreed={() => void load()} />
+        <OptInGate
+          orgId={orgId}
+          roleName={UNKNOWN_ROLE_PLACEHOLDER}
+          onAgreed={() => void load()}
+        />
       </div>
     );
   }
@@ -105,18 +109,23 @@ function AutomatedSavingsContent() {
   const globalMixed = !allEnabled && !noneEnabled;
 
   async function handleGlobalToggle() {
-    if (!orgId || !isAdmin) return;
-    const nextEnabled = !allEnabled;
+    if (!orgId || !isAdmin || !status) return;
+    const nextEnabled = !status.globalEnabled;
     await setGlobalSwitch(orgId, nextEnabled, { accessToken });
+    setStatus({ ...status, globalEnabled: nextEnabled });
     setWarehouses((prev) => prev.map((row) => ({ ...row, enabled: nextEnabled })));
   }
 
   async function handleCheckAccess() {
-    if (!orgId) return;
+    if (!orgId || !status) return;
     setChecking(true);
     try {
-      const nextStatus = await checkAccess(orgId, { accessToken });
-      setStatus(nextStatus);
+      const result = await checkAccess(orgId, { accessToken });
+      setStatus({
+        ...status,
+        grantPresent: result.grantPresent,
+        grantCheckedAt: result.grantCheckedAt,
+      });
     } finally {
       setChecking(false);
     }
@@ -126,7 +135,7 @@ function AutomatedSavingsContent() {
     setWarehouses((prev) => prev.map((existing) => (existing.name === row.name ? row : existing)));
   }
 
-  const grantSql = `GRANT MANAGE WAREHOUSES ON ACCOUNT TO ROLE ${quoteIdent(status.roleName)};`;
+  const grantSql = `GRANT MANAGE WAREHOUSES ON ACCOUNT TO ROLE ${quoteIdent(UNKNOWN_ROLE_PLACEHOLDER)};`;
 
   return (
     <div className="space-y-4 p-6">
@@ -152,13 +161,13 @@ function AutomatedSavingsContent() {
             role="switch"
             type="checkbox"
             aria-label="Automated Savings enabled for all warehouses"
-            checked={allEnabled}
-            aria-checked={globalMixed ? "mixed" : allEnabled}
+            checked={status.globalEnabled}
+            aria-checked={globalMixed ? "mixed" : status.globalEnabled}
             disabled={!isAdmin}
             onChange={() => void handleGlobalToggle()}
             className="h-4 w-4 accent-chart-purple disabled:cursor-not-allowed disabled:opacity-50"
           />
-          {allEnabled ? "All warehouses enabled" : noneEnabled ? "All warehouses disabled" : "Mixed"}
+          {status.globalEnabled ? "All warehouses enabled" : noneEnabled ? "All warehouses disabled" : "Mixed"}
         </label>
         <button
           type="button"

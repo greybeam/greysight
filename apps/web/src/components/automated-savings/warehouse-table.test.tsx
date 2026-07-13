@@ -29,6 +29,19 @@ describe("WarehouseTable", () => {
     expect(input.min).toBe("60");
   });
 
+  it("renders an unenrolled warehouse with a null managed/stored default without throwing", () => {
+    render(
+      <WarehouseTable
+        orgId="org-1"
+        isAdmin
+        warehouses={[{ ...base, managedDefault: null, storedDefault: null, enabled: false }]}
+        onChange={() => {}}
+      />,
+    );
+    const input = screen.getByLabelText(/WH1 auto_suspend/i) as HTMLInputElement;
+    expect(input.value).toBe("");
+  });
+
   it("surfaces Reconcile when drifted", () => {
     render(<WarehouseTable orgId="org-1" isAdmin warehouses={[{ ...base, driftState: "drifted", status: "drifted" }]} onChange={() => {}} />);
     expect(screen.getByRole("button", { name: /reconcile/i })).toBeInTheDocument();

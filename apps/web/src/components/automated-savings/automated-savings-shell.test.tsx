@@ -66,7 +66,7 @@ describe("AutomatedSavingsShell", () => {
       agreed: false,
       globalEnabled: false,
       grantPresent: false,
-      roleName: "GREYSIGHT_RL",
+      grantCheckedAt: null,
     });
 
     render(<AutomatedSavingsShell authRequired={false} />);
@@ -80,7 +80,7 @@ describe("AutomatedSavingsShell", () => {
       agreed: true,
       globalEnabled: true,
       grantPresent: true,
-      roleName: "GREYSIGHT_RL",
+      grantCheckedAt: null,
     });
     fetchWarehousesMock.mockResolvedValue([baseRow]);
 
@@ -95,14 +95,12 @@ describe("AutomatedSavingsShell", () => {
       agreed: true,
       globalEnabled: true,
       grantPresent: true,
-      roleName: "GREYSIGHT_RL",
+      grantCheckedAt: null,
     });
     fetchWarehousesMock.mockResolvedValue([baseRow]);
     checkAccessMock.mockResolvedValue({
-      agreed: true,
-      globalEnabled: true,
       grantPresent: false,
-      roleName: "GREYSIGHT_RL",
+      grantCheckedAt: "2026-01-01T00:00:00Z",
     });
 
     render(<AutomatedSavingsShell authRequired={false} />);
@@ -128,7 +126,7 @@ describe("AutomatedSavingsShell", () => {
       agreed: true,
       globalEnabled: true,
       grantPresent: true,
-      roleName: "GREYSIGHT_RL",
+      grantCheckedAt: null,
     });
     fetchWarehousesMock.mockResolvedValue([baseRow]);
 
@@ -141,14 +139,17 @@ describe("AutomatedSavingsShell", () => {
     expect(await screen.findByRole("table", { name: /warehouses/i })).toBeInTheDocument();
   });
 
-  it("flips all warehouses on with the global switch", async () => {
+  it("reflects status.globalEnabled and flips it via the global switch", async () => {
+    // The server's global_enabled is false even though the (only) row happens
+    // to be enabled — the switch must track status.globalEnabled, not the
+    // per-row state, and reflect it on initial render.
     fetchStatusMock.mockResolvedValue({
       agreed: true,
-      globalEnabled: true,
+      globalEnabled: false,
       grantPresent: true,
-      roleName: "GREYSIGHT_RL",
+      grantCheckedAt: null,
     });
-    fetchWarehousesMock.mockResolvedValue([{ ...baseRow, enabled: false }]);
+    fetchWarehousesMock.mockResolvedValue([{ ...baseRow, enabled: true }]);
     setGlobalSwitchMock.mockResolvedValue(undefined);
 
     render(<AutomatedSavingsShell authRequired={false} />);
@@ -170,13 +171,13 @@ describe("AutomatedSavingsShell", () => {
         agreed: false,
         globalEnabled: false,
         grantPresent: false,
-        roleName: "GREYSIGHT_RL",
+        grantCheckedAt: null,
       })
       .mockResolvedValueOnce({
         agreed: true,
         globalEnabled: true,
         grantPresent: true,
-        roleName: "GREYSIGHT_RL",
+        grantCheckedAt: null,
       });
     fetchWarehousesMock.mockResolvedValue([baseRow]);
     agreeMock.mockResolvedValue(undefined);
@@ -193,7 +194,7 @@ describe("AutomatedSavingsShell", () => {
       agreed: true,
       globalEnabled: true,
       grantPresent: true,
-      roleName: "GREYSIGHT_RL",
+      grantCheckedAt: null,
     });
     fetchWarehousesMock.mockResolvedValue([baseRow]);
     toggleWarehouseMock.mockResolvedValue(undefined);
