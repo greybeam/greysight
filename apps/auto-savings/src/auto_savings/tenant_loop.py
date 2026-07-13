@@ -147,8 +147,13 @@ async def tenant_loop(
         else:
             attempt = 0
             # Fast-poll while an intent is outstanding to shrink the
-            # AUTO_SUSPEND=1-live window; ±15% jitter avoids phase-locking the
-            # executor across tenants.
+            # AUTO_SUSPEND=1-live window. The ±15% jitter is applied to BOTH the
+            # fast intent-poll cadence AND the normal steady-state cadence
+            # (finding #17) — this is deliberate, not an oversight: without it,
+            # every tenant on this replica would settle into the exact same
+            # poll_interval_seconds phase and hammer Snowflake/Supabase in
+            # lockstep. Jittering steady-state too spreads the fleet's poll
+            # timing evenly instead of phase-locking on a shared cadence.
             base = (
                 config.intent_poll_interval_seconds
                 if has_intents

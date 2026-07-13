@@ -65,16 +65,22 @@ class TenantSession:
     def show_warehouses(self) -> list[dict]:
         self.ensure_connected()
         cursor = self._connection.cursor()
-        cursor.execute("SHOW WAREHOUSES")
-        columns = [col[0].lower() for col in cursor.description]
-        rows = cursor.fetchall()
-        return [dict(zip(columns, row)) for row in rows]
+        try:
+            cursor.execute("SHOW WAREHOUSES")
+            columns = [col[0].lower() for col in cursor.description]
+            rows = cursor.fetchall()
+            return [dict(zip(columns, row)) for row in rows]
+        finally:
+            cursor.close()
 
     def alter_auto_suspend(self, name: str, value: int) -> None:
         self.ensure_connected()
         cursor = self._connection.cursor()
-        quoted = _quote_identifier(name)
-        cursor.execute(f"ALTER WAREHOUSE {quoted} SET AUTO_SUSPEND = {value}")
+        try:
+            quoted = _quote_identifier(name)
+            cursor.execute(f"ALTER WAREHOUSE {quoted} SET AUTO_SUSPEND = {value}")
+        finally:
+            cursor.close()
 
     def close_hard(self) -> None:
         connection = self._connection

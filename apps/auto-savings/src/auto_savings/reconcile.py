@@ -21,14 +21,20 @@ def _restore(
     cooldown_seconds: int | None,
     apply_alter: ApplyAlter,
 ) -> None:
-    """Restore the intent's target value, audit the mutation, then clear the intent.
+    """Restore the intent's target value, audit the mutation, cool down, then
+    clear the intent.
 
     Ordering is deliberate: ``apply_alter`` may raise (leaving the intent for the
     next tick to retry), and the audit event is recorded BEFORE ``delete_intent``
     so a failed event write also leaves the intent to retry rather than losing the
-    record of a mutation we already made. ``cooldown_seconds=None`` skips the
-    anti-thrash cooldown (used by the admin reapply path, which is a one-off config
-    correction, not a suspend cycle).
+    record of a mutation we already made. ``set_cooldown`` also runs BEFORE
+    ``delete_intent`` (finding #8): if the cooldown write failed AFTER the intent
+    was already deleted, the warehouse could immediately re-enter the sentinel
+    window with no anti-thrash guard. Persisting cooldown first means a failure
+    there just leaves the intent for the next tick to retry, same as the other
+    mutations. ``cooldown_seconds=None`` skips the anti-thrash cooldown (used by
+    the admin reapply path, which is a one-off config correction, not a suspend
+    cycle).
     """
     apply_alter(name, intent.restore_to)
     store.record_event(
@@ -47,9 +53,9 @@ def _restore(
             cycle_id=intent.cycle_id,
         )
     )
-    store.delete_intent(org_id, name)
     if cooldown_seconds is not None:
         store.set_cooldown(org_id, name, now + timedelta(seconds=cooldown_seconds))
+    store.delete_intent(org_id, name)
 
 
 def reconcile(
@@ -211,8 +217,9 @@ def _reconcile_intent(
     # Already restored (idempotent terminal): a prior delete_intent failed, or
     # the warehouse resumed to the restored value. No ALTER.
     if live == restore_to:
-        store.delete_intent(org_id, name)
+        # Cooldown before delete (finding #8) — same rationale as ``_restore``.
         store.set_cooldown(org_id, name, now + timedelta(seconds=cooldown_seconds))
+        store.delete_intent(org_id, name)
         return
 
     # Customer edited mid-suspend — don't stomp their edit.

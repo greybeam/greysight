@@ -70,6 +70,25 @@ def test_standard_edition_absent_cluster_columns_fires():
     ) is True
 
 
+def test_present_but_null_started_clusters_fails_closed_on_enterprise_row():
+    # started_clusters is PRESENT (Enterprise+ edition emits the column) but null/
+    # malformed on this row, while min_cluster_count/max_cluster_count ARE present
+    # and valid. This must NOT be treated the same as "column absent" (Standard
+    # edition) — defaulting started_clusters to min_cluster_count here would let a
+    # scaled-up multi-cluster warehouse slip past the safety gate (finding #4).
+    row = {
+        "name": "WH1", "state": "STARTED", "type": "STANDARD",
+        "started_clusters": None, "min_cluster_count": 1, "max_cluster_count": 4,
+        "running": 0, "queued": 0, "auto_suspend": 60, "auto_resume": "true",
+        "resumed_on": NOW - timedelta(seconds=90), "created_on": NOW - timedelta(days=5),
+    }
+    [wh] = parse_warehouses([row], now=NOW)
+    assert should_force_suspend(
+        wh, now=NOW, uptime_floor_seconds=62,
+        in_cooldown=False, is_drifted=False, has_outstanding_intent=False,
+    ) is False
+
+
 def test_present_multi_cluster_started_clusters_still_protected():
     # Present started_clusters must still be honored (not overridden by min default),
     # so a scaled-up Enterprise+ multi-cluster warehouse is not force-suspended.

@@ -59,6 +59,38 @@ def test_alter_quotes_identifier():
     assert "SET AUTO_SUSPEND = 1" in sql
 
 
+def test_close_hard_closes_old_connection_and_next_op_reconnects():
+    # D-lifecycle regression: after close_hard(), the OLD connection's .close()
+    # must have been called, and a subsequent operation must establish a NEW
+    # connection (not silently reuse a stale/closed one) — the wedge-escape only
+    # works if the next tick actually reconnects (finding #20).
+    connections = []
+
+    def fake_connect(_config):
+        conn = Mock()
+        connections.append(conn)
+        return conn
+
+    session = TenantSession(config=object(), socket_timeout_seconds=15, connect=fake_connect)
+    session.ensure_connected()
+    first_connection = connections[0]
+    assert len(connections) == 1
+
+    session.close_hard()
+    assert first_connection.close.called is True
+
+    session.ensure_connected()
+    assert len(connections) == 2  # a NEW connection was established
+    assert connections[1] is not first_connection
+
+    cursor = Mock()
+    cursor.description = [("name",), ("state",)]
+    cursor.fetchall.return_value = [("WH1", "STARTED")]
+    connections[1].cursor.return_value = cursor
+    session.show_warehouses()
+    assert len(connections) == 2  # reused the reconnected session, not a third connect
+
+
 def test_backoff_is_bounded_and_jittered():
     assert next_backoff(0, base=0.5, cap=30.0, jitter=lambda: 1.0) == 0.5
     assert next_backoff(10, base=0.5, cap=30.0, jitter=lambda: 1.0) == 30.0  # capped

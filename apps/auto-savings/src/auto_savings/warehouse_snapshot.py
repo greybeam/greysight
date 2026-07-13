@@ -28,6 +28,17 @@ def _ci_get(row: dict, key: str, default=None):
     return lowered.get(key.lower(), default)
 
 
+def _ci_present(row: dict, key: str) -> bool:
+    """True if ``key`` exists as a column in ``row`` (case-insensitive),
+    regardless of whether its value is null. Distinguishes an ABSENT column
+    (Standard-edition SHOW WAREHOUSES omits cluster columns entirely) from a
+    PRESENT-but-null/malformed one (finding #4) — only the former is safe to
+    default."""
+    if key in row:
+        return True
+    return key.lower() in {str(k).lower() for k in row}
+
+
 def _as_int(value, default: int) -> int:
     try:
         return int(value)
@@ -73,18 +84,27 @@ def parse_warehouses(rows: list[dict], *, now: datetime) -> list[WarehouseSnapsh
         # `started_clusters`/`min_cluster_count`/`max_cluster_count` only exist on
         # Enterprise+ editions; SHOW WAREHOUSES omits them entirely on Standard edition
         # (Task 0 spike, 2026-07-12). A Standard-edition warehouse is always single-cluster
-        # and safe to suspend, so when the column is ABSENT default started_clusters to the
-        # resolved min_cluster_count (not a hardcoded 0) so should_force_suspend's
-        # `started_clusters == min_cluster_count` gate can pass. When the column IS present
-        # (Enterprise+), use its real value so a scaled-up multi-cluster warehouse stays
-        # protected.
+        # and safe to suspend, so when ALL THREE cluster columns are ABSENT default
+        # started_clusters to the resolved min_cluster_count (not a hardcoded 0) so
+        # should_force_suspend's `started_clusters == min_cluster_count` gate can pass.
+        #
+        # A cluster column that is PRESENT but null/unparseable (e.g. an Enterprise+
+        # warehouse with a malformed row) must NOT be treated the same as absent —
+        # doing so would default started_clusters to min_cluster_count and could pass
+        # the safety gate for a scaled-up multi-cluster warehouse (finding #4). In that
+        # case fail closed: parse started_clusters to 0, which never equals
+        # min_cluster_count (>= 1), so the gate blocks suspension.
         min_cluster_count = _as_int(_ci_get(row, "min_cluster_count"), 1)
-        started_clusters_raw = _ci_get(row, "started_clusters")
-        started_clusters = (
-            min_cluster_count
-            if started_clusters_raw is None
-            else _as_int(started_clusters_raw, min_cluster_count)
+        cluster_cols_absent = (
+            not _ci_present(row, "started_clusters")
+            and not _ci_present(row, "min_cluster_count")
+            and not _ci_present(row, "max_cluster_count")
         )
+        started_clusters_raw = _ci_get(row, "started_clusters")
+        if cluster_cols_absent:
+            started_clusters = min_cluster_count
+        else:
+            started_clusters = _as_int(started_clusters_raw, 0)
         snapshots.append(
             WarehouseSnapshot(
                 name=str(_ci_get(row, "name", "")),

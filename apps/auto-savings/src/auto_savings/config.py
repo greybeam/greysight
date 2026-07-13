@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 
@@ -33,6 +34,23 @@ class WorkerConfig:
     auth_required: bool = True
     query_timeout_seconds: int = 120
 
+    # Every interval/duration must be finite and strictly positive — a zero,
+    # negative, NaN, or infinite value here means a mistyped/mis-set env var
+    # silently turns into a busy-loop, an instantly-expiring guard, or a
+    # never-firing one (findings #9 / #16).
+    _INTERVAL_FIELDS = (
+        "poll_interval_seconds",
+        "poll_timeout_seconds",
+        "socket_timeout_seconds",
+        "cooldown_seconds",
+        "intent_poll_interval_seconds",
+        "uptime_floor_seconds",
+        "max_intent_hold_ticks",
+        "orphan_grace_seconds",
+        "tenant_refresh_seconds",
+        "query_timeout_seconds",
+    )
+
     def __post_init__(self) -> None:
         # The socket read timeout MUST fire before the watchdog, or the watchdog trips
         # while the pool thread is still blocked → thread leak (Codex R2.1 MED).
@@ -40,6 +58,19 @@ class WorkerConfig:
             raise ValueError(
                 f"socket_timeout_seconds ({self.socket_timeout_seconds}) must be < "
                 f"poll_timeout_seconds ({self.poll_timeout_seconds})"
+            )
+        for name in self._INTERVAL_FIELDS:
+            value = getattr(self, name)
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(
+                    f"{name} ({value!r}) must be a finite, strictly positive number"
+                )
+        if self.num_replicas < 1:
+            raise ValueError(f"num_replicas ({self.num_replicas}) must be >= 1")
+        if not (0 <= self.replica_index < self.num_replicas):
+            raise ValueError(
+                f"replica_index ({self.replica_index}) must satisfy "
+                f"0 <= replica_index < num_replicas ({self.num_replicas})"
             )
 
     @classmethod

@@ -80,10 +80,12 @@ async def test_genuinely_blocking_call_times_out_and_frees_the_loop():
             threading.Event().wait(5)  # blocks well past the 0.2s timeout
             return []
 
-    # socket_timeout must stay strictly < poll_timeout (WorkerConfig invariant);
-    # the FakeSession ignores it, so 0 keeps the fast 0.2s watchdog valid.
+    # socket_timeout must stay strictly < poll_timeout (WorkerConfig invariant) and,
+    # since config validation now requires every interval to be finite and strictly
+    # positive (finding #9/#16), a small positive value keeps the fast 0.2s watchdog
+    # valid; the FakeSession ignores it either way.
     cfg = WorkerConfig(supabase_url="u", supabase_service_role_key="k",
-                       poll_timeout_seconds=0.2, socket_timeout_seconds=0)
+                       poll_timeout_seconds=0.2, socket_timeout_seconds=0.05)
     session = BlockingSession()
     with ThreadPoolExecutor(max_workers=1) as executor:
         with pytest.raises((asyncio.TimeoutError, TimeoutError)):
@@ -178,6 +180,18 @@ async def test_success_normal_cadence_when_no_intent_outstanding():
         ScriptedSession(["ok"]), stop_after=1, jitter=lambda: 0.5
     )
     assert sleeps == [CONFIG.poll_interval_seconds]
+
+
+@pytest.mark.asyncio
+async def test_steady_state_sleep_falls_within_jittered_bounds():
+    # Finding #17: the ±15% jitter on steady-state (no-intent) cadence is
+    # deliberate (fleet phase-lock avoidance, see the comment in tenant_loop.py),
+    # not an oversight. Prove the sleep duration stays within
+    # [0.85, 1.15] * poll_interval_seconds across the jitter() range.
+    low = await _run_loop(ScriptedSession(["ok"]), stop_after=1, jitter=lambda: 0.0)
+    high = await _run_loop(ScriptedSession(["ok"]), stop_after=1, jitter=lambda: 1.0)
+    assert low == [pytest.approx(CONFIG.poll_interval_seconds * 0.85)]
+    assert high == [pytest.approx(CONFIG.poll_interval_seconds * 1.15)]
 
 
 class DrainableSession:

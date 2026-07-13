@@ -39,8 +39,20 @@ def test_idle_warehouse_gets_intent_then_alter_in_order():
     store = InMemoryStore()
     _seed(store); _seed_settings(store)
     calls = []
+
+    def apply_alter(name, value):
+        # Durability-before-mutation (finding #24): at the moment apply_alter
+        # runs, the intent row must ALREADY be durably written. If the intent
+        # were written AFTER the ALTER instead, this store read would find
+        # nothing yet and the assertion would fail.
+        outstanding = store.list_intents("org-1")
+        assert len(outstanding) == 1
+        assert outstanding[0].warehouse_name == name
+        assert outstanding[0].restore_to == 300
+        calls.append((name, value))
+
     has_intents = run_cycle("org-1", rows=_rows(), store=store, config=CONFIG, now=NOW,
-                            apply_alter=lambda n, v: calls.append((n, v)))
+                            apply_alter=apply_alter)
     # Intent restore target is the LIVE managed default; intent written before the ALTER.
     assert store.list_intents("org-1")[0].restore_to == 300
     assert calls == [("WH1", 1)]

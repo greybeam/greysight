@@ -21,9 +21,9 @@ class EnrollmentRow:
     organization_id: str
     warehouse_name: str
     enabled: bool
-    managed_auto_suspend: int
-    stored_default_auto_suspend: int
-    warehouse_created_on: datetime
+    managed_auto_suspend: int | None
+    stored_default_auto_suspend: int | None
+    warehouse_created_on: datetime | None
     cooldown_ts: datetime | None
     drift_state: str | None
     drifted_value: int | None
@@ -513,6 +513,12 @@ def _parse_optional_ts(value: object) -> datetime | None:
     return _parse_ts(value)
 
 
+def _parse_optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    return int(value)
+
+
 def _parse_settings(row: object) -> SettingsRow:
     if not isinstance(row, dict):
         raise StoreError()
@@ -529,6 +535,15 @@ def _parse_settings(row: object) -> SettingsRow:
 
 
 def _parse_enrollment(row: object) -> EnrollmentRow:
+    """Parse one ``automated_savings_warehouses`` row.
+
+    ``managed_auto_suspend``, ``stored_default_auto_suspend``, and
+    ``warehouse_created_on`` are nullable in the DB (an unenrolled or
+    partially-provisioned row) — parse them as Optional and never raise on
+    null so one malformed/partial row cannot fail the entire tenant cycle
+    (finding #6). Enforcement of non-null for ENABLED enrollments belongs
+    downstream (reconcile/engine already guard on None where it matters).
+    """
     if not isinstance(row, dict):
         raise StoreError()
     try:
@@ -536,9 +551,11 @@ def _parse_enrollment(row: object) -> EnrollmentRow:
             organization_id=str(row["organization_id"]),
             warehouse_name=str(row["warehouse_name"]),
             enabled=bool(row["enabled"]),
-            managed_auto_suspend=int(row["managed_auto_suspend"]),
-            stored_default_auto_suspend=int(row["stored_default_auto_suspend"]),
-            warehouse_created_on=_parse_ts(row["warehouse_created_on"]),
+            managed_auto_suspend=_parse_optional_int(row.get("managed_auto_suspend")),
+            stored_default_auto_suspend=_parse_optional_int(
+                row.get("stored_default_auto_suspend")
+            ),
+            warehouse_created_on=_parse_optional_ts(row.get("warehouse_created_on")),
             cooldown_ts=_parse_optional_ts(row.get("cooldown_ts")),
             drift_state=(
                 str(row["drift_state"]) if row.get("drift_state") is not None else None

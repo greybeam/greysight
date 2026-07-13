@@ -72,6 +72,23 @@ def test_absent_cluster_columns_default_started_to_min_standard_edition():
     assert wh.started_clusters == 1
 
 
+def test_present_but_null_started_clusters_fails_closed_not_defaulted_to_min():
+    # min_cluster_count/max_cluster_count are PRESENT and valid but started_clusters
+    # is PRESENT-and-null (distinct from ALL THREE columns being absent). Must fail
+    # closed to a value that never equals min_cluster_count (finding #4), not silently
+    # default to min_cluster_count as if the column were absent.
+    row = {
+        "name": "WH1", "state": "STARTED", "type": "STANDARD",
+        "started_clusters": None, "min_cluster_count": 1, "max_cluster_count": 4,
+        "running": 0, "queued": 0, "auto_suspend": 60, "auto_resume": "true",
+        "resumed_on": NOW - timedelta(seconds=90), "created_on": NOW - timedelta(days=5),
+    }
+    [wh] = parse_warehouses([row], now=NOW)
+    assert wh.min_cluster_count == 1
+    assert wh.started_clusters != wh.min_cluster_count
+    assert wh.started_clusters == 0
+
+
 def test_present_started_clusters_is_not_overridden_by_min_default():
     # Enterprise+ multi-cluster warehouse: the real started_clusters must be kept even
     # though min_cluster_count differs, so scaled-up warehouses remain protected.

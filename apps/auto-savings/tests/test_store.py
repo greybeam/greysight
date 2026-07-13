@@ -78,6 +78,80 @@ def test_write_intent_persists_cycle_id_for_pairing():
     assert intent.cycle_id == "c1"
 
 
+def test_supabase_store_write_intent_sends_baseline_resumed_on():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.read().decode()
+        return httpx.Response(201, json=[])
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+    store.write_intent(
+        "org-1", "WH1", restore_to=300, baseline_resumed_on=NOW
+    )
+
+    assert f'"baseline_resumed_on":"{NOW.isoformat()}"' in seen["body"]
+
+
+def test_supabase_store_write_intent_sends_null_baseline_resumed_on():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.read().decode()
+        return httpx.Response(201, json=[])
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+    store.write_intent("org-1", "WH1", restore_to=300)
+
+    assert '"baseline_resumed_on":null' in seen["body"]
+
+
+def test_supabase_store_list_intents_hydrates_baseline_resumed_on():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "organization_id": "org-1",
+                    "warehouse_name": "WH1",
+                    "restore_to": 300,
+                    "set_at": NOW.isoformat(),
+                    "baseline_resumed_on": NOW.isoformat(),
+                    "cycle_id": "c1",
+                    "kind": "sentinel",
+                }
+            ],
+        )
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+    [intent] = store.list_intents("org-1")
+
+    assert intent.baseline_resumed_on == NOW
+
+
+def test_supabase_store_list_intents_hydrates_null_baseline_resumed_on():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "organization_id": "org-1",
+                    "warehouse_name": "WH1",
+                    "restore_to": 300,
+                    "set_at": NOW.isoformat(),
+                    "baseline_resumed_on": None,
+                    "cycle_id": "c1",
+                    "kind": "sentinel",
+                }
+            ],
+        )
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+    [intent] = store.list_intents("org-1")
+
+    assert intent.baseline_resumed_on is None
+
+
 def test_supabase_store_record_event_posts_to_events_table():
     seen = {}
 
@@ -130,6 +204,36 @@ def test_supabase_store_list_enrollments_hits_warehouses_table():
     assert "automated_savings_warehouses" in seen["url"]
     assert "automated_savings_enrollments" not in seen["url"]
     assert row.warehouse_name == "WH1"
+
+
+def test_supabase_store_list_enrollments_tolerates_null_partial_row():
+    # A partial/unenrolled row (managed/stored/created_on all null) must parse to
+    # Nones, not raise and fail the entire tenant cycle (finding #6).
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "organization_id": "org-1",
+                    "warehouse_name": "WH1",
+                    "enabled": False,
+                    "managed_auto_suspend": None,
+                    "stored_default_auto_suspend": None,
+                    "warehouse_created_on": None,
+                    "cooldown_ts": None,
+                    "drift_state": None,
+                    "drifted_value": None,
+                }
+            ],
+        )
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+    [row] = store.list_enrollments("org-1")
+
+    assert row.warehouse_name == "WH1"
+    assert row.managed_auto_suspend is None
+    assert row.stored_default_auto_suspend is None
+    assert row.warehouse_created_on is None
 
 
 def test_supabase_store_patch_enrollment_hits_warehouses_table():
