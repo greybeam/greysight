@@ -5,6 +5,7 @@ import { showBrandLogo } from "../../lib/brand";
 import type { HeaderViewModel } from "../../lib/dashboard-contracts";
 import Spinner from "../ui/spinner";
 import AccountSwitcher from "./account-switcher";
+import { AppNav } from "./app-nav";
 import { formatCachedAsOfLabel } from "./dashboard-design-system";
 import InviteUser from "./invite-user";
 
@@ -60,6 +61,7 @@ export default function DashboardHeader({
             Greybeam
           </h1>
           <AccountSwitcher />
+          <AppNav />
         </div>
         <div className="flex flex-wrap items-center justify-end gap-3">
           {cachedAsOf ? (
