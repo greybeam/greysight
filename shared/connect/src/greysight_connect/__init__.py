@@ -8,6 +8,7 @@ from greysight_connect.snowflake_client import (
     SnowflakeObjectUnavailableError,
     SnowflakeQueryError,
     SnowflakeValidationError,
+    execute_metadata_query,
     execute_source_query,
     validate_snowflake_connection,
 )
@@ -28,6 +29,7 @@ __all__ = [
     "SnowflakeObjectUnavailableError",
     "SnowflakeQueryError",
     "SnowflakeValidationError",
+    "execute_metadata_query",
     "execute_source_query",
     "validate_snowflake_connection",
     "FetchConnection",

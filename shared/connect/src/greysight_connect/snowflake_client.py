@@ -168,6 +168,29 @@ def execute_source_query(
         connection.close()
 
 
+def execute_metadata_query(
+    sql: str,
+    *,
+    config: SnowflakeConnectionConfig | None = None,
+    connect: Callable[[SnowflakeConnectionConfig | None], Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Run a metadata SHOW statement (e.g. SHOW WAREHOUSES). No warehouse compute,
+    no bind params, and — unlike a SELECT — never resumes a warehouse."""
+    connection = (connect or _connect)(config)
+    try:
+        cursor = connection.cursor()
+        try:
+            cursor.execute(sql)
+            columns = [_column_name(column) for column in cursor.description or ()]
+            return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+        except Exception as exc:
+            raise SnowflakeQueryError(_user_safe_message(exc)) from exc
+        finally:
+            cursor.close()
+    finally:
+        connection.close()
+
+
 def validate_snowflake_connection(
     config: SnowflakeConnectionConfig | None = None,
 ) -> str | None:
