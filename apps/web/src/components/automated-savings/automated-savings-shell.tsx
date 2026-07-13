@@ -11,6 +11,7 @@ import {
   type AutomatedSavingsStatus,
   type WarehouseRow,
 } from "../../lib/automated-savings-api";
+import { Switch } from "../ui/switch";
 import OrgShell from "../org/org-shell";
 import { OptInGate, quoteIdent, UNKNOWN_ROLE_PLACEHOLDER } from "./opt-in-gate";
 import { WarehouseTable } from "./warehouse-table";
@@ -30,6 +31,20 @@ export function AutomatedSavingsShell({ authRequired }: AutomatedSavingsShellPro
 }
 
 type LoadState = "idle" | "loading" | "ready" | "error";
+
+// The dark app chrome the dashboard establishes (`dark … bg-canvas
+// [color-scheme:dark]`). OrgShell renders its signed-in children bare, so —
+// exactly like CostDashboard — this page must supply its own dark background,
+// or the design tokens (bg-canvas/surface, text-slate-100, chart-purple) and
+// Tremor badges render as washed-out light-on-white. Centered to the same
+// 1200px content width as the dashboard.
+function SavingsChrome({ children }: { children: React.ReactNode }) {
+  return (
+    <main className="dark min-h-screen bg-canvas [color-scheme:dark]">
+      <div className="mx-auto w-full max-w-[1200px]">{children}</div>
+    </main>
+  );
+}
 
 function AutomatedSavingsContent() {
   const account = useAccountChrome();
@@ -69,44 +84,48 @@ function AutomatedSavingsContent() {
 
   if (loadState === "idle" || loadState === "loading") {
     return (
-      <p className="p-6 text-sm text-slate-400" role="status">
-        Loading Automated Savings…
-      </p>
+      <SavingsChrome>
+        <p className="p-6 text-sm text-slate-400" role="status">
+          Loading Automated Savings…
+        </p>
+      </SavingsChrome>
     );
   }
 
   if (loadState === "error" || !status) {
     return (
-      <div className="p-6">
-        <p className="text-sm font-medium text-red-400" role="alert">
-          We couldn’t load Automated Savings. Please try again.
-        </p>
-        <button
-          type="button"
-          className="mt-3 rounded-md bg-chart-purple px-4 py-2 text-sm font-medium text-white hover:opacity-90"
-          onClick={() => void load()}
-        >
-          Retry
-        </button>
-      </div>
+      <SavingsChrome>
+        <div className="p-6">
+          <p className="text-sm font-medium text-red-400" role="alert">
+            We couldn’t load Automated Savings. Please try again.
+          </p>
+          <button
+            type="button"
+            className="mt-3 rounded-md bg-chart-purple px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+            onClick={() => void load()}
+          >
+            Retry
+          </button>
+        </div>
+      </SavingsChrome>
     );
   }
 
   if (!status.agreed) {
     return (
-      <div className="p-6">
-        <OptInGate
-          orgId={orgId}
-          roleName={status.roleName ?? UNKNOWN_ROLE_PLACEHOLDER}
-          onAgreed={() => void load()}
-        />
-      </div>
+      <SavingsChrome>
+        <div className="p-6">
+          <OptInGate
+            orgId={orgId}
+            roleName={status.roleName ?? UNKNOWN_ROLE_PLACEHOLDER}
+            onAgreed={() => void load()}
+          />
+        </div>
+      </SavingsChrome>
     );
   }
 
-  const allEnabled = warehouses.length > 0 && warehouses.every((row) => row.enabled);
   const noneEnabled = warehouses.every((row) => !row.enabled);
-  const globalMixed = !allEnabled && !noneEnabled;
 
   async function handleGlobalToggle() {
     if (!orgId || !isAdmin || !status) return;
@@ -139,8 +158,9 @@ function AutomatedSavingsContent() {
   const grantSql = `GRANT MANAGE WAREHOUSES ON ACCOUNT TO ROLE ${quoteIdent(status.roleName ?? UNKNOWN_ROLE_PLACEHOLDER)};`;
 
   return (
-    <div className="space-y-4 p-6">
-      {status.grantPresent === false ? (
+    <SavingsChrome>
+      <div className="space-y-4 p-6">
+        {status.grantPresent === false ? (
         <div
           className="rounded-md border border-rose-500/40 bg-rose-500/10 p-4 text-sm text-rose-200"
           role="alert"
@@ -158,15 +178,11 @@ function AutomatedSavingsContent() {
 
       <div className="flex items-center justify-between gap-3">
         <label className="flex items-center gap-2 text-sm font-medium text-slate-200">
-          <input
-            role="switch"
-            type="checkbox"
+          <Switch
             aria-label="Automated Savings enabled for all warehouses"
             checked={status.globalEnabled}
-            aria-checked={globalMixed ? "mixed" : status.globalEnabled}
             disabled={!isAdmin}
-            onChange={() => void handleGlobalToggle()}
-            className="h-4 w-4 accent-chart-purple disabled:cursor-not-allowed disabled:opacity-50"
+            onCheckedChange={() => void handleGlobalToggle()}
           />
           {status.globalEnabled ? "All warehouses enabled" : noneEnabled ? "All warehouses disabled" : "Mixed"}
         </label>
@@ -188,6 +204,7 @@ function AutomatedSavingsContent() {
         warehouses={warehouses}
         onChange={handleRowChange}
       />
-    </div>
+      </div>
+    </SavingsChrome>
   );
 }

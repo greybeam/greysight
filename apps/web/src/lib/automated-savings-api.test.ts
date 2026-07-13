@@ -87,6 +87,27 @@ describe("automated-savings-api", () => {
     expect(row.storedDefault).toBeNull();
   });
 
+  it("accepts null cluster counts and size/state/type from a Standard-edition account", async () => {
+    // SHOW WAREHOUSES on Standard edition omits the Enterprise-only cluster
+    // columns, so the API emits max_cluster_count: null (and size/state/type
+    // can be null too). The parser must tolerate the nullable API contract
+    // instead of throwing and blanking the whole page.
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify([{
+      name: "WH3", size: null, state: null, type: null, supported: false,
+      min_cluster_count: null, max_cluster_count: null, started_clusters: null,
+      auto_resume_ok: false, managed_default: null, stored_default: null,
+      enabled: false, drift_state: "ok", drifted_value: null, cooldown_ts: null,
+      status: "unsupported",
+    }]), { status: 200 }));
+    const [row] = await fetchWarehouses("org-1", { accessToken: "t" });
+    expect(row.size).toBeNull();
+    expect(row.state).toBeNull();
+    expect(row.type).toBeNull();
+    expect(row.minClusterCount).toBeNull();
+    expect(row.maxClusterCount).toBeNull();
+    expect(row.startedClusters).toBeNull();
+  });
+
   it("fetches warehouses from the API's actual warehouses route", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValue(new Response(JSON.stringify([]), { status: 200 }));

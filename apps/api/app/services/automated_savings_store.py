@@ -10,6 +10,18 @@ class AutomatedSavingsStoreError(RuntimeError):
     """Raised when the automated-savings store request fails; callers fail loud."""
 
 
+def _store_error(response: httpx.Response) -> AutomatedSavingsStoreError:
+    """Build an error that preserves PostgREST's status + body.
+
+    Supabase returns the real reason (e.g. a check-constraint violation) in the
+    response body; capturing it here means the route's logger.exception surfaces
+    WHY the write failed instead of an opaque bare error.
+    """
+    return AutomatedSavingsStoreError(
+        f"Supabase request failed: {response.status_code} {response.text[:500]}"
+    )
+
+
 @dataclass(frozen=True)
 class SettingsRow:
     organization_id: str
@@ -87,7 +99,7 @@ class SupabaseAutomatedSavingsStore:
         except httpx.HTTPError as exc:
             raise AutomatedSavingsStoreError() from exc
         if response.status_code != 200:
-            raise AutomatedSavingsStoreError()
+            raise _store_error(response)
         rows = _parse_rows(response)
         if not rows:
             return SettingsRow(
@@ -135,7 +147,7 @@ class SupabaseAutomatedSavingsStore:
         except httpx.HTTPError as exc:
             raise AutomatedSavingsStoreError() from exc
         if response.status_code not in (200, 201, 204):
-            raise AutomatedSavingsStoreError()
+            raise _store_error(response)
 
     # -- warehouses -----------------------------------------------------
 
@@ -158,7 +170,7 @@ class SupabaseAutomatedSavingsStore:
         except httpx.HTTPError as exc:
             raise AutomatedSavingsStoreError() from exc
         if response.status_code != 200:
-            raise AutomatedSavingsStoreError()
+            raise _store_error(response)
         return [_parse_enrollment_row(row) for row in _parse_rows(response)]
 
     def upsert_enrollment(
@@ -208,7 +220,7 @@ class SupabaseAutomatedSavingsStore:
         except httpx.HTTPError as exc:
             raise AutomatedSavingsStoreError() from exc
         if response.status_code not in (200, 201, 204):
-            raise AutomatedSavingsStoreError()
+            raise _store_error(response)
 
     def set_managed_default(
         self, organization_id: str, warehouse_name: str, value: int
@@ -298,7 +310,7 @@ class SupabaseAutomatedSavingsStore:
         except httpx.HTTPError as exc:
             raise AutomatedSavingsStoreError() from exc
         if response.status_code != 200:
-            raise AutomatedSavingsStoreError()
+            raise _store_error(response)
         rows = _parse_rows(response)
         if not rows:
             return None
@@ -318,7 +330,7 @@ class SupabaseAutomatedSavingsStore:
         except httpx.HTTPError as exc:
             raise AutomatedSavingsStoreError() from exc
         if response.status_code not in (200, 201, 204):
-            raise AutomatedSavingsStoreError()
+            raise _store_error(response)
 
     def _enqueue_restore_intent(
         self, organization_id: str, warehouse_name: str, restore_to: int | None
@@ -344,7 +356,7 @@ class SupabaseAutomatedSavingsStore:
         except httpx.HTTPError as exc:
             raise AutomatedSavingsStoreError() from exc
         if response.status_code not in (200, 201, 204):
-            raise AutomatedSavingsStoreError()
+            raise _store_error(response)
 
 
 def _parse_rows(response: httpx.Response) -> list[dict[str, Any]]:

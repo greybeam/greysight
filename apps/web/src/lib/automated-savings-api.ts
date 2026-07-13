@@ -31,13 +31,18 @@ export type CheckAccessResult = {
 
 export type WarehouseRow = {
   name: string;
-  size: string;
-  state: string;
-  type: string;
+  // size/state/type and the cluster-count columns are nullable in the API
+  // contract: SHOW WAREHOUSES on Standard-edition Snowflake omits the
+  // Enterprise-only cluster columns (so max_cluster_count arrives null), and
+  // size/state/type can also be absent. The parser must mirror that or it
+  // throws and blanks the whole page.
+  size: string | null;
+  state: string | null;
+  type: string | null;
   supported: boolean;
-  minClusterCount: number;
-  maxClusterCount: number;
-  startedClusters: number;
+  minClusterCount: number | null;
+  maxClusterCount: number | null;
+  startedClusters: number | null;
   autoResumeOk: boolean;
   // Null for warehouses that have never been enrolled — the API only
   // populates these once an enrollment row exists.
@@ -103,13 +108,13 @@ export function parseWarehouseRow(raw: unknown): WarehouseRow {
   const record = asRecord(raw);
   return {
     name: asString(record.name),
-    size: asString(record.size),
-    state: asString(record.state),
-    type: asString(record.type),
+    size: asNullableString(record.size),
+    state: asNullableString(record.state),
+    type: asNullableString(record.type),
     supported: asBoolean(record.supported),
-    minClusterCount: asNumber(record.min_cluster_count),
-    maxClusterCount: asNumber(record.max_cluster_count),
-    startedClusters: asNumber(record.started_clusters),
+    minClusterCount: asNullableNumber(record.min_cluster_count),
+    maxClusterCount: asNullableNumber(record.max_cluster_count),
+    startedClusters: asNullableNumber(record.started_clusters),
     autoResumeOk: asBoolean(record.auto_resume_ok),
     managedDefault: asNullableNumber(record.managed_default),
     storedDefault: asNullableNumber(record.stored_default),
@@ -161,10 +166,31 @@ async function fetchJson(
   });
 
   if (!response.ok) {
-    throw new Error(`Automated savings API request failed with ${response.status}`);
+    // Surface the API's error detail (FastAPI returns `{ "detail": ... }`), so
+    // a failed call reports WHY instead of just the status code.
+    const detail = await readErrorDetail(response);
+    throw new Error(
+      `Automated savings API request failed with ${response.status}${detail ? `: ${detail}` : ""}`,
+    );
   }
 
   return response.json();
+}
+
+async function readErrorDetail(response: Response): Promise<string | null> {
+  try {
+    const body = await response.text();
+    if (!body) return null;
+    try {
+      const parsed = JSON.parse(body) as { detail?: unknown };
+      if (typeof parsed.detail === "string") return parsed.detail;
+    } catch {
+      // Non-JSON body — fall through to the raw text.
+    }
+    return body.slice(0, 300);
+  } catch {
+    return null;
+  }
 }
 
 export async function fetchStatus(

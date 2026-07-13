@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -17,6 +18,8 @@ from app.services.automated_savings_store import (
     AutomatedSavingsStoreError,
     get_automated_savings_store,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/automated-savings", tags=["automated-savings"])
 
@@ -294,8 +297,14 @@ def toggle_warehouse(
             settings=settings,
         )
     except Exception:  # noqa: BLE001 — user-safe query failure surface
+        logger.exception(
+            "capture_stored_default failed for org=%s warehouse=%s",
+            organization_id,
+            warehouse_name,
+        )
         raise HTTPException(
-            status_code=502, detail="Could not read the warehouse's current AUTO_SUSPEND."
+            status_code=502,
+            detail="Could not read the warehouse's current AUTO_SUSPEND.",
         ) from None
 
     stored_default = captured.stored_default
@@ -308,6 +317,12 @@ def toggle_warehouse(
             ),
         )
 
+    # stored_default is the immutable capture of the customer's real value (may
+    # be as low as 2s). managed_default — the restore target the worker writes
+    # and the DB constrains to >= 60 — must be floored, or a sub-60 warehouse
+    # (e.g. a dev warehouse at AUTO_SUSPEND=30) fails the CHECK on write (502).
+    managed_default = max(stored_default, MANAGED_DEFAULT_FLOOR_SECONDS)
+
     store = _require_store()
     try:
         store.upsert_enrollment(
@@ -315,10 +330,15 @@ def toggle_warehouse(
             warehouse_name,
             enabled=True,
             stored_default=stored_default,
-            managed_default=stored_default,
+            managed_default=managed_default,
             warehouse_created_on=captured.warehouse_created_on,
         )
     except AutomatedSavingsStoreError:
+        logger.exception(
+            "upsert_enrollment failed for org=%s warehouse=%s",
+            organization_id,
+            warehouse_name,
+        )
         raise HTTPException(
             status_code=502, detail="Could not enroll the warehouse."
         ) from None

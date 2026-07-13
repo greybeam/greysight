@@ -9,8 +9,21 @@ import {
   toggleWarehouse,
   type WarehouseRow,
 } from "../../lib/automated-savings-api";
+import { Switch } from "../ui/switch";
 
 const MANAGED_DEFAULT_FLOOR = 60;
+
+// The API surfaces a user-facing reason as the `detail` after the status code
+// (see fetchJson). Prefer that over the raw "failed with 502: …" prefix; fall
+// back to a generic message so a mutation failure never bubbles up as an
+// unhandled promise rejection.
+function toUserMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    const marker = error.message.indexOf(": ");
+    return marker >= 0 ? error.message.slice(marker + 2) : error.message;
+  }
+  return "Something went wrong. Please try again.";
+}
 
 type WarehouseTableProps = {
   orgId: string;
@@ -99,6 +112,7 @@ function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange }: 
   );
   const [floorWarning, setFloorWarning] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const unsupported = warehouse.type !== "STANDARD";
   const toggleDisabled = !isAdmin || !warehouse.autoResumeOk || unsupported || busy;
@@ -116,9 +130,12 @@ function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange }: 
     setFloorWarning(false);
     if (parsed === warehouse.managedDefault) return;
     setBusy(true);
+    setActionError(null);
     try {
       await setManagedDefault(orgId, warehouse.name, parsed, { accessToken });
       onChange({ ...warehouse, managedDefault: parsed });
+    } catch (error) {
+      setActionError(toUserMessage(error));
     } finally {
       setBusy(false);
     }
@@ -128,9 +145,12 @@ function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange }: 
     if (toggleDisabled) return;
     const nextEnabled = !warehouse.enabled;
     setBusy(true);
+    setActionError(null);
     try {
       await toggleWarehouse(orgId, warehouse.name, nextEnabled, { accessToken });
       onChange({ ...warehouse, enabled: nextEnabled });
+    } catch (error) {
+      setActionError(toUserMessage(error));
     } finally {
       setBusy(false);
     }
@@ -138,9 +158,12 @@ function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange }: 
 
   async function handleReconcile() {
     setBusy(true);
+    setActionError(null);
     try {
       await reconcileWarehouse(orgId, warehouse.name, true, { accessToken });
       onChange({ ...warehouse, driftState: "ok", status: "idle" });
+    } catch (error) {
+      setActionError(toUserMessage(error));
     } finally {
       setBusy(false);
     }
@@ -151,7 +174,8 @@ function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange }: 
       <td className="px-4 py-2 font-semibold text-slate-100">{warehouse.name}</td>
       <td className="px-4 py-2">{warehouse.size}</td>
       <td className="px-4 py-2">
-        {warehouse.startedClusters}/{warehouse.maxClusterCount}
+        {warehouse.startedClusters ?? "—"}
+        {warehouse.maxClusterCount !== null ? `/${warehouse.maxClusterCount}` : ""}
         {warehouse.minClusterCount ? ` (min ${warehouse.minClusterCount})` : ""}
       </td>
       <td className="px-4 py-2">{warehouse.state}</td>
@@ -231,16 +255,18 @@ function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange }: 
                 : undefined
           }
         >
-          <input
+          <Switch
             aria-label={warehouse.name}
-            role="switch"
-            type="checkbox"
             checked={warehouse.enabled}
             disabled={toggleDisabled}
-            onChange={handleToggle}
-            className="h-4 w-4 accent-chart-purple disabled:cursor-not-allowed disabled:opacity-50"
+            onCheckedChange={handleToggle}
           />
         </span>
+        {actionError ? (
+          <p className="mt-1 max-w-[16rem] text-xs text-rose-300" role="alert">
+            {actionError}
+          </p>
+        ) : null}
       </td>
     </tr>
   );
