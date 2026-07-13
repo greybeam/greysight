@@ -43,6 +43,10 @@ def test_returns_organizations_for_user() -> None:
         Organization(id="org-2", name="Beta"),
     )
     assert requests[0].url.params["user_id"] == "eq.user-123"
+    # A deterministic order is required: PostgREST returns rows in arbitrary
+    # physical order without it, which makes the frontend's implicit active-org
+    # fallback (organizations[0]) flip between refreshes.
+    assert requests[0].url.params["order"] == "organization_id.asc"
     assert (
         "organizations(id,name,organization_snowflake_connections(account,account_locator,status))"
         in requests[0].url.params["select"]

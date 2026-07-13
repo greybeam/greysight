@@ -57,6 +57,12 @@ class SupabaseServiceRoleMembershipLookup:
                             "(id,name,organization_snowflake_connections"
                             "(account,account_locator,status))"
                         ),
+                        # Deterministic order: without it PostgREST returns rows
+                        # in arbitrary physical order, so the frontend's implicit
+                        # active-org fallback (organizations[0]) flips between
+                        # refreshes — bouncing users between orgs (and back to
+                        # the automated-savings opt-in gate for an un-agreed org).
+                        "order": "organization_id.asc",
                         "limit": str(self._max_memberships + 1),
                     },
                     headers={
