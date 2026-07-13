@@ -8,6 +8,7 @@ const fetchWarehousesMock = vi.fn();
 const checkAccessMock = vi.fn();
 const setGlobalSwitchMock = vi.fn();
 const agreeMock = vi.fn();
+const toggleWarehouseMock = vi.fn();
 
 vi.mock("../../lib/automated-savings-api", async () => {
   const actual = await vi.importActual<typeof import("../../lib/automated-savings-api")>(
@@ -20,6 +21,7 @@ vi.mock("../../lib/automated-savings-api", async () => {
     checkAccess: (...args: unknown[]) => checkAccessMock(...args),
     setGlobalSwitch: (...args: unknown[]) => setGlobalSwitchMock(...args),
     agree: (...args: unknown[]) => agreeMock(...args),
+    toggleWarehouse: (...args: unknown[]) => toggleWarehouseMock(...args),
   };
 });
 
@@ -110,5 +112,99 @@ describe("AutomatedSavingsShell", () => {
     await waitFor(() =>
       expect(screen.getByText(/grant missing/i)).toBeInTheDocument(),
     );
+  });
+
+  it("shows a loading state while the status fetch is in flight", () => {
+    fetchStatusMock.mockReturnValue(new Promise(() => {}));
+
+    render(<AutomatedSavingsShell authRequired={false} />);
+
+    expect(screen.getByRole("status")).toHaveTextContent(/loading/i);
+  });
+
+  it("shows an error state with a retry when the status fetch fails", async () => {
+    fetchStatusMock.mockRejectedValueOnce(new Error("boom"));
+    fetchStatusMock.mockResolvedValueOnce({
+      agreed: true,
+      globalEnabled: true,
+      grantPresent: true,
+      roleName: "GREYSIGHT_RL",
+    });
+    fetchWarehousesMock.mockResolvedValue([baseRow]);
+
+    render(<AutomatedSavingsShell authRequired={false} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn.t load/i);
+
+    fireEvent.click(screen.getByRole("button", { name: /retry/i }));
+
+    expect(await screen.findByRole("table", { name: /warehouses/i })).toBeInTheDocument();
+  });
+
+  it("flips all warehouses on with the global switch", async () => {
+    fetchStatusMock.mockResolvedValue({
+      agreed: true,
+      globalEnabled: true,
+      grantPresent: true,
+      roleName: "GREYSIGHT_RL",
+    });
+    fetchWarehousesMock.mockResolvedValue([{ ...baseRow, enabled: false }]);
+    setGlobalSwitchMock.mockResolvedValue(undefined);
+
+    render(<AutomatedSavingsShell authRequired={false} />);
+
+    const globalSwitch = await screen.findByRole("switch", {
+      name: /automated savings enabled for all warehouses/i,
+    });
+    expect(globalSwitch).not.toBeChecked();
+
+    fireEvent.click(globalSwitch);
+
+    await waitFor(() => expect(globalSwitch).toBeChecked());
+    expect(setGlobalSwitchMock).toHaveBeenCalledWith("org-1", true, { accessToken: "tok" });
+  });
+
+  it("reloads status after agreeing from the opt-in gate", async () => {
+    fetchStatusMock
+      .mockResolvedValueOnce({
+        agreed: false,
+        globalEnabled: false,
+        grantPresent: false,
+        roleName: "GREYSIGHT_RL",
+      })
+      .mockResolvedValueOnce({
+        agreed: true,
+        globalEnabled: true,
+        grantPresent: true,
+        roleName: "GREYSIGHT_RL",
+      });
+    fetchWarehousesMock.mockResolvedValue([baseRow]);
+    agreeMock.mockResolvedValue(undefined);
+
+    render(<AutomatedSavingsShell authRequired={false} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /agree/i }));
+
+    expect(await screen.findByRole("table", { name: /warehouses/i })).toBeInTheDocument();
+  });
+
+  it("updates a single warehouse row after toggling it in the table", async () => {
+    fetchStatusMock.mockResolvedValue({
+      agreed: true,
+      globalEnabled: true,
+      grantPresent: true,
+      roleName: "GREYSIGHT_RL",
+    });
+    fetchWarehousesMock.mockResolvedValue([baseRow]);
+    toggleWarehouseMock.mockResolvedValue(undefined);
+
+    render(<AutomatedSavingsShell authRequired={false} />);
+
+    const rowSwitch = await screen.findByRole("switch", { name: "WH1" });
+    expect(rowSwitch).toBeChecked();
+
+    fireEvent.click(rowSwitch);
+
+    await waitFor(() => expect(rowSwitch).not.toBeChecked());
   });
 });
