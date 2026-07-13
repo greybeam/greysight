@@ -76,3 +76,55 @@ def test_worker_tenants_includes_outstanding_intents():
     assert "automated_savings_restore_intents" in MIGRATION.split(
         "function automated_savings_worker_tenants"
     )[1]
+
+
+def test_upsert_enrollment_function_created_and_locked_down():
+    assert (
+        "create or replace function automated_savings_upsert_enrollment("
+        in MIGRATION
+    )
+    assert "security definer" in MIGRATION.split(
+        "function automated_savings_upsert_enrollment"
+    )[1]
+    assert (
+        "revoke all on function automated_savings_upsert_enrollment(\n"
+        "    uuid, text, boolean, integer, integer, timestamptz\n"
+        ") from public;"
+    ) in MIGRATION
+    assert (
+        "grant execute on function automated_savings_upsert_enrollment(\n"
+        "    uuid, text, boolean, integer, integer, timestamptz\n"
+        ") to service_role;"
+    ) in MIGRATION
+
+
+def test_upsert_enrollment_is_atomic_single_statement_insert_on_conflict():
+    # Finding #5: the INSERT branch must always carry the freshly-captured
+    # defaults, so a concurrent delete-then-upsert race can never produce a
+    # null-default row.
+    body = MIGRATION.split("function automated_savings_upsert_enrollment")[1]
+    assert "insert into automated_savings_warehouses" in body
+    assert "on conflict (organization_id, warehouse_name) do update" in body
+    assert "p_stored_default, p_managed_default, p_warehouse_created_on" in body
+
+
+def test_upsert_enrollment_preserves_default_only_when_created_on_matches():
+    # Finding #11: preserve the existing stored_default/managed_auto_suspend
+    # only when the stored warehouse_created_on matches the freshly-captured
+    # live created_on (same physical warehouse) — otherwise (mismatch, or the
+    # stored created_on is null/unknown) treat it as a fresh capture.
+    body = MIGRATION.split("function automated_savings_upsert_enrollment")[1]
+    assert (
+        "when automated_savings_warehouses.warehouse_created_on is not null\n"
+        "                 and automated_savings_warehouses.warehouse_created_on "
+        "= excluded.warehouse_created_on\n"
+        "            then automated_savings_warehouses.stored_default_auto_suspend\n"
+        "            else excluded.stored_default_auto_suspend"
+    ) in body
+    assert (
+        "when automated_savings_warehouses.warehouse_created_on is not null\n"
+        "                 and automated_savings_warehouses.warehouse_created_on "
+        "= excluded.warehouse_created_on\n"
+        "            then automated_savings_warehouses.managed_auto_suspend\n"
+        "            else excluded.managed_auto_suspend"
+    ) in body
