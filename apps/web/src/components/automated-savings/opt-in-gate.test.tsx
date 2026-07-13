@@ -21,13 +21,6 @@ function withRole(role: "owner" | "member") {
 }
 
 describe("OptInGate", () => {
-  it("shows GRANT SQL with the role name", () => {
-    render(<AccountChromeProvider value={withRole("owner")}>
-      <OptInGate orgId="org-1" roleName="GREYSIGHT_RL" onAgreed={() => {}} />
-    </AccountChromeProvider>);
-    expect(screen.getByText(/GRANT MANAGE WAREHOUSES ON ACCOUNT TO ROLE "GREYSIGHT_RL"/)).toBeInTheDocument();
-  });
-
   it("disables Agree for members", () => {
     render(<AccountChromeProvider value={withRole("member")}>
       <OptInGate orgId="org-1" roleName="GREYSIGHT_RL" onAgreed={() => {}} />

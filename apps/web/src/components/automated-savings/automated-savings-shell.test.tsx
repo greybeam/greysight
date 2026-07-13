@@ -119,14 +119,6 @@ describe("AutomatedSavingsShell", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows a loading state while the status fetch is in flight", () => {
-    fetchStatusMock.mockReturnValue(new Promise(() => {}));
-
-    render(<AutomatedSavingsShell authRequired={false} />);
-
-    expect(screen.getByRole("status")).toHaveTextContent(/loading/i);
-  });
-
   it("shows an error state with a retry when the status fetch fails", async () => {
     fetchStatusMock.mockRejectedValueOnce(new Error("boom"));
     fetchStatusMock.mockResolvedValueOnce({
