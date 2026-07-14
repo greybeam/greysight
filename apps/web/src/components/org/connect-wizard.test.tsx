@@ -68,7 +68,13 @@ describe("ConnectWizard", () => {
   it("copies the Greysight outbound IP allowlist", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText } });
-    render(<ConnectWizard connect={vi.fn()} onConnected={vi.fn()} />);
+    render(
+      <ConnectWizard
+        connect={vi.fn()}
+        onConnected={vi.fn()}
+        outboundIps={["162.220.232.250", "152.55.176.240", "162.220.232.252"]}
+      />,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: /copy outbound ips/i }));
 

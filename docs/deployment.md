@@ -37,9 +37,16 @@ NEXT_PUBLIC_API_BASE_URL=https://api.example.com
 NEXT_PUBLIC_AUTH_REQUIRED=true
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
+NEXT_PUBLIC_GREYSIGHT_OUTBOUND_IPS=
 ```
 
 Keep backend-only values out of the browser environment.
+
+Set `NEXT_PUBLIC_GREYSIGHT_OUTBOUND_IPS` to a comma-separated list of the
+deployment's actual API and worker egress IPv4 addresses when users need to
+allowlist Snowflake connections. The onboarding panel is hidden when this
+browser-visible setting is empty or invalid. Rebuild the web app after changing
+it because Next.js embeds `NEXT_PUBLIC_*` values at build time.
 
 ## FastAPI Backend
 
