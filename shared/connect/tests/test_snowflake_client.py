@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
@@ -11,6 +12,16 @@ from greysight_connect.snowflake_client import (
     execute_source_query,
     validate_snowflake_connection,
 )
+
+
+class _FakeSnowflakeConnectionError(Exception):
+    errno = 250001
+    sqlstate = "08001"
+
+
+class _FakeSnowflakeQueryError(Exception):
+    errno = 3001
+    sqlstate = "42501"
 
 
 def test_execute_source_query_uses_named_bind_params() -> None:
@@ -82,7 +93,10 @@ def test_execute_source_query_rejects_invalid_window_before_connecting() -> None
         ),
         (
             PermissionError("insufficient privileges on account usage"),
-            "Could not access required Snowflake Account Usage views.",
+            (
+                "Could not access required Snowflake Account Usage views. Verify "
+                "that the configured role has Account Usage access."
+            ),
         ),
     ],
 )
@@ -101,6 +115,122 @@ def test_validation_maps_known_failure_modes_to_safe_messages(
 
     assert str(exc_info.value) == safe_message
     assert str(raw_error) not in str(exc_info.value)
+
+
+def test_validation_reports_safe_network_policy_diagnostics(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    reference = "0ce9eb56-821d-4ca9-a774-04ae89a0cf5a"
+    raw_error = _FakeSnowflakeConnectionError(
+        "Incoming request with IP/Token PEMSECRETMARKER is not allowed to "
+        f"access Snowflake. [{reference}]"
+    )
+
+    with (
+        patch(
+            "greysight_connect.snowflake_client.snowflake.connector.connect",
+            side_effect=raw_error,
+        ),
+        patch.object(SnowflakeConnectionConfig, "connector_kwargs", return_value={}),
+        caplog.at_level(
+            logging.WARNING, logger="greysight_connect.snowflake_client"
+        ),
+        pytest.raises(SnowflakeValidationError) as exc_info,
+    ):
+        validate_snowflake_connection()
+
+    user_message = str(exc_info.value)
+    assert "network policy" in user_message.lower()
+    assert "250001" in user_message
+    assert "08001" in user_message
+    assert reference in user_message
+    assert "PEMSECRETMARKER" not in user_message
+
+    assert "phase=connect" in caplog.text
+    assert "exception=_FakeSnowflakeConnectionError" in caplog.text
+    assert "errno=250001" in caplog.text
+    assert "sqlstate=08001" in caplog.text
+    assert f"reference={reference}" in caplog.text
+    assert "PEMSECRETMARKER" not in caplog.text
+
+
+def test_validation_probe_identifies_unavailable_account_usage_view(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    raw_error = _FakeSnowflakeQueryError(
+        "Insufficient privileges on QUERY_ATTRIBUTION_HISTORY SECRETQUERYMARKER"
+    )
+    cursor = Mock()
+
+    def execute(sql: str) -> None:
+        if "QUERY_ATTRIBUTION_HISTORY" in sql:
+            raise raw_error
+
+    cursor.execute.side_effect = execute
+    connection = Mock()
+    connection.cursor.return_value = MagicMock()
+    connection.cursor.return_value.__enter__.return_value = cursor
+
+    with (
+        patch(
+            "greysight_connect.snowflake_client.snowflake.connector.connect",
+            return_value=connection,
+        ),
+        patch.object(SnowflakeConnectionConfig, "connector_kwargs", return_value={}),
+        caplog.at_level(
+            logging.WARNING, logger="greysight_connect.snowflake_client"
+        ),
+        pytest.raises(SnowflakeValidationError) as exc_info,
+    ):
+        validate_snowflake_connection()
+
+    user_message = str(exc_info.value)
+    assert "QUERY_ATTRIBUTION_HISTORY" in user_message
+    assert "configured role has Account Usage access" in user_message
+    assert "SECRETQUERYMARKER" not in user_message
+    assert "phase=query_attribution_history" in caplog.text
+    assert "SECRETQUERYMARKER" not in caplog.text
+
+
+def test_validation_probe_preserves_timeout_category_without_exposing_uuid(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    unrelated_reference = "11111111-2222-4333-8444-555555555555"
+    raw_error = TimeoutError(
+        f"SECRETQUERYMARKER timed out [{unrelated_reference}]"
+    )
+    cursor = Mock()
+
+    def execute(sql: str) -> None:
+        if "QUERY_ATTRIBUTION_HISTORY" in sql:
+            raise raw_error
+
+    cursor.execute.side_effect = execute
+    connection = Mock()
+    connection.cursor.return_value = MagicMock()
+    connection.cursor.return_value.__enter__.return_value = cursor
+
+    with (
+        patch(
+            "greysight_connect.snowflake_client.snowflake.connector.connect",
+            return_value=connection,
+        ),
+        patch.object(SnowflakeConnectionConfig, "connector_kwargs", return_value={}),
+        caplog.at_level(
+            logging.WARNING, logger="greysight_connect.snowflake_client"
+        ),
+        pytest.raises(SnowflakeValidationError) as exc_info,
+    ):
+        validate_snowflake_connection()
+
+    user_message = str(exc_info.value)
+    assert "timed out" in user_message
+    assert "QUERY_ATTRIBUTION_HISTORY" in user_message
+    assert "role has Snowflake Account Usage access" not in user_message
+    assert unrelated_reference not in user_message
+    assert unrelated_reference not in caplog.text
+    assert "SECRETQUERYMARKER" not in user_message
+    assert "SECRETQUERYMARKER" not in caplog.text
 
 
 def test_default_connection_uses_environment_config(
@@ -167,6 +297,31 @@ def test_config_from_environment_loads_private_key_path_without_exposing_it(
         config.connector_kwargs()
     assert str(key_path) not in str(exc_info.value)
     assert exc_info.value.__cause__ is None
+
+
+def test_validation_logs_configuration_failure_without_raw_detail(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    raw_error = SnowflakeConfigurationError(
+        "SECRETCONFIGMARKER private key could not be loaded"
+    )
+
+    with (
+        patch.object(
+            SnowflakeConnectionConfig,
+            "connector_kwargs",
+            side_effect=raw_error,
+        ),
+        caplog.at_level(
+            logging.WARNING, logger="greysight_connect.snowflake_client"
+        ),
+        pytest.raises(SnowflakeConfigurationError),
+    ):
+        validate_snowflake_connection()
+
+    assert "phase=configuration" in caplog.text
+    assert "exception=SnowflakeConfigurationError" in caplog.text
+    assert "SECRETCONFIGMARKER" not in caplog.text
 
 
 def test_execute_source_query_allows_empty_bind_params() -> None:
