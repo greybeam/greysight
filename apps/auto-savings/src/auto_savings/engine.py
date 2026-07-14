@@ -313,6 +313,7 @@ def run_cycle(
     )
 
     enrollments = store.list_enrollments(org_id)
+    backoff_required = False
     for enrollment in enrollments:
         snapshot = snapshot_by_name.get(enrollment.warehouse_name)
         if snapshot is None:
@@ -351,7 +352,8 @@ def run_cycle(
             observation=observation,
         )
         if result is CycleResult.RETRY_BACKOFF:
-            return result
+            backoff_required = True
+            continue
         _record_accepted_event(
             org_id,
             snapshot,
@@ -360,4 +362,4 @@ def run_cycle(
             observation=observation,
         )
 
-    return CycleResult.NORMAL
+    return CycleResult.RETRY_BACKOFF if backoff_required else CycleResult.NORMAL

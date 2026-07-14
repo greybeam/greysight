@@ -636,6 +636,45 @@ begin
         raise exception 'unexpected automated savings policy role or command';
     end if;
 
+    -- Reverse anti-join: every actual policy on the three tables must appear
+    -- in the expected set by (tablename, policyname, cmd). This closes the gap
+    -- where an EXTRA permissive policy (e.g. a second authenticated SELECT with
+    -- qual `true`) would slip past both the forward predicate check and the
+    -- role/cmd-only reverse check above.
+    if exists (
+        select 1
+        from pg_catalog.pg_policies actual
+        left join (
+            values
+                ('automated_savings_settings',
+                 'automated_savings_settings_read', 'SELECT'),
+                ('automated_savings_settings',
+                 'automated_savings_settings_insert', 'INSERT'),
+                ('automated_savings_settings',
+                 'automated_savings_settings_update', 'UPDATE'),
+                ('automated_savings_warehouses',
+                 'automated_savings_warehouses_read', 'SELECT'),
+                ('automated_savings_warehouses',
+                 'automated_savings_warehouses_insert', 'INSERT'),
+                ('automated_savings_warehouses',
+                 'automated_savings_warehouses_update', 'UPDATE'),
+                ('automated_savings_events',
+                 'automated_savings_events_read', 'SELECT')
+        ) expected(tablename, policyname, cmd)
+          on expected.tablename = actual.tablename
+         and expected.policyname = actual.policyname
+         and expected.cmd = actual.cmd
+        where actual.schemaname = 'public'
+          and actual.tablename in (
+              'automated_savings_settings',
+              'automated_savings_warehouses',
+              'automated_savings_events'
+          )
+          and expected.policyname is null
+    ) then
+        raise exception 'unexpected automated savings policy present';
+    end if;
+
     select array_agg(
         table_name::text || ':' || privilege_type::text
         order by table_name, privilege_type
@@ -1051,10 +1090,32 @@ select set_config(
 do $$
 declare
     v_affected integer;
+    v_count integer;
 begin
     if auth.uid() is distinct from
        '20000000-0000-0000-0000-000000000002'::uuid then
         raise exception 'admin JWT did not establish auth.uid()';
+    end if;
+
+    select count(*) into v_count
+    from public.automated_savings_settings
+    where organization_id = '10000000-0000-0000-0000-000000000002';
+    if v_count <> 0 then
+        raise exception 'org A admin could read org B settings';
+    end if;
+
+    select count(*) into v_count
+    from public.automated_savings_warehouses
+    where organization_id = '10000000-0000-0000-0000-000000000002';
+    if v_count <> 0 then
+        raise exception 'org A admin could read org B enrollment';
+    end if;
+
+    select count(*) into v_count
+    from public.automated_savings_events
+    where organization_id = '10000000-0000-0000-0000-000000000002';
+    if v_count <> 0 then
+        raise exception 'org A admin could read org B events';
     end if;
 
     insert into public.automated_savings_settings (

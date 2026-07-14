@@ -479,6 +479,24 @@ def test_duplicate_name_fails_closed_while_other_unique_snapshot_proceeds():
     assert [authorization[1] for authorization in store.authorizations] == ["WH2"]
 
 
+def test_unknown_outcome_does_not_starve_later_enrollments():
+    store = TrackingStore()
+    store.enrollments = [
+        _enrollment(),
+        _enrollment(warehouse_name="WH2"),
+    ]
+    rows = _rows() + _rows(name="WH2")
+
+    def suspend(name: str) -> SuspendResult:
+        return _unknown_result() if name == "WH1" else ACCEPTED_RESULT
+
+    result = _run(store, rows=rows, suspend=suspend)
+
+    assert result is CycleResult.RETRY_BACKOFF
+    assert [authorization[1] for authorization in store.authorizations] == ["WH1", "WH2"]
+    assert [event.warehouse_name for event in store.events] == ["WH2"]
+
+
 def test_missing_enrollment_identity_fails_closed_without_delete_or_suspend():
     enrollment = _enrollment()
     object.__setattr__(enrollment, "warehouse_created_on", None)

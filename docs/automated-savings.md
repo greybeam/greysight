@@ -96,7 +96,7 @@ You can rerun the UI access check to update its display. The worker will retry e
 
 For `90064`, verify that the session remains healthy and the tenant enters retry backoff. Do not treat `90064` as evidence that suspension succeeded.
 
-For a timeout or connection failure, verify that the worker closes the session, reconnects, and backs off. Both cases write no accepted suspend event. Use the next snapshot and the same `attempt_id` to determine what the worker observed.
+For a timeout or connection failure, verify that the worker closes the session, reconnects, and backs off. Both cases write no accepted suspend event. Each observation logs a fresh `attempt_id`; use the next snapshot's log records for the same warehouse name to determine what the worker observed.
 
 ### Duplicate warehouse names in one snapshot
 

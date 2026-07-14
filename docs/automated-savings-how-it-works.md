@@ -76,7 +76,7 @@ The worker does not persist attempt recovery state. A later eligible snapshot ma
 
 Supabase stores settings, enrollments, and accepted direct-suspend events. It does not store cooldowns, restore intents, managed defaults, drift state, or pending command state.
 
-Every unique warehouse observation receives an in-memory `attempt_id`. Snapshot, authorization, request, outcome, and metric logs use that identifier for correlation. After a `90064`, the worker retains only the warehouse name and attempt ID until the next matching observation or a missing-warehouse record retires it. This information is not used for decisions and is lost on restart.
+Every unique warehouse observation receives a fresh in-memory `attempt_id`. Snapshot, authorization, request, outcome, and metric logs for that observation use the identifier for correlation. The worker retains no attempt state across cycles; correlate consecutive observations of a warehouse by name and timestamp in the logs.
 
 Duplicate warehouse names in one `SHOW WAREHOUSES` response are ambiguous. The worker logs `snapshot_ambiguous` and does not authorize, remove an enrollment, or suspend that name during that cycle. Other unique names can still proceed.
 
