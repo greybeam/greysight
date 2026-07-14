@@ -350,7 +350,8 @@ def _base_user_safe_message(exc: Exception) -> str:
     ):
         safe_message = (
             "Snowflake blocked the connection under its network policy. Ask your "
-            "Snowflake administrator to allow all Greysight outbound IP addresses."
+            "Snowflake administrator to allow this deployment's API and worker "
+            "egress IP addresses."
         )
     elif "warehouse" in message:
         safe_message = "Could not use the configured Snowflake warehouse."
