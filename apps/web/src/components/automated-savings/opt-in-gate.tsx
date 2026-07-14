@@ -132,7 +132,7 @@ export function OptInGate({ orgId, roleName, onAgreed }: OptInGateProps) {
 
       <div className="mt-4 border-t border-hairline pt-4">
         <p className="text-xs leading-5 text-slate-500">
-          By continuing, you acknowledge that Automated Savings is experimental
+          By continuing, you acknowledge that Auto Savings is experimental
           and authorize Greysight to request safe Snowflake suspension for
           warehouses you choose to enroll. You can disable the feature at any
           time.
@@ -158,7 +158,7 @@ export function OptInGate({ orgId, roleName, onAgreed }: OptInGateProps) {
 
         {!isAdmin ? (
           <p className="mt-3 text-xs text-slate-500">
-            Only owners and admins can enable Automated Savings for this
+            Only owners and admins can enable Auto Savings for this
             organization.
           </p>
         ) : null}

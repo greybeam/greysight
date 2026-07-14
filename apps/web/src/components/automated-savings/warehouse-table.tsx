@@ -1,7 +1,15 @@
 "use client";
 
 import { useId, useState } from "react";
-import { Badge } from "@tremor/react";
+import {
+  Badge,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeaderCell,
+  TableRow,
+} from "@tremor/react";
 
 import {
   fetchWarehouses,
@@ -85,35 +93,35 @@ function deriveToggleDisabledReason(
 // The dotted underline signals the header is hoverable for more detail.
 function HeaderWithTooltip({ label, tooltip }: { label: string; tooltip: string }) {
   return (
-    <th className="whitespace-nowrap px-4 py-3.5 font-semibold">
+    <TableHeaderCell className="whitespace-nowrap px-4 py-3.5 font-semibold">
       <Tooltip
         className="underline decoration-dotted decoration-slate-500 underline-offset-4"
         content={tooltip}
       >
         {label}
       </Tooltip>
-    </th>
+    </TableHeaderCell>
   );
 }
 
 export function WarehouseTable({ orgId, warehouses, isAdmin, accessToken, onChange, onRefresh }: WarehouseTableProps) {
   return (
-    <table aria-label="Warehouses" className="w-full text-left text-xs text-slate-300">
-      <thead className="text-slate-100">
-        <tr>
-          <th className="whitespace-nowrap px-4 py-3.5 font-semibold">Name</th>
+    <Table aria-label="Warehouses" className="w-full text-left text-xs text-slate-300">
+      <TableHead className="text-slate-100">
+        <TableRow>
+          <TableHeaderCell className="whitespace-nowrap px-4 py-3.5 font-semibold">Name</TableHeaderCell>
           <HeaderWithTooltip
             label="Auto Suspend"
             tooltip="The current Snowflake AUTO_SUSPEND setting. Greysight requests safe Snowflake suspension after the billing floor."
           />
           <HeaderWithTooltip
             label="Status"
-            tooltip="Whether automated savings is actively running on this warehouse."
+            tooltip="Whether auto savings is actively running on this warehouse."
           />
-          <th className="whitespace-nowrap px-4 py-3.5 font-semibold">Enabled</th>
-        </tr>
-      </thead>
-      <tbody className="divide-y divide-hairline align-top">
+          <TableHeaderCell className="whitespace-nowrap px-4 py-3.5 font-semibold">Enabled</TableHeaderCell>
+        </TableRow>
+      </TableHead>
+      <TableBody className="divide-y divide-hairline align-top">
         {warehouses.map((warehouse) => (
           <WarehouseRowView
             key={warehouse.name}
@@ -125,8 +133,8 @@ export function WarehouseTable({ orgId, warehouses, isAdmin, accessToken, onChan
             onRefresh={onRefresh}
           />
         ))}
-      </tbody>
-    </table>
+      </TableBody>
+    </Table>
   );
 }
 
@@ -203,15 +211,15 @@ function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange, on
   }
 
   return (
-    <tr>
-      <td className="px-4 py-2 font-semibold text-slate-100">{warehouse.name}</td>
-      <td className="px-4 py-2">
+    <TableRow>
+      <TableCell className="px-4 py-2 font-semibold text-slate-100">{warehouse.name}</TableCell>
+      <TableCell className="px-4 py-2">
         {warehouse.autoSuspend === null ? "—" : `${warehouse.autoSuspend}s`}
-      </td>
-      <td className="px-4 py-2">
+      </TableCell>
+      <TableCell className="px-4 py-2">
         <Badge color={displayStatus.color}>{displayStatus.label}</Badge>
-      </td>
-      <td className="px-4 py-2">
+      </TableCell>
+      <TableCell className="px-4 py-2">
         <span className="group relative inline-flex">
           <Switch
             aria-label={warehouse.name}
@@ -241,7 +249,7 @@ function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange, on
             Retry refresh
           </button>
         ) : null}
-      </td>
-    </tr>
+      </TableCell>
+    </TableRow>
   );
 }

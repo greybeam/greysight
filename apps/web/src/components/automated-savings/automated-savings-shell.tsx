@@ -154,7 +154,7 @@ export function AutomatedSavingsShell() {
     } catch {
       if (isCurrentOperation()) {
         setControlError(
-          "Couldn’t update Automated Savings. Please try again.",
+          "Couldn’t update Auto Savings. Please try again.",
         );
       }
     } finally {
@@ -227,7 +227,7 @@ export function AutomatedSavingsShell() {
       <div className="mb-6">
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="font-display text-2xl font-semibold text-slate-50">
-            Automated Savings
+            Auto Savings
           </h1>
           <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-300">
             Experimental
@@ -244,13 +244,13 @@ export function AutomatedSavingsShell() {
           >
             Learn more {" "}
           </a>
-           about how Automated Savings works.
+           about how Auto Savings works.
         </p>
       </div>
 
       {!orgId ? (
         <p className="rounded-lg border border-hairline bg-surface p-6 text-sm text-slate-400">
-          Automated Savings requires an authenticated Snowflake workspace.
+          Auto Savings requires an authenticated Snowflake workspace.
         </p>
       ) : loadState === "idle" || loadState === "loading" ? (
         <p
@@ -262,7 +262,7 @@ export function AutomatedSavingsShell() {
       ) : loadState === "error" || !status ? (
         <div className="rounded-lg border border-hairline bg-surface p-6">
           <p className="text-sm font-medium text-red-400" role="alert">
-            We couldn’t load Automated Savings. Please try again.
+            We couldn’t load Auto Savings. Please try again.
           </p>
           <button
             type="button"
@@ -294,15 +294,15 @@ export function AutomatedSavingsShell() {
             <div className="flex items-center justify-between gap-3">
               <label className="flex items-center gap-2 text-sm font-medium text-slate-200">
                 <Switch
-                  aria-label="Automated Savings enabled for all warehouses"
+                  aria-label="Auto Savings enabled for all warehouses"
                   aria-busy={globalSwitching}
                   checked={status.globalEnabled}
                   disabled={!isAdmin || !status.agreed || globalSwitching}
                   onCheckedChange={() => void handleGlobalToggle()}
                 />
                 {status.globalEnabled
-                  ? "Automated Savings on"
-                  : "Automated Savings off"}
+                  ? "Auto Savings on"
+                  : "Auto Savings off"}
               </label>
               <button
                 type="button"
