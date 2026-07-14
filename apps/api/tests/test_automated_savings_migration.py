@@ -1,196 +1,208 @@
+import re
 from pathlib import Path
 
-MIGRATIONS_DIR = Path(__file__).resolve().parents[3] / "supabase" / "migrations"
 
+MIGRATIONS_DIR = Path(__file__).resolve().parents[3] / "supabase" / "migrations"
 MIGRATION = (MIGRATIONS_DIR / "202607120001_automated_savings.sql").read_text()
 
-SENTINEL_CONFIRMED_MIGRATION = (
-    MIGRATIONS_DIR / "20260713223505_automated_savings_sentinel_confirmed.sql"
-).read_text()
 
-
-def _intent_safety_migrations() -> str:
-    return "\n".join(
-        path.read_text()
-        for path in MIGRATIONS_DIR.glob("*_automated_savings_intent_safety.sql")
+def _function_body(name: str) -> str:
+    definition = re.search(
+        rf"create (?:or replace )?function {re.escape(name)}\s*"
+        r"\([^)]*\).*?\bas \$\$.*?\$\$;",
+        MIGRATION,
+        flags=re.IGNORECASE | re.DOTALL,
     )
+    assert definition is not None, f"missing function definition: {name}"
+    return definition.group(0)
 
 
-def test_tables_created():
+def test_direct_schema_has_only_final_tables():
+    assert "create table automated_savings_settings" in MIGRATION
+    assert "create table automated_savings_warehouses" in MIGRATION
+    assert "create table automated_savings_events" in MIGRATION
+    assert "automated_savings_restore_intents" not in MIGRATION
+
+
+def test_direct_enrollment_has_mandatory_identity_without_legacy_columns():
+    assert "warehouse_created_on timestamptz not null" in MIGRATION
+    for legacy in (
+        "managed_auto_suspend",
+        "stored_default_auto_suspend",
+        "drift_state",
+        "drifted_value",
+        "sentinel_confirmed",
+        "cooldown_ts",
+    ):
+        assert legacy not in MIGRATION
+
+
+def test_direct_event_shape_is_suspend_only():
+    assert "action text not null check (action = 'suspend')" in MIGRATION
+    assert "reason text not null check (reason = 'idle')" in MIGRATION
+    assert "observed_started_clusters integer" in MIGRATION
+    assert "observed_min_cluster_count integer" in MIGRATION
+    assert "observed_max_cluster_count integer" in MIGRATION
+    assert (
+        "observed_quiescing integer not null check (observed_quiescing >= 0)"
+        in MIGRATION
+    )
+    assert "observed_state text not null" in MIGRATION
+    assert (
+        "observed_running integer not null check (observed_running >= 0)" in MIGRATION
+    )
+    assert "observed_queued integer not null check (observed_queued >= 0)" in MIGRATION
+    assert "observed_resumed_on timestamptz not null" in MIGRATION
+    for legacy in ("cycle_id", "from_value", "to_value", "set_sentinel", "restore"):
+        assert legacy not in MIGRATION
+
+
+def test_direct_schema_has_guarded_worker_rpcs():
+    for function in (
+        "automated_savings_upsert_enrollment",
+        "automated_savings_disable_enrollment",
+        "automated_savings_authorize_suspend",
+        "automated_savings_delete_stale_enrollment",
+        "automated_savings_worker_tenants",
+    ):
+        body = _function_body(function)
+        assert "security invoker" in body
+        assert "set search_path = ''" in body
+        assert "public.automated_savings_" in body
+    assert "s.global_enabled" in _function_body("automated_savings_authorize_suspend")
+
+
+def test_function_parser_does_not_include_later_rpc_definitions():
+    upsert = _function_body("automated_savings_upsert_enrollment")
+    assert "automated_savings_authorize_suspend" not in upsert
+    authorize = _function_body("automated_savings_authorize_suspend")
+    assert "automated_savings_delete_stale_enrollment" not in authorize
+
+
+def test_worker_rpcs_are_granted_only_to_service_role():
+    signatures = (
+        "automated_savings_upsert_enrollment(\n    uuid, text, boolean, timestamptz\n)",
+        "automated_savings_disable_enrollment(\n    uuid, text\n)",
+        "automated_savings_authorize_suspend(\n"
+        "    uuid, text, timestamptz, timestamptz\n)",
+        "automated_savings_delete_stale_enrollment(\n"
+        "    uuid, text, timestamptz, timestamptz\n)",
+        "automated_savings_worker_tenants()",
+    )
+    for signature in signatures:
+        for role in ("public", "anon", "authenticated"):
+            assert (
+                f"revoke execute on function public.{signature} from {role};"
+                in MIGRATION
+            )
+        assert (
+            f"grant execute on function public.{signature} to service_role;"
+            in MIGRATION
+        )
+
+    execute_grants = {
+        (name, re.sub(r"\s+", " ", arguments).strip(), grantee.lower())
+        for name, arguments, grantee in re.findall(
+            r"grant\s+execute\s+on\s+function\s+public\."
+            r"(automated_savings_[a-z_]+)\s*\(([^)]*)\)\s+to\s+([a-z_]+)\s*;",
+            MIGRATION,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    }
+    assert execute_grants == {
+        (
+            "automated_savings_upsert_enrollment",
+            "uuid, text, boolean, timestamptz",
+            "service_role",
+        ),
+        (
+            "automated_savings_authorize_suspend",
+            "uuid, text, timestamptz, timestamptz",
+            "service_role",
+        ),
+        (
+            "automated_savings_disable_enrollment",
+            "uuid, text",
+            "service_role",
+        ),
+        (
+            "automated_savings_delete_stale_enrollment",
+            "uuid, text, timestamptz, timestamptz",
+            "service_role",
+        ),
+        ("automated_savings_worker_tenants", "", "service_role"),
+    }
+
+
+def test_direct_schema_keeps_explicit_rls_and_version_trigger():
     for table in (
         "automated_savings_settings",
         "automated_savings_warehouses",
-        "automated_savings_restore_intents",
+        "automated_savings_events",
     ):
-        assert f"create table {table}" in MIGRATION
+        assert f"alter table {table} enable row level security" in MIGRATION
+    assert "set_automated_savings_settings_updated_at" in MIGRATION
+    assert "create trigger set_automated_savings_warehouses_updated_at" in MIGRATION
+    assert "automated_savings_warehouses_read" in MIGRATION
+    assert "automated_savings_warehouses_insert" in MIGRATION
+    assert "automated_savings_warehouses_update" in MIGRATION
+    assert "for delete to authenticated" not in MIGRATION
+    assert "automated_savings_events_write" not in MIGRATION
+    assert "for all to authenticated" not in MIGRATION
 
 
-def test_enabled_and_global_default_false():
-    # Nothing is automated at opt-in.
-    assert "global_enabled boolean not null default false" in MIGRATION
-    assert "enabled boolean not null default false" in MIGRATION
+def test_admin_update_policies_have_using_and_with_check_guards():
+    for policy in (
+        "automated_savings_settings_update",
+        "automated_savings_warehouses_update",
+    ):
+        body = MIGRATION.split(f"create policy {policy}", maxsplit=1)[1].split(
+            ";", maxsplit=1
+        )[0]
+        assert "using (is_organization_admin(organization_id))" in body
+        assert "with check (is_organization_admin(organization_id))" in body
 
 
-def test_rls_members_read_admins_mutate():
-    assert "enable row level security" in MIGRATION
-    assert "is_organization_member" in MIGRATION
-    assert "is_organization_admin" in MIGRATION
-
-
-def test_one_restore_intent_per_warehouse():
-    assert "primary key (organization_id, warehouse_name)" in MIGRATION
-
-
-def test_restore_intent_has_baseline_resumed_on_column():
-    # Resume-aware restore: baseline resumed_on captured at set-time so reconcile
-    # can detect a completed suspend→resume cycle under the sentinel.
-    assert "baseline_resumed_on timestamptz" in MIGRATION
-
-
-def test_sentinel_confirmed_additive_migration_adds_non_null_default_false_column():
-    # Prevent the stale-SHOW race: an unconfirmed sentinel must not be read as an
-    # idempotently-completed restore. A durable, non-null default-false flag lets
-    # reconcile HOLD until it observes AUTO_SUSPEND=1 and confirms ownership. Added
-    # as a separate additive migration because 202607120001 is already applied.
+def test_service_role_grants_keep_events_append_only():
+    assert "revoke all on automated_savings_events from service_role;" in MIGRATION
     assert (
-        "alter table automated_savings_restore_intents\n"
-        "    add column if not exists sentinel_confirmed boolean not null default false;"
-    ) in SENTINEL_CONFIRMED_MIGRATION
-
-
-def test_intent_safety_additive_migration_adds_expected_from():
-    migration = _intent_safety_migrations()
-    assert migration
-    assert (
-        "alter table automated_savings_restore_intents\n"
-        "    add column if not exists expected_from integer;"
-    ) in migration
-
-
-def test_intent_safety_migration_adds_atomic_reapply_rpc():
-    migration = _intent_safety_migrations()
-    assert "function automated_savings_enqueue_reapply(" in migration
-    assert "for update" in migration
-    assert "drift_state = 'drifted'" in migration
-    assert "w.drifted_value is not distinct from p_expected_from" in migration
-    assert "not exists" in migration
-    assert "grant execute on function automated_savings_enqueue_reapply" in migration
-
-
-def test_intent_safety_migration_adds_atomic_cleanup_and_fk():
-    migration = _intent_safety_migrations()
-    assert "constraint automated_savings_intents_enrollment_fkey" in migration
-    assert "foreign key (organization_id, warehouse_name)" in migration
-    assert "not valid" in migration
-    assert "function automated_savings_cleanup_intent(" in migration
-    assert "cycle_id = p_cycle_id" in migration
-    assert "kind = p_kind" in migration
-    assert "for update" in migration
-    assert "not exists" in migration
-    assert "grant execute on function automated_savings_cleanup_intent" in migration
-
-
-def test_intent_safety_migration_adds_locking_no_intent_cleanup():
-    migration = _intent_safety_migrations()
-    assert "function automated_savings_cleanup_enrollment_if_no_intent(" in migration
-    assert "for update" in migration
-    assert "not exists" in migration
-    assert (
-        "grant execute on function "
-        "automated_savings_cleanup_enrollment_if_no_intent" in migration
+        "grant select, insert on automated_savings_events to service_role;" in MIGRATION
     )
-
-
-def test_restore_intent_has_cycle_id_for_event_pairing():
-    # A set_sentinel event and its restore event share the intent's cycle_id.
-    assert "cycle_id uuid not null default gen_random_uuid()" in MIGRATION
-
-
-def test_restore_intent_kind_discriminates_sentinel_from_reapply():
-    # A reapply intent (admin "re-apply old default") must be distinguishable so
-    # the worker overwrites the drifted value instead of re-flagging drift.
-    assert "kind text not null default 'sentinel' check (kind in ('sentinel', 'reapply'))" in MIGRATION
-
-
-def test_events_audit_table_is_member_read_only():
-    assert "create table automated_savings_events" in MIGRATION
-    # Constrained action/reason (no free text), and a member-read-only policy —
-    # the log is written solely by the worker (service role).
-    assert "action in ('set_sentinel', 'restore')" in MIGRATION
-    assert "reason in ('decide', 'suspended', 'busy', 'resume_aware', 'aged_out', 'reconcile_reapply')" in MIGRATION
+    for role in ("public", "anon", "authenticated", "service_role"):
+        assert (
+            f"revoke all on sequence automated_savings_events_id_seq from {role};"
+            in MIGRATION
+        )
     assert (
-        "create policy automated_savings_events_read on automated_savings_events\n"
-        "    for select to authenticated using (is_organization_member(organization_id));"
-    ) in MIGRATION
-    # Application code only inserts events while the organization exists. The
-    # organization foreign key intentionally cascades deletion for tenant cleanup.
-    # Authenticated users have no write policy; the worker uses the service role.
-    assert "on automated_savings_events\n    for all" not in MIGRATION
-
-
-def test_drift_state_constraint():
-    assert "check (drift_state in ('ok','drifted','unsupported'))" in MIGRATION
-
-
-def test_managed_default_floor_and_stored_default_constraints():
-    assert "managed_auto_suspend >= 60" in MIGRATION
-    assert "stored_default_auto_suspend not in (0, 1)" in MIGRATION
-
-
-def test_worker_tenants_includes_outstanding_intents():
-    # A kill-switched org with an outstanding sentinel must still be enumerated so it drains.
-    assert "automated_savings_restore_intents" in MIGRATION.split(
-        "function automated_savings_worker_tenants"
-    )[1]
-
-
-def test_upsert_enrollment_function_created_and_locked_down():
-    assert (
-        "create or replace function automated_savings_upsert_enrollment("
-        in MIGRATION
-    )
-    assert "security definer" in MIGRATION.split(
-        "function automated_savings_upsert_enrollment"
-    )[1]
-    assert (
-        "revoke all on function automated_savings_upsert_enrollment(\n"
-        "    uuid, text, boolean, integer, integer, timestamptz\n"
-        ") from public;"
-    ) in MIGRATION
-    assert (
-        "grant execute on function automated_savings_upsert_enrollment(\n"
-        "    uuid, text, boolean, integer, integer, timestamptz\n"
-        ") to service_role;"
+        "grant usage, select on sequence automated_savings_events_id_seq "
+        "to service_role;"
     ) in MIGRATION
 
 
-def test_upsert_enrollment_is_atomic_single_statement_insert_on_conflict():
-    # Finding #5: the INSERT branch must always carry the freshly-captured
-    # defaults, so a concurrent delete-then-upsert race can never produce a
-    # null-default row.
-    body = MIGRATION.split("function automated_savings_upsert_enrollment")[1]
-    assert "insert into automated_savings_warehouses" in body
-    assert "on conflict (organization_id, warehouse_name) do update" in body
-    assert "p_stored_default, p_managed_default, p_warehouse_created_on" in body
+def test_stale_enrollment_delete_matches_identity_and_version():
+    body = _function_body("automated_savings_delete_stale_enrollment")
+    assert "p_warehouse_created_on is not null" in body
+    assert "w.warehouse_created_on = p_warehouse_created_on" in body
+    assert "w.updated_at = p_enrollment_updated_at" in body
 
 
-def test_upsert_enrollment_preserves_default_only_when_created_on_matches():
-    # Finding #11: preserve the existing stored_default/managed_auto_suspend
-    # only when the stored warehouse_created_on matches the freshly-captured
-    # live created_on (same physical warehouse) — otherwise (mismatch, or the
-    # stored created_on is null/unknown) treat it as a fresh capture.
-    body = MIGRATION.split("function automated_savings_upsert_enrollment")[1]
-    assert (
-        "when automated_savings_warehouses.warehouse_created_on is not null\n"
-        "                 and automated_savings_warehouses.warehouse_created_on "
-        "= excluded.warehouse_created_on\n"
-        "            then automated_savings_warehouses.stored_default_auto_suspend\n"
-        "            else excluded.stored_default_auto_suspend"
-    ) in body
-    assert (
-        "when automated_savings_warehouses.warehouse_created_on is not null\n"
-        "                 and automated_savings_warehouses.warehouse_created_on "
-        "= excluded.warehouse_created_on\n"
-        "            then automated_savings_warehouses.managed_auto_suspend\n"
-        "            else excluded.managed_auto_suspend"
-    ) in body
+def test_disable_enrollment_updates_existing_exact_row_without_insert():
+    body = _function_body("automated_savings_disable_enrollment")
+    assert "returns boolean" in body
+    assert "security invoker" in body
+    assert "set search_path = ''" in body
+    assert "update public.automated_savings_warehouses w" in body
+    assert "w.organization_id = p_organization_id" in body
+    assert "w.warehouse_name = p_warehouse_name" in body
+    assert "set enabled = false" in body
+    assert "return v_updated = 1" in body
+    assert "insert into" not in body
+
+
+def test_unreleased_sentinel_followups_are_folded_away():
+    assert not (
+        MIGRATIONS_DIR / "20260713223505_automated_savings_sentinel_confirmed.sql"
+    ).exists()
+    assert not (
+        MIGRATIONS_DIR / "20260714002106_automated_savings_intent_safety.sql"
+    ).exists()

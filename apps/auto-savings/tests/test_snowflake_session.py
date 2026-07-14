@@ -1,8 +1,12 @@
 from unittest.mock import Mock
 
 import pytest
+import snowflake.connector
 
 from auto_savings.snowflake_session import (
+    ConnectorErrorMetadata,
+    SuspendOutcome,
+    SuspendResult,
     TenantSession,
     connection_fingerprint,
     next_backoff,
@@ -79,18 +83,93 @@ def test_show_warehouses_reuses_one_connection():
     assert len(connects) == 1  # warm reuse, not reconnect-per-poll
 
 
-def test_alter_quotes_identifier():
+def test_suspend_quotes_identifier_and_returns_accepted():
     cursor = Mock()
     connection = Mock()
     connection.cursor.return_value = cursor
     session = TenantSession(config=object(), socket_timeout_seconds=15, connect=lambda c: connection)
-    session.alter_auto_suspend('weird"name', 1)
-    sql = cursor.execute.call_args[0][0]
-    assert '"weird""name"' in sql
-    assert "SET AUTO_SUSPEND = 1" in sql
+
+    assert session.suspend_warehouse('weird"name') == SuspendResult(
+        outcome=SuspendOutcome.ACCEPTED,
+        connector_error=None,
+    )
+
+    cursor.execute.assert_called_once_with('ALTER WAREHOUSE "weird""name" SUSPEND')
 
 
-def test_alter_ignores_cursor_close_failure_after_success():
+def test_suspend_90064_is_unknown_without_claiming_success(caplog):
+    cursor = Mock()
+    cursor.execute.side_effect = snowflake.connector.errors.ProgrammingError(
+        msg="observed\nrace",
+        errno=90064,
+        sqlstate="57014",
+    )
+    connection = Mock()
+    connection.cursor.return_value = cursor
+    session = TenantSession(
+        config=object(),
+        socket_timeout_seconds=15,
+        connect=lambda _config: connection,
+    )
+
+    with caplog.at_level("WARNING"):
+        outcome = session.suspend_warehouse("WH1")
+
+    assert outcome == SuspendResult(
+        outcome=SuspendOutcome.UNKNOWN_IDEMPOTENT,
+        connector_error=ConnectorErrorMetadata(
+            error_type="ProgrammingError",
+            errno=90064,
+            sqlstate="57014",
+            message="observed race",
+        ),
+    )
+    record = caplog.records[-1]
+    assert record.connector_error_type == "ProgrammingError"
+    assert record.connector_errno == 90064
+    assert record.connector_sqlstate == "57014"
+    assert record.connector_message == "observed race"
+
+
+def test_accepted_suspend_result_rejects_connector_metadata():
+    metadata = ConnectorErrorMetadata(
+        error_type="ProgrammingError",
+        errno=90064,
+        sqlstate="57014",
+        message="observed race",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="accepted suspend results cannot include connector metadata",
+    ):
+        SuspendResult(SuspendOutcome.ACCEPTED, metadata)
+
+
+def test_unknown_suspend_result_requires_connector_metadata():
+    with pytest.raises(
+        ValueError,
+        match="unknown suspend results require connector metadata",
+    ):
+        SuspendResult(SuspendOutcome.UNKNOWN_IDEMPOTENT)
+
+
+def test_suspend_connection_failure_propagates_as_ambiguous():
+    cursor = Mock()
+    cursor.execute.side_effect = snowflake.connector.errors.OperationalError("lost")
+    connection = Mock()
+    connection.cursor.return_value = cursor
+    session = TenantSession(
+        config=object(),
+        socket_timeout_seconds=15,
+        connect=lambda _config: connection,
+    )
+
+    with pytest.raises(snowflake.connector.errors.OperationalError, match="lost"):
+        session.suspend_warehouse("WH1")
+
+
+def test_suspend_ignores_cursor_close_failure_after_accepted_command():
     cursor = Mock()
     cursor.close.side_effect = RuntimeError("close failed")
     connection = Mock()
@@ -101,12 +180,16 @@ def test_alter_ignores_cursor_close_failure_after_success():
         connect=lambda _config: connection,
     )
 
-    session.alter_auto_suspend("WH1", 1)
+    outcome = session.suspend_warehouse("WH1")
 
+    assert outcome == SuspendResult(
+        outcome=SuspendOutcome.ACCEPTED,
+        connector_error=None,
+    )
     cursor.execute.assert_called_once()
 
 
-def test_alter_preserves_execute_failure_when_cursor_close_also_fails():
+def test_suspend_preserves_execute_failure_when_cursor_close_also_fails():
     cursor = Mock()
     cursor.execute.side_effect = ValueError("execute failed")
     cursor.close.side_effect = RuntimeError("close failed")
@@ -119,7 +202,7 @@ def test_alter_preserves_execute_failure_when_cursor_close_also_fails():
     )
 
     with pytest.raises(ValueError, match="execute failed"):
-        session.alter_auto_suspend("WH1", 1)
+        session.suspend_warehouse("WH1")
 
 
 def test_close_hard_closes_old_connection_and_next_op_reconnects():

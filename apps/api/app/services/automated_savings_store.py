@@ -1,24 +1,35 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from datetime import datetime
+from typing import Any, Literal
 
 import httpx
 
 
+StoreFailureKind = Literal[
+    "transport", "http_status", "invalid_json", "malformed_row", "not_found"
+]
+
+
 class AutomatedSavingsStoreError(RuntimeError):
-    """Raised when the automated-savings store request fails; callers fail loud."""
+    """Sanitized store failure metadata safe for structured server logs."""
+
+    def __init__(
+        self,
+        *,
+        kind: StoreFailureKind,
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__("Automated savings store operation failed")
+        self.kind = kind
+        self.status_code = status_code
 
 
 def _store_error(response: httpx.Response) -> AutomatedSavingsStoreError:
-    """Build an error that preserves PostgREST's status + body.
-
-    Supabase returns the real reason (e.g. a check-constraint violation) in the
-    response body; capturing it here means the route's logger.exception surfaces
-    WHY the write failed instead of an opaque bare error.
-    """
+    """Keep the actionable HTTP status without retaining the response body."""
     return AutomatedSavingsStoreError(
-        f"Supabase request failed: {response.status_code} {response.text[:500]}"
+        kind="http_status", status_code=response.status_code
     )
 
 
@@ -36,12 +47,8 @@ class EnrollmentRow:
     organization_id: str
     warehouse_name: str
     enabled: bool
-    managed_auto_suspend: int | None
-    stored_default_auto_suspend: int | None
-    warehouse_created_on: str | None
-    cooldown_ts: str | None
-    drift_state: str
-    drifted_value: int | None
+    warehouse_created_on: str
+    updated_at: str
 
 
 class SupabaseAutomatedSavingsStore:
@@ -61,8 +68,8 @@ class SupabaseAutomatedSavingsStore:
         self._upsert_enrollment_url = (
             f"{base}/rest/v1/rpc/automated_savings_upsert_enrollment"
         )
-        self._enqueue_reapply_url = (
-            f"{base}/rest/v1/rpc/automated_savings_enqueue_reapply"
+        self._disable_enrollment_url = (
+            f"{base}/rest/v1/rpc/automated_savings_disable_enrollment"
         )
         self._service_role_key = service_role_key
         self._timeout_seconds = timeout_seconds
@@ -98,8 +105,8 @@ class SupabaseAutomatedSavingsStore:
                     },
                     headers=self._headers(),
                 )
-        except httpx.HTTPError as exc:
-            raise AutomatedSavingsStoreError() from exc
+        except httpx.HTTPError:
+            raise AutomatedSavingsStoreError(kind="transport") from None
         if response.status_code != 200:
             raise _store_error(response)
         rows = _parse_rows(response)
@@ -146,8 +153,8 @@ class SupabaseAutomatedSavingsStore:
                         prefer="resolution=merge-duplicates,return=minimal"
                     ),
                 )
-        except httpx.HTTPError as exc:
-            raise AutomatedSavingsStoreError() from exc
+        except httpx.HTTPError:
+            raise AutomatedSavingsStoreError(kind="transport") from None
         if response.status_code not in (200, 201, 204):
             raise _store_error(response)
 
@@ -162,15 +169,13 @@ class SupabaseAutomatedSavingsStore:
                         "organization_id": f"eq.{organization_id}",
                         "select": (
                             "organization_id,warehouse_name,enabled,"
-                            "managed_auto_suspend,stored_default_auto_suspend,"
-                            "warehouse_created_on,cooldown_ts,drift_state,"
-                            "drifted_value"
+                            "warehouse_created_on,updated_at"
                         ),
                     },
                     headers=self._headers(),
                 )
-        except httpx.HTTPError as exc:
-            raise AutomatedSavingsStoreError() from exc
+        except httpx.HTTPError:
+            raise AutomatedSavingsStoreError(kind="transport") from None
         if response.status_code != 200:
             raise _store_error(response)
         return [_parse_enrollment_row(row) for row in _parse_rows(response)]
@@ -181,35 +186,12 @@ class SupabaseAutomatedSavingsStore:
         warehouse_name: str,
         *,
         enabled: bool,
-        stored_default: int,
-        managed_default: int,
-        warehouse_created_on: str | None,
+        warehouse_created_on: str,
     ) -> None:
-        # On a warehouse's FIRST enroll (or a re-enroll of the SAME physical
-        # warehouse — i.e. its stored `warehouse_created_on` matches the
-        # freshly-captured live `created_on`), capture the customer's current
-        # AUTO_SUSPEND as the immutable `stored_default` AND seed
-        # `managed_default` from it, or preserve both across a re-enroll.
-        # On a re-enroll where the warehouse was dropped and recreated (same
-        # name, different `created_on`) — or where the stored `created_on` is
-        # unknown — treat it as a FRESH capture instead of inheriting a stale
-        # default from the old, now-gone warehouse.
-        #
-        # This decision (preserve vs. fresh-capture) is made atomically inside
-        # a single Postgres upsert (see `automated_savings_upsert_enrollment`
-        # in the migration) rather than via a read-then-upsert here: a
-        # read-then-upsert that omits the default columns to "preserve" them
-        # would, if the row were deleted between the read and the write,
-        # INSERT a brand-new enabled row with NULL defaults — which the
-        # worker cannot handle. The RPC's INSERT branch always carries the
-        # freshly-captured stored_default/managed_default, so that race can
-        # never produce a null-default row.
         payload = {
             "p_organization_id": organization_id,
             "p_warehouse_name": warehouse_name,
             "p_enabled": enabled,
-            "p_stored_default": stored_default,
-            "p_managed_default": managed_default,
             "p_warehouse_created_on": warehouse_created_on,
         }
         try:
@@ -219,173 +201,78 @@ class SupabaseAutomatedSavingsStore:
                     json=payload,
                     headers=self._headers(),
                 )
-        except httpx.HTTPError as exc:
-            raise AutomatedSavingsStoreError() from exc
+        except httpx.HTTPError:
+            raise AutomatedSavingsStoreError(kind="transport") from None
         if response.status_code not in (200, 201, 204):
             raise _store_error(response)
-
-    def set_managed_default(
-        self, organization_id: str, warehouse_name: str, value: int
-    ) -> None:
-        # `managed_auto_suspend` is the live restore target + drift baseline
-        # the worker reads — this is the only write path for it besides
-        # enrollment/reconcile.
-        self._upsert_warehouse(
-            {
-                "organization_id": organization_id,
-                "warehouse_name": warehouse_name,
-                "managed_auto_suspend": value,
-            }
-        )
 
     def unenroll(self, organization_id: str, warehouse_name: str) -> None:
-        # Only clears `enabled`. Must NEVER write a restore-intent here: the
-        # worker drains any *already-outstanding* intent regardless of
-        # `enabled` (worker_tenants() unions on outstanding intents), and
-        # writing one here would wrongly claim ownership of a customer-set
-        # AUTO_SUSPEND that has no intent.
-        self._upsert_warehouse(
-            {
-                "organization_id": organization_id,
-                "warehouse_name": warehouse_name,
-                "enabled": False,
-            }
-        )
-
-    def reconcile(
-        self, organization_id: str, warehouse_name: str, *, accept: bool
-    ) -> None:
-        row = self._get_warehouse(organization_id, warehouse_name)
-        if row is None:
-            raise AutomatedSavingsStoreError()
-
-        if accept:
-            # Adopt the drifted value as the new managed baseline (if it
-            # clears the floor) and clear drift.
-            update: dict[str, Any] = {
-                "organization_id": organization_id,
-                "warehouse_name": warehouse_name,
-                "drift_state": "ok",
-                "drifted_value": None,
-            }
-            if row.drifted_value is not None and row.drifted_value >= 60:
-                update["managed_auto_suspend"] = row.drifted_value
-            self._upsert_warehouse(update)
-            return
-
-        # "Re-apply old default": the API can't ALTER Snowflake directly, so
-        # atomically enqueue a restore-intent only if the exact drift observation
-        # still holds and no sentinel/reapply intent already owns the warehouse.
-        self._enqueue_restore_intent(
-            organization_id,
-            warehouse_name,
-            row.managed_auto_suspend,
-            expected_from=row.drifted_value,
-        )
-
-    def _get_warehouse(
-        self, organization_id: str, warehouse_name: str
-    ) -> EnrollmentRow | None:
-        try:
-            with self._client() as client:
-                response = client.get(
-                    self._warehouses_url,
-                    params={
-                        "organization_id": f"eq.{organization_id}",
-                        "warehouse_name": f"eq.{warehouse_name}",
-                        "select": (
-                            "organization_id,warehouse_name,enabled,"
-                            "managed_auto_suspend,stored_default_auto_suspend,"
-                            "warehouse_created_on,cooldown_ts,drift_state,"
-                            "drifted_value"
-                        ),
-                        "limit": "1",
-                    },
-                    headers=self._headers(),
-                )
-        except httpx.HTTPError as exc:
-            raise AutomatedSavingsStoreError() from exc
-        if response.status_code != 200:
-            raise _store_error(response)
-        rows = _parse_rows(response)
-        if not rows:
-            return None
-        return _parse_enrollment_row(rows[0])
-
-    def _upsert_warehouse(self, payload: dict[str, Any]) -> None:
-        try:
-            with self._client() as client:
-                response = client.post(
-                    self._warehouses_url,
-                    params={"on_conflict": "organization_id,warehouse_name"},
-                    json=payload,
-                    headers=self._headers(
-                        prefer="resolution=merge-duplicates,return=minimal"
-                    ),
-                )
-        except httpx.HTTPError as exc:
-            raise AutomatedSavingsStoreError() from exc
-        if response.status_code not in (200, 201, 204):
-            raise _store_error(response)
-
-    def _enqueue_restore_intent(
-        self,
-        organization_id: str,
-        warehouse_name: str,
-        restore_to: int | None,
-        *,
-        expected_from: int | None,
-    ) -> None:
         payload = {
             "p_organization_id": organization_id,
             "p_warehouse_name": warehouse_name,
-            "p_restore_to": restore_to,
-            "p_expected_from": expected_from,
         }
         try:
             with self._client() as client:
                 response = client.post(
-                    self._enqueue_reapply_url,
+                    self._disable_enrollment_url,
                     json=payload,
                     headers=self._headers(),
                 )
-        except httpx.HTTPError as exc:
-            raise AutomatedSavingsStoreError() from exc
+        except httpx.HTTPError:
+            raise AutomatedSavingsStoreError(kind="transport") from None
         if response.status_code != 200:
             raise _store_error(response)
         try:
-            created = response.json()
-        except ValueError as exc:
-            raise AutomatedSavingsStoreError() from exc
-        if created is not True:
-            raise AutomatedSavingsStoreError()
+            disabled = response.json()
+        except ValueError:
+            raise AutomatedSavingsStoreError(kind="invalid_json") from None
+        if disabled is not True:
+            raise AutomatedSavingsStoreError(kind="not_found")
 
 
 def _parse_rows(response: httpx.Response) -> list[dict[str, Any]]:
     try:
         rows = response.json()
-    except ValueError as exc:
-        raise AutomatedSavingsStoreError() from exc
+    except ValueError:
+        raise AutomatedSavingsStoreError(kind="invalid_json") from None
     if not isinstance(rows, list):
-        raise AutomatedSavingsStoreError()
+        raise AutomatedSavingsStoreError(kind="malformed_row")
     return rows
 
 
 def _parse_enrollment_row(row: dict[str, Any]) -> EnrollmentRow:
     try:
+        organization_id = _require_nonempty_string(row, "organization_id")
+        warehouse_name = _require_nonempty_string(row, "warehouse_name")
+        enabled = row["enabled"]
+        if not isinstance(enabled, bool):
+            raise ValueError("enabled must be a boolean")
+        warehouse_created_on = _require_aware_timestamp(row, "warehouse_created_on")
+        updated_at = _require_aware_timestamp(row, "updated_at")
         return EnrollmentRow(
-            organization_id=str(row["organization_id"]),
-            warehouse_name=str(row["warehouse_name"]),
-            enabled=bool(row.get("enabled", False)),
-            managed_auto_suspend=row.get("managed_auto_suspend"),
-            stored_default_auto_suspend=row.get("stored_default_auto_suspend"),
-            warehouse_created_on=row.get("warehouse_created_on"),
-            cooldown_ts=row.get("cooldown_ts"),
-            drift_state=str(row.get("drift_state", "ok")),
-            drifted_value=row.get("drifted_value"),
+            organization_id=organization_id,
+            warehouse_name=warehouse_name,
+            enabled=enabled,
+            warehouse_created_on=warehouse_created_on,
+            updated_at=updated_at,
         )
-    except (KeyError, TypeError, ValueError) as exc:
-        raise AutomatedSavingsStoreError() from exc
+    except (KeyError, TypeError, ValueError):
+        raise AutomatedSavingsStoreError(kind="malformed_row") from None
+
+
+def _require_nonempty_string(row: dict[str, Any], field: str) -> str:
+    value = row[field]
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be a non-empty string")
+    return value
+
+
+def _require_aware_timestamp(row: dict[str, Any], field: str) -> str:
+    value = _require_nonempty_string(row, field)
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{field} must include a UTC offset")
+    return value
 
 
 _store: SupabaseAutomatedSavingsStore | None = None

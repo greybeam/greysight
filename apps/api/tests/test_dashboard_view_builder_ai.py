@@ -9,9 +9,21 @@ def _convert(credits, usage_date, service_type, rating_type=None):
 
 def test_ai_summary_sums_only_ai_services():
     rows = [
-        {"usage_date": date(2026, 6, 1), "service_type": "AI_SERVICES", "credits_used": 3.0},
-        {"usage_date": date(2026, 6, 1), "service_type": "CORTEX_AGENTS", "credits_used": 1.0},
-        {"usage_date": date(2026, 6, 1), "service_type": "WAREHOUSE_METERING", "credits_used": 99.0},
+        {
+            "usage_date": date(2026, 6, 1),
+            "service_type": "AI_SERVICES",
+            "credits_used": 3.0,
+        },
+        {
+            "usage_date": date(2026, 6, 1),
+            "service_type": "CORTEX_AGENTS",
+            "credits_used": 1.0,
+        },
+        {
+            "usage_date": date(2026, 6, 1),
+            "service_type": "WAREHOUSE_METERING",
+            "credits_used": 99.0,
+        },
     ]
     summary = _build_ai_spend_summary(rows=rows, currency="USD", convert=_convert)
     # (3 + 1) credits * $2 = $8, warehouse excluded
@@ -22,7 +34,11 @@ def test_ai_summary_sums_only_ai_services():
 
 def test_ai_summary_empty_when_no_ai_rows():
     rows = [
-        {"usage_date": date(2026, 6, 1), "service_type": "WAREHOUSE_METERING", "credits_used": 99.0},
+        {
+            "usage_date": date(2026, 6, 1),
+            "service_type": "WAREHOUSE_METERING",
+            "credits_used": 99.0,
+        },
     ]
     summary = _build_ai_spend_summary(rows=rows, currency="USD", convert=_convert)
     assert summary.total == 0.0
@@ -33,18 +49,36 @@ def test_build_ai_detail_view_breaks_down_by_consumption_type():
     from app.services.dashboard_view_builder import build_ai_detail_view
 
     ai_rows = [
-        {"usage_date": date(2026, 6, 1), "service_type": "AI_SERVICES",
-         "consumption_type": "CORTEX_ANALYST", "credits_used": 2.0},
-        {"usage_date": date(2026, 6, 1), "service_type": "CORTEX_AGENTS",
-         "consumption_type": "CORTEX_AGENTS", "credits_used": 1.0},
+        {
+            "usage_date": date(2026, 6, 1),
+            "service_type": "AI_SERVICES",
+            "consumption_type": "CORTEX_ANALYST",
+            "credits_used": 2.0,
+        },
+        {
+            "usage_date": date(2026, 6, 1),
+            "service_type": "CORTEX_AGENTS",
+            "consumption_type": "CORTEX_AGENTS",
+            "credits_used": 1.0,
+        },
     ]
     rate_rows = [
-        {"usage_date": date(2026, 6, 1), "service_type": "AI_SERVICES",
-         "usage_type": "compute", "rating_type": "AI_COMPUTE", "currency": "USD",
-         "effective_rate": 2.0},
-        {"usage_date": date(2026, 6, 1), "service_type": "CORTEX_AGENTS",
-         "usage_type": "compute", "rating_type": "AI_COMPUTE", "currency": "USD",
-         "effective_rate": 2.0},
+        {
+            "usage_date": date(2026, 6, 1),
+            "service_type": "AI_SERVICES",
+            "usage_type": "compute",
+            "rating_type": "AI_COMPUTE",
+            "currency": "USD",
+            "effective_rate": 2.0,
+        },
+        {
+            "usage_date": date(2026, 6, 1),
+            "service_type": "CORTEX_AGENTS",
+            "usage_type": "compute",
+            "rating_type": "AI_COMPUTE",
+            "currency": "USD",
+            "effective_rate": 2.0,
+        },
     ]
     view = build_ai_detail_view(
         ai_rows=ai_rows,

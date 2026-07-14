@@ -60,6 +60,7 @@ export function OptInGate({ orgId, roleName, onAgreed }: OptInGateProps) {
   }
 
   async function handleAgree() {
+    if (!isAdmin || status === "submitting") return;
     setStatus("submitting");
     try {
       await agree(orgId, { accessToken: account?.accessToken ?? null });
@@ -83,8 +84,8 @@ export function OptInGate({ orgId, roleName, onAgreed }: OptInGateProps) {
         </span>
       </div>
       <p className="mt-2 text-sm text-slate-400">
-        Automated Savings polls your Snowflake warehouses to reduce the amount
-        of time they spend idling.{" "}
+        Automated Savings polls your Snowflake warehouses and requests safe
+        suspension after the billing floor when enrolled warehouses are idle.{" "}
         <a
           className="text-slate-300 underline decoration-slate-600 underline-offset-2 hover:text-slate-100"
           href={REPO_URL}
@@ -124,8 +125,9 @@ export function OptInGate({ orgId, roleName, onAgreed }: OptInGateProps) {
       <div className="mt-4 border-t border-hairline pt-4">
         <p className="text-xs leading-5 text-slate-500">
           By continuing, you acknowledge that Automated Savings is experimental
-          and authorize Greysight to adjust AUTO_SUSPEND for warehouses you
-          choose to enroll. You can disable the feature at any time.
+          and authorize Greysight to request safe Snowflake suspension for
+          warehouses you choose to enroll. You can disable the feature at any
+          time.
         </p>
 
         <div className="mt-4 flex flex-wrap items-center gap-3">

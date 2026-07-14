@@ -20,7 +20,6 @@ class WorkerConfig:
     supabase_url: str
     supabase_service_role_key: str
     poll_interval_seconds: float = 3.0
-    intent_poll_interval_seconds: float = 1.0  # calibrated from Task 0 suspend latency
     poll_timeout_seconds: float = 20.0
     socket_timeout_seconds: int = 15
     # Per-request timeout for the worker's Supabase (httpx) store calls. Bounds
@@ -29,10 +28,7 @@ class WorkerConfig:
     # socket_timeout_seconds; Supabase by this) and the guaranteed drain in
     # run_tenant_once cannot hang.
     store_timeout_seconds: float = 5.0
-    cooldown_seconds: int = 60
     uptime_floor_seconds: int = 62
-    max_intent_hold_ticks: int = 8
-    orphan_grace_seconds: int = 120
     tenant_refresh_seconds: int = 30
     num_replicas: int = 1
     replica_index: int = 0
@@ -49,11 +45,7 @@ class WorkerConfig:
         "poll_timeout_seconds",
         "socket_timeout_seconds",
         "store_timeout_seconds",
-        "cooldown_seconds",
-        "intent_poll_interval_seconds",
         "uptime_floor_seconds",
-        "max_intent_hold_ticks",
-        "orphan_grace_seconds",
         "tenant_refresh_seconds",
         "query_timeout_seconds",
     )
@@ -74,6 +66,8 @@ class WorkerConfig:
                 )
         if self.num_replicas < 1:
             raise ValueError(f"num_replicas ({self.num_replicas}) must be >= 1")
+        if self.max_workers < 1:
+            raise ValueError(f"max_workers ({self.max_workers}) must be >= 1")
         if not (0 <= self.replica_index < self.num_replicas):
             raise ValueError(
                 f"replica_index ({self.replica_index}) must satisfy "
@@ -86,16 +80,10 @@ class WorkerConfig:
             supabase_url=os.environ.get("SUPABASE_URL", ""),
             supabase_service_role_key=os.environ.get("SUPABASE_SERVICE_ROLE_KEY", ""),
             poll_interval_seconds=_float("AUTO_SAVINGS_POLL_INTERVAL_SECONDS", 3.0),
-            intent_poll_interval_seconds=_float(
-                "AUTO_SAVINGS_INTENT_POLL_INTERVAL_SECONDS", 1.0
-            ),
             poll_timeout_seconds=_float("AUTO_SAVINGS_POLL_TIMEOUT_SECONDS", 20.0),
             socket_timeout_seconds=_int("AUTO_SAVINGS_SOCKET_TIMEOUT_SECONDS", 15),
             store_timeout_seconds=_float("AUTO_SAVINGS_STORE_TIMEOUT_SECONDS", 5.0),
-            cooldown_seconds=_int("AUTO_SAVINGS_COOLDOWN_SECONDS", 60),
             uptime_floor_seconds=_int("AUTO_SAVINGS_UPTIME_FLOOR_SECONDS", 62),
-            max_intent_hold_ticks=_int("AUTO_SAVINGS_MAX_INTENT_HOLD_TICKS", 8),
-            orphan_grace_seconds=_int("AUTO_SAVINGS_ORPHAN_GRACE_SECONDS", 120),
             tenant_refresh_seconds=_int("AUTO_SAVINGS_TENANT_REFRESH_SECONDS", 30),
             num_replicas=_int("AUTO_SAVINGS_NUM_REPLICAS", 1),
             replica_index=_int("AUTO_SAVINGS_REPLICA_INDEX", 0),

@@ -6,6 +6,7 @@ Branches run independently: a branch whose table does not exist or is not
 authorized for the account is skipped, and the rest still load. A single static
 UNION cannot do this, which is why the source is modeled as branch queries.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -141,7 +142,10 @@ def fetch_ai_consumption_daily(
     partial/empty success. Rows are returned in deterministic branch order.
     """
     bind_params = {"window_days": window_days}
-    jobs = [SourceJob(branch.id, branch.sql, bind_params) for branch in AI_CONSUMPTION_BRANCHES]
+    jobs = [
+        SourceJob(branch.id, branch.sql, bind_params)
+        for branch in AI_CONSUMPTION_BRANCHES
+    ]
     outcomes = run_sources_parallel(
         jobs, execute, unavailable_exc=SnowflakeObjectUnavailableError
     )

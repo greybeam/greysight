@@ -1,6 +1,6 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import gc
 import threading
 
@@ -8,6 +8,8 @@ import pytest
 
 import auto_savings.tenant_loop as tenant_loop_mod
 from auto_savings.config import WorkerConfig
+from auto_savings.engine import CycleResult
+from auto_savings.snowflake_session import SuspendOutcome, SuspendResult
 from auto_savings.store import EnrollmentRow, InMemoryStore, SettingsRow
 from auto_savings.tenant_loop import run_tenant_once, supervisor, tenant_loop
 
@@ -20,15 +22,16 @@ class FakeSession:
         self._rows = rows or []
         self._raise = raise_exc
         self.closed = False
-        self.alters = []
+        self.suspends = []
 
     def show_warehouses(self):
         if self._raise:
             raise self._raise
         return self._rows
 
-    def alter_auto_suspend(self, name, value):
-        self.alters.append((name, value))
+    def suspend_warehouse(self, name):
+        self.suspends.append(name)
+        return SuspendResult(SuspendOutcome.ACCEPTED)
 
     def close_hard(self):
         self.closed = True
@@ -37,22 +40,55 @@ class FakeSession:
 @pytest.mark.asyncio
 async def test_successful_tick_runs_cycle():
     store = InMemoryStore()
-    store.seed_settings(SettingsRow(organization_id="org-1", agreed_at=NOW,
-                                    global_enabled=True, grant_present=True,
-                                    grant_checked_at=NOW))
-    store.seed_enrollment(EnrollmentRow(
-        organization_id="org-1", warehouse_name="WH1", enabled=True,
-        managed_auto_suspend=300, stored_default_auto_suspend=300,
-        warehouse_created_on=NOW, cooldown_ts=None, drift_state="ok", drifted_value=None))
-    rows = [{"name": "WH1", "state": "STARTED", "type": "STANDARD",
-             "started_clusters": 1, "min_cluster_count": 1, "max_cluster_count": 1,
-             "running": 0, "queued": 0, "auto_suspend": 300, "auto_resume": "true",
-             "resumed_on": NOW.replace(hour=11, minute=58)}]
+    store.seed_settings(
+        SettingsRow(
+            organization_id="org-1",
+            agreed_at=NOW,
+            global_enabled=True,
+            grant_present=True,
+            grant_checked_at=NOW,
+        )
+    )
+    store.seed_enrollment(
+        EnrollmentRow(
+            organization_id="org-1",
+            warehouse_name="WH1",
+            enabled=True,
+            warehouse_created_on=NOW - timedelta(days=1),
+            updated_at=NOW - timedelta(minutes=1),
+        )
+    )
+    rows = [
+        {
+            "name": "WH1",
+            "state": "STARTED",
+            "type": "STANDARD",
+            "started_clusters": 1,
+            "min_cluster_count": 1,
+            "max_cluster_count": 1,
+            "running": 0,
+            "queued": 0,
+            "quiescing": 0,
+            "auto_suspend": 300,
+            "auto_resume": "true",
+            "resumed_on": NOW.replace(hour=11, minute=58),
+            "created_on": NOW - timedelta(days=1),
+        }
+    ]
     session = FakeSession(rows=rows)
     with ThreadPoolExecutor(max_workers=1) as executor:
-        await run_tenant_once("org-1", session=session, store=store, config=CONFIG,
-                              executor=executor, now_fn=lambda: NOW)
-    assert session.alters == [("WH1", 1)]
+        result = await run_tenant_once(
+            "org-1",
+            session=session,
+            store=store,
+            config=CONFIG,
+            executor=executor,
+            now_fn=lambda: NOW,
+            unknown_attempts={},
+            lock=asyncio.Lock(),
+        )
+    assert result is CycleResult.NORMAL
+    assert session.suspends == ["WH1"]
 
 
 @pytest.mark.asyncio
@@ -60,8 +96,16 @@ async def test_wedged_session_is_force_closed():
     session = FakeSession(raise_exc=RuntimeError("boom"))
     with ThreadPoolExecutor(max_workers=1) as executor:
         with pytest.raises(RuntimeError):
-            await run_tenant_once("org-1", session=session, store=InMemoryStore(),
-                                  config=CONFIG, executor=executor, now_fn=lambda: NOW)
+            await run_tenant_once(
+                "org-1",
+                session=session,
+                store=InMemoryStore(),
+                config=CONFIG,
+                executor=executor,
+                now_fn=lambda: NOW,
+                unknown_attempts={},
+                lock=asyncio.Lock(),
+            )
     assert session.closed is True
 
 
@@ -88,13 +132,25 @@ async def test_timed_out_tick_drains_abandoned_thread_before_returning():
             super().close_hard()
             self._release.set()  # socket close frees the blocked recv
 
-    cfg = WorkerConfig(supabase_url="u", supabase_service_role_key="k",
-                       poll_timeout_seconds=0.2, socket_timeout_seconds=0.05)
+    cfg = WorkerConfig(
+        supabase_url="u",
+        supabase_service_role_key="k",
+        poll_timeout_seconds=0.2,
+        socket_timeout_seconds=0.05,
+    )
     session = DrainProbe()
     with ThreadPoolExecutor(max_workers=1) as executor:
         with pytest.raises((asyncio.TimeoutError, TimeoutError)):
-            await run_tenant_once("org-1", session=session, store=InMemoryStore(),
-                                  config=cfg, executor=executor, now_fn=lambda: NOW)
+            await run_tenant_once(
+                "org-1",
+                session=session,
+                store=InMemoryStore(),
+                config=cfg,
+                executor=executor,
+                now_fn=lambda: NOW,
+                unknown_attempts={},
+                lock=asyncio.Lock(),
+            )
     # Drained: the abandoned thread ran to completion before we returned. Without
     # the drain, finished could still be unset here (thread still running).
     assert session.finished.is_set() is True
@@ -139,6 +195,8 @@ async def test_timed_out_tick_consumes_released_worker_exception():
                     config=cfg,
                     executor=executor,
                     now_fn=lambda: NOW,
+                    unknown_attempts={},
+                    lock=asyncio.Lock(),
                 )
         gc.collect()
         await asyncio.sleep(0)
@@ -197,6 +255,8 @@ async def test_timed_out_queued_tick_is_cancelled_before_it_can_run(monkeypatch)
                 config=cfg,
                 executor=executor,
                 now_fn=lambda: NOW,
+                unknown_attempts={},
+                lock=asyncio.Lock(),
             )
         release_blocker.set()
         blocker.result(timeout=1)
@@ -234,9 +294,14 @@ async def _run_loop(session, *, stop_after, jitter=lambda: 1.0, store=None):
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         await tenant_loop(
-            "org-1", session=session,
-            store=store if store is not None else InMemoryStore(), config=CONFIG,
-            executor=executor, sleep=fake_sleep, stop=stop, now_fn=lambda: NOW,
+            "org-1",
+            session=session,
+            store=store if store is not None else InMemoryStore(),
+            config=CONFIG,
+            executor=executor,
+            sleep=fake_sleep,
+            stop=stop,
+            now_fn=lambda: NOW,
             jitter=jitter,
         )
     return sleeps
@@ -247,6 +312,42 @@ async def test_loop_failure_sleeps_backoff_and_increments():
     # jitter=1.0 → next_backoff(0)=0.5, next_backoff(1)=1.0 (increments each fail).
     sleeps = await _run_loop(ScriptedSession(["fail", "fail"]), stop_after=2)
     assert sleeps == [0.5, 1.0]
+
+
+@pytest.mark.asyncio
+async def test_loop_reconnects_on_tick_after_actual_failure(monkeypatch):
+    class RecoveringSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.show_calls = 0
+            self.close_calls = 0
+            self.reconnects = 0
+
+        def show_warehouses(self):
+            self.show_calls += 1
+            if self.show_calls == 1:
+                raise RuntimeError("lost connection")
+            if self.closed:
+                self.reconnects += 1
+                self.closed = False
+            return []
+
+        def close_hard(self):
+            self.close_calls += 1
+            super().close_hard()
+
+    monkeypatch.setattr(
+        tenant_loop_mod,
+        "run_cycle",
+        lambda *_args, **_kwargs: CycleResult.NORMAL,
+    )
+    session = RecoveringSession()
+
+    await _run_loop(session, stop_after=2, jitter=lambda: 1.0)
+
+    assert session.show_calls == 2
+    assert session.close_calls == 2
+    assert session.reconnects == 1
 
 
 @pytest.mark.asyncio
@@ -261,28 +362,38 @@ async def test_loop_success_sleeps_interval_and_resets_backoff():
     assert sleeps == [0.25, CONFIG.poll_interval_seconds, 0.25]
 
 
-def _idle_sentinel_rows():
-    # STARTED & idle & live==1 with resumed_on matching the seeded baseline → HELD,
-    # so the intent survives the cycle and run_cycle reports intents outstanding.
-    return [{"name": "WH1", "state": "STARTED", "type": "STANDARD",
-             "started_clusters": 1, "min_cluster_count": 1, "max_cluster_count": 1,
-             "running": 0, "queued": 0, "auto_suspend": 1, "auto_resume": "true",
-             "resumed_on": NOW.replace(hour=11, minute=59)}]
+@pytest.mark.asyncio
+async def test_retry_result_uses_backoff_without_closing_session(monkeypatch):
+    results = iter([CycleResult.RETRY_BACKOFF, CycleResult.RETRY_BACKOFF])
+    monkeypatch.setattr(
+        tenant_loop_mod,
+        "run_cycle",
+        lambda *_args, **_kwargs: next(results),
+    )
+    session = FakeSession()
+
+    sleeps = await _run_loop(session, stop_after=2, jitter=lambda: 1.0)
+
+    assert sleeps == [0.5, 1.0]
+    assert session.closed is False
 
 
 @pytest.mark.asyncio
-async def test_success_fast_polls_while_intent_outstanding():
-    store = InMemoryStore()
-    store.seed_enrollment(EnrollmentRow(
-        organization_id="org-1", warehouse_name="WH1", enabled=True,
-        managed_auto_suspend=300, stored_default_auto_suspend=300,
-        warehouse_created_on=NOW, cooldown_ts=None, drift_state="ok", drifted_value=None))
-    store.write_intent("org-1", "WH1", restore_to=300, set_at=NOW,
-                       baseline_resumed_on=NOW.replace(hour=11, minute=59))
-    session = FakeSession(rows=_idle_sentinel_rows())
-    # jitter=0.5 → factor exactly 1.0, so sleep == intent_poll_interval_seconds.
-    sleeps = await _run_loop(session, stop_after=1, jitter=lambda: 0.5, store=store)
-    assert sleeps == [CONFIG.intent_poll_interval_seconds]
+async def test_loop_reuses_one_unknown_attempt_map_across_cycles(monkeypatch):
+    seen: list[dict[str, str]] = []
+
+    def capture_map(*_args, unknown_attempts, **_kwargs):
+        seen.append(unknown_attempts)
+        unknown_attempts.setdefault("WH1", "attempt-1")
+        return CycleResult.NORMAL
+
+    monkeypatch.setattr(tenant_loop_mod, "run_cycle", capture_map)
+
+    await _run_loop(FakeSession(), stop_after=2, jitter=lambda: 0.5)
+
+    assert len(seen) == 2
+    assert seen[0] is seen[1]
+    assert seen[1] == {"WH1": "attempt-1"}
 
 
 @pytest.mark.asyncio
@@ -346,8 +457,14 @@ async def test_supervisor_starts_newcomers_and_drains_vanished(stub_tenant_loop)
             stop.set()
 
     with ThreadPoolExecutor(max_workers=1) as executor:
-        await supervisor(store=store, config=CONFIG, executor=executor,
-                         session_factory=factory, sleep=fake_sleep, stop=stop)
+        await supervisor(
+            store=store,
+            config=CONFIG,
+            executor=executor,
+            session_factory=factory,
+            sleep=fake_sleep,
+            stop=stop,
+        )
 
     assert stub_tenant_loop == ["org-1"]
     assert sessions["org-1"].closed is True
@@ -372,10 +489,18 @@ async def test_supervisor_isolates_a_failing_session_factory(stub_tenant_loop):
         stop.set()
 
     with ThreadPoolExecutor(max_workers=1) as executor:
-        await supervisor(store=store, config=CONFIG, executor=executor,
-                         session_factory=factory, sleep=fake_sleep, stop=stop)
+        await supervisor(
+            store=store,
+            config=CONFIG,
+            executor=executor,
+            session_factory=factory,
+            sleep=fake_sleep,
+            stop=stop,
+        )
 
-    assert stub_tenant_loop == ["org-good"]  # good tenant started despite bad one failing
+    assert stub_tenant_loop == [
+        "org-good"
+    ]  # good tenant started despite bad one failing
     assert "org-bad" not in sessions
 
 
@@ -403,9 +528,15 @@ async def test_supervisor_keeps_session_when_fingerprint_unchanged(stub_tenant_l
             stop.set()
 
     with ThreadPoolExecutor(max_workers=1) as executor:
-        await supervisor(store=store, config=CONFIG, executor=executor,
-                         session_factory=factory, fingerprint_fn=fingerprint,
-                         sleep=fake_sleep, stop=stop)
+        await supervisor(
+            store=store,
+            config=CONFIG,
+            executor=executor,
+            session_factory=factory,
+            fingerprint_fn=fingerprint,
+            sleep=fake_sleep,
+            stop=stop,
+        )
 
     assert len(sessions) == 1  # never recreated across refreshes
     assert sessions[0].closed is True  # closed only on shutdown drain
@@ -437,9 +568,15 @@ async def test_supervisor_recycles_session_when_fingerprint_changes(stub_tenant_
             stop.set()
 
     with ThreadPoolExecutor(max_workers=1) as executor:
-        await supervisor(store=store, config=CONFIG, executor=executor,
-                         session_factory=factory, fingerprint_fn=fingerprint,
-                         sleep=fake_sleep, stop=stop)
+        await supervisor(
+            store=store,
+            config=CONFIG,
+            executor=executor,
+            session_factory=factory,
+            fingerprint_fn=fingerprint,
+            sleep=fake_sleep,
+            stop=stop,
+        )
 
     assert len(sessions) == 2  # old recycled, new created
     assert sessions[0].closed is True  # old session closed on recycle
@@ -477,16 +614,22 @@ async def test_supervisor_drops_session_when_connection_disappears(stub_tenant_l
             stop.set()
 
     with ThreadPoolExecutor(max_workers=1) as executor:
-        await supervisor(store=store, config=CONFIG, executor=executor,
-                         session_factory=factory, fingerprint_fn=fingerprint,
-                         sleep=fake_sleep, stop=stop)
+        await supervisor(
+            store=store,
+            config=CONFIG,
+            executor=executor,
+            session_factory=factory,
+            fingerprint_fn=fingerprint,
+            sleep=fake_sleep,
+            stop=stop,
+        )
 
     assert len(sessions) == 1  # never re-created while connection stays gone
     assert sessions[0].closed is True  # dropped/closed on the revalidation pass
 
 
 @pytest.mark.asyncio
-async def test_supervisor_restarts_crashed_task(monkeypatch):
+async def test_supervisor_restarts_crashed_task(monkeypatch, caplog):
     # #12b: a tenant loop task that exits unexpectedly must be detected (.done())
     # and restarted so the tenant does not silently go dark.
     starts: list[str] = []
@@ -519,12 +662,27 @@ async def test_supervisor_restarts_crashed_task(monkeypatch):
             stop.set()
 
     with ThreadPoolExecutor(max_workers=1) as executor:
-        await supervisor(store=store, config=CONFIG, executor=executor,
-                         session_factory=factory, sleep=fake_sleep, stop=stop)
+        await supervisor(
+            store=store,
+            config=CONFIG,
+            executor=executor,
+            session_factory=factory,
+            sleep=fake_sleep,
+            stop=stop,
+        )
 
     assert starts == ["org-1", "org-1"]  # crashed loop detected + restarted
     assert len(sessions) == 2
     assert sessions[0].closed is True  # crashed session closed on restart
+    crash_records = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "tenant_loop_crashed"
+    ]
+    assert len(crash_records) == 1
+    assert crash_records[0].organization_id == "org-1"
+    assert crash_records[0].error_type == "RuntimeError"
+    assert crash_records[0].exc_info is None
 
 
 @pytest.mark.asyncio
@@ -554,15 +712,23 @@ async def test_drain_awaits_bounded_store_call_to_completion():
     # out, close_hard() runs (does not free the store call), then the guaranteed
     # drain must wait for the store timeout at 0.4 and the tick to finish.
     cfg = WorkerConfig(
-        supabase_url="u", supabase_service_role_key="k",
-        poll_timeout_seconds=0.2, socket_timeout_seconds=0.05,
+        supabase_url="u",
+        supabase_service_role_key="k",
+        poll_timeout_seconds=0.2,
+        socket_timeout_seconds=0.05,
     )
     session = FakeSession(rows=[])
     with ThreadPoolExecutor(max_workers=1) as executor:
         with pytest.raises((asyncio.TimeoutError, TimeoutError)):
             await run_tenant_once(
-                "org-1", session=session, store=BoundedStore(),
-                config=cfg, executor=executor, now_fn=lambda: NOW,
+                "org-1",
+                session=session,
+                store=BoundedStore(),
+                config=cfg,
+                executor=executor,
+                now_fn=lambda: NOW,
+                unknown_attempts={},
+                lock=asyncio.Lock(),
             )
     # The abandoned thread ran to completion BEFORE run_tenant_once returned:
     # without the guaranteed drain, tick_finished could still be unset here.
@@ -603,9 +769,15 @@ async def test_supervisor_keeps_session_on_transient_revalidation_error(
             stop.set()
 
     with ThreadPoolExecutor(max_workers=1) as executor:
-        await supervisor(store=store, config=CONFIG, executor=executor,
-                         session_factory=factory, fingerprint_fn=fingerprint,
-                         sleep=fake_sleep, stop=stop)
+        await supervisor(
+            store=store,
+            config=CONFIG,
+            executor=executor,
+            session_factory=factory,
+            fingerprint_fn=fingerprint,
+            sleep=fake_sleep,
+            stop=stop,
+        )
 
     assert len(sessions) == 1  # kept across the transient blip, never recreated
     assert sessions[0].closed is True  # closed only on the shutdown drain
@@ -641,9 +813,15 @@ async def test_start_uses_single_resolve_for_session_and_fingerprint(
             stop.set()
 
     with ThreadPoolExecutor(max_workers=1) as executor:
-        await supervisor(store=store, config=CONFIG, executor=executor,
-                         session_factory=factory, fingerprint_fn=fingerprint,
-                         sleep=fake_sleep, stop=stop)
+        await supervisor(
+            store=store,
+            config=CONFIG,
+            executor=executor,
+            session_factory=factory,
+            fingerprint_fn=fingerprint,
+            sleep=fake_sleep,
+            stop=stop,
+        )
 
     assert resolves["n"] == 1  # session built from EXACTLY one resolve
     assert len(sessions) == 1  # fingerprint consistent → never recycled
@@ -675,10 +853,424 @@ async def test_revalidation_runs_off_the_event_loop_thread(stub_tenant_loop):
             stop.set()
 
     with ThreadPoolExecutor(max_workers=1) as executor:
-        await supervisor(store=_ScriptedStore({"tenants": {"org-1"}}),
-                         config=CONFIG, executor=executor,
-                         session_factory=factory, fingerprint_fn=fingerprint,
-                         sleep=fake_sleep, stop=stop)
+        await supervisor(
+            store=_ScriptedStore({"tenants": {"org-1"}}),
+            config=CONFIG,
+            executor=executor,
+            session_factory=factory,
+            fingerprint_fn=fingerprint,
+            sleep=fake_sleep,
+            stop=stop,
+        )
 
     assert "thread" in seen  # revalidation actually ran
     assert seen["thread"] != loop_thread  # ...off the event loop, on the executor
+
+
+@pytest.mark.asyncio
+async def test_timeout_closes_connection_reopened_after_store_stall(monkeypatch):
+    release_store = threading.Event()
+
+    class StallingStore(InMemoryStore):
+        def wait_for_store(self):
+            threading.Timer(0.1, release_store.set).start()
+            release_store.wait(5)
+
+    class ReopeningSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.connected = False
+            self.connect_count = 0
+            self.close_count = 0
+
+        def _ensure_connected(self):
+            if not self.connected:
+                self.connected = True
+                self.connect_count += 1
+
+        def show_warehouses(self):
+            self._ensure_connected()
+            return []
+
+        def suspend_warehouse(self, name):
+            self._ensure_connected()
+            return super().suspend_warehouse(name)
+
+        def close_hard(self):
+            self.close_count += 1
+            self.connected = False
+
+    def stalled_cycle(*_args, store, suspend, **_kwargs):
+        store.wait_for_store()
+        suspend("WH1")
+        return CycleResult.NORMAL
+
+    monkeypatch.setattr(tenant_loop_mod, "run_cycle", stalled_cycle)
+    cfg = WorkerConfig(
+        supabase_url="u",
+        supabase_service_role_key="k",
+        poll_timeout_seconds=0.05,
+        socket_timeout_seconds=0.01,
+    )
+    session = ReopeningSession()
+    lock = asyncio.Lock()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with pytest.raises((asyncio.TimeoutError, TimeoutError)):
+            await run_tenant_once(
+                "org-1",
+                session=session,
+                store=StallingStore(),
+                config=cfg,
+                executor=executor,
+                now_fn=lambda: NOW,
+                unknown_attempts={},
+                lock=lock,
+            )
+
+        assert session.suspends == ["WH1"]
+        assert session.connected is False
+        assert session.close_count == 2
+
+        monkeypatch.setattr(
+            tenant_loop_mod,
+            "run_cycle",
+            lambda *_args, **_kwargs: CycleResult.NORMAL,
+        )
+        await run_tenant_once(
+            "org-1",
+            session=session,
+            store=InMemoryStore(),
+            config=cfg,
+            executor=executor,
+            now_fn=lambda: NOW,
+            unknown_attempts={},
+            lock=lock,
+        )
+
+    assert session.connect_count == 3
+
+
+@pytest.mark.parametrize("result", [CycleResult.NORMAL, CycleResult.RETRY_BACKOFF])
+@pytest.mark.asyncio
+async def test_tenant_stop_interrupts_cadence_wait(monkeypatch, result):
+    sleep_started = asyncio.Event()
+    never = asyncio.Event()
+
+    async def blocking_sleep(_delay):
+        sleep_started.set()
+        await never.wait()
+
+    monkeypatch.setattr(
+        tenant_loop_mod,
+        "run_cycle",
+        lambda *_args, **_kwargs: result,
+    )
+    stop = asyncio.Event()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        task = asyncio.create_task(
+            tenant_loop(
+                "org-1",
+                session=FakeSession(),
+                store=InMemoryStore(),
+                config=CONFIG,
+                executor=executor,
+                sleep=blocking_sleep,
+                stop=stop,
+            )
+        )
+        await asyncio.wait_for(sleep_started.wait(), timeout=1)
+        stop.set()
+        await asyncio.wait_for(task, timeout=0.2)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_signals_all_tenants_before_concurrent_drain(monkeypatch):
+    signaled: set[str] = set()
+
+    async def wait_for_all_stops(
+        org_id, *, session, store, config, executor, sleep, stop
+    ):
+        await stop.wait()
+        signaled.add(org_id)
+        while len(signaled) < 2:
+            await asyncio.sleep(0)
+
+    monkeypatch.setattr(tenant_loop_mod, "tenant_loop", wait_for_all_stops)
+    stop = asyncio.Event()
+
+    async def stop_supervisor(_delay):
+        stop.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        await asyncio.wait_for(
+            supervisor(
+                store=_ScriptedStore({"tenants": {"org-1", "org-2"}}),
+                config=CONFIG,
+                executor=executor,
+                session_factory=lambda _org_id: (DrainableSession(), None),
+                sleep=stop_supervisor,
+                stop=stop,
+            ),
+            timeout=0.2,
+        )
+
+    assert signaled == {"org-1", "org-2"}
+
+
+@pytest.mark.asyncio
+async def test_removal_signals_all_vanished_tenants_before_concurrent_drain(
+    monkeypatch,
+):
+    signaled: set[str] = set()
+
+    async def wait_for_all_stops(
+        org_id, *, session, store, config, executor, sleep, stop
+    ):
+        await stop.wait()
+        signaled.add(org_id)
+        while len(signaled) < 2:
+            await asyncio.sleep(0)
+
+    monkeypatch.setattr(tenant_loop_mod, "tenant_loop", wait_for_all_stops)
+    state = {"tenants": {"org-1", "org-2"}}
+    stop = asyncio.Event()
+    sleeps = 0
+
+    async def advance_supervisor(_delay):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 1:
+            state["tenants"] = set()
+        else:
+            stop.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        await asyncio.wait_for(
+            supervisor(
+                store=_ScriptedStore(state),
+                config=CONFIG,
+                executor=executor,
+                session_factory=lambda _org_id: (DrainableSession(), None),
+                sleep=advance_supervisor,
+                stop=stop,
+            ),
+            timeout=0.2,
+        )
+
+    assert signaled == {"org-1", "org-2"}
+
+
+@pytest.mark.asyncio
+async def test_wait_or_stop_cancellation_drains_internal_tasks():
+    sleep_started = asyncio.Event()
+    release_sleep = asyncio.Event()
+    stop = asyncio.Event()
+
+    async def blocking_sleep(_delay):
+        sleep_started.set()
+        await release_sleep.wait()
+
+    baseline = set(asyncio.all_tasks())
+    waiter = asyncio.create_task(
+        tenant_loop_mod._wait_or_stop(stop, 30, blocking_sleep)
+    )
+    await asyncio.wait_for(sleep_started.wait(), timeout=1)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    await asyncio.sleep(0)
+
+    leaked = {
+        task
+        for task in asyncio.all_tasks() - baseline
+        if task is not asyncio.current_task() and not task.done()
+    }
+    try:
+        assert leaked == set()
+    finally:
+        release_sleep.set()
+        stop.set()
+        await asyncio.gather(*leaked, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_wait_or_stop_propagates_completed_sleep_error():
+    class SleepFailure(RuntimeError):
+        pass
+
+    async def failing_sleep(_delay):
+        raise SleepFailure
+
+    with pytest.raises(SleepFailure):
+        await tenant_loop_mod._wait_or_stop(asyncio.Event(), 1, failing_sleep)
+
+
+@pytest.mark.asyncio
+async def test_tick_failure_logs_sanitized_backoff_context(caplog):
+    caplog.set_level("WARNING")
+
+    await _run_loop(
+        ScriptedSession(["fail"]),
+        stop_after=1,
+        jitter=lambda: 1.0,
+    )
+
+    records = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "tenant_tick_backoff"
+    ]
+    assert len(records) == 1
+    assert records[0].organization_id == "org-1"
+    assert records[0].attempt == 0
+    assert records[0].error_type == "RuntimeError"
+    assert records[0].exc_info is None
+
+
+@pytest.mark.asyncio
+async def test_tenant_enumeration_failure_logs_sanitized_context(caplog):
+    class FailingStore:
+        def worker_tenants(self):
+            raise RuntimeError("secret response body")
+
+    caplog.set_level("WARNING")
+    stop = asyncio.Event()
+
+    async def stop_supervisor(_delay):
+        stop.set()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        await supervisor(
+            store=FailingStore(),
+            config=CONFIG,
+            executor=executor,
+            session_factory=lambda _org_id: (DrainableSession(), None),
+            sleep=stop_supervisor,
+            stop=stop,
+        )
+
+    records = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "tenant_enumeration_failed"
+    ]
+    assert len(records) == 1
+    assert records[0].error_type == "RuntimeError"
+    assert records[0].exc_info is None
+    assert "secret response body" not in records[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_tenant_enumeration_runs_on_executor_thread():
+    loop_thread = threading.get_ident()
+    seen: dict[str, int] = {}
+
+    class TrackingStore:
+        def worker_tenants(self):
+            seen["thread"] = threading.get_ident()
+            return []
+
+    stop = asyncio.Event()
+
+    async def stop_supervisor(_delay):
+        stop.set()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        await supervisor(
+            store=TrackingStore(),
+            config=CONFIG,
+            executor=executor,
+            session_factory=lambda _org_id: (DrainableSession(), None),
+            sleep=stop_supervisor,
+            stop=stop,
+        )
+
+    assert seen["thread"] != loop_thread
+
+
+@pytest.mark.asyncio
+async def test_session_factory_runs_on_executor_thread(stub_tenant_loop):
+    loop_thread = threading.get_ident()
+    seen: dict[str, int] = {}
+    stop = asyncio.Event()
+
+    def factory(_org_id):
+        seen["thread"] = threading.get_ident()
+        return DrainableSession(), None
+
+    async def stop_supervisor(_delay):
+        stop.set()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        await supervisor(
+            store=_ScriptedStore({"tenants": {"org-1"}}),
+            config=CONFIG,
+            executor=executor,
+            session_factory=factory,
+            sleep=stop_supervisor,
+            stop=stop,
+        )
+
+    assert seen["thread"] != loop_thread
+
+
+def test_tenant_lock_registry_does_not_accumulate_organization_ids():
+    assert not hasattr(tenant_loop_mod, "_locks")
+
+
+@pytest.mark.asyncio
+async def test_shared_tenant_lock_prevents_overlapping_ticks(monkeypatch):
+    first_started = threading.Event()
+    release_first = threading.Event()
+
+    class SerializedSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.show_calls = 0
+
+        def show_warehouses(self):
+            self.show_calls += 1
+            if self.show_calls == 1:
+                first_started.set()
+                release_first.wait(5)
+            return []
+
+    monkeypatch.setattr(
+        tenant_loop_mod,
+        "run_cycle",
+        lambda *_args, **_kwargs: CycleResult.NORMAL,
+    )
+    session = SerializedSession()
+    lock = asyncio.Lock()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = asyncio.create_task(
+            run_tenant_once(
+                "org-1",
+                session=session,
+                store=InMemoryStore(),
+                config=CONFIG,
+                executor=executor,
+                now_fn=lambda: NOW,
+                unknown_attempts={},
+                lock=lock,
+            )
+        )
+        assert await asyncio.to_thread(first_started.wait, 1)
+        second = asyncio.create_task(
+            run_tenant_once(
+                "org-1",
+                session=session,
+                store=InMemoryStore(),
+                config=CONFIG,
+                executor=executor,
+                now_fn=lambda: NOW,
+                unknown_attempts={},
+                lock=lock,
+            )
+        )
+        await asyncio.sleep(0.05)
+        assert session.show_calls == 1
+        release_first.set()
+        await asyncio.gather(first, second)
+
+    assert session.show_calls == 2

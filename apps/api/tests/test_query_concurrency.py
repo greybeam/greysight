@@ -18,10 +18,7 @@ def test_executor_respects_max_workers_cap():
         with lock:
             active -= 1
 
-    futures = [
-        query_concurrency.get_query_executor().submit(worker)
-        for _ in range(6)
-    ]
+    futures = [query_concurrency.get_query_executor().submit(worker) for _ in range(6)]
     for future in futures:
         future.result(timeout=2)
     assert peak <= 2

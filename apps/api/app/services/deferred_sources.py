@@ -4,6 +4,7 @@ A deferred source is fetched on demand via /api/dashboard-runs/{id}/sources/{id}
 instead of during the synchronous main run. Each entry knows how to fetch its
 rows (resilient) and how to build its view fragment from the run's datasets.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

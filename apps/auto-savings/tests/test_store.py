@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 
 import httpx
@@ -12,9 +12,11 @@ from auto_savings.store import (
     SettingsRow,
     StoreError,
     SupabaseStore,
+    _parse_enrollment,
 )
 
 NOW = datetime(2026, 7, 12, 12, 0, 0, tzinfo=timezone.utc)
+CREATED_ON = NOW - timedelta(days=1)
 
 
 def _config() -> WorkerConfig:
@@ -23,368 +25,452 @@ def _config() -> WorkerConfig:
     )
 
 
-def _enrollment_row(organization_id: str, warehouse_name: str, enabled: bool) -> EnrollmentRow:
+def _enrollment(
+    organization_id: str = "org-1", *, enabled: bool = True
+) -> EnrollmentRow:
     return EnrollmentRow(
         organization_id=organization_id,
-        warehouse_name=warehouse_name,
+        warehouse_name="WH1",
         enabled=enabled,
-        managed_auto_suspend=60,
-        stored_default_auto_suspend=300,
-        warehouse_created_on=NOW,
-        cooldown_ts=None,
-        drift_state="ok",
-        drifted_value=None,
+        warehouse_created_on=CREATED_ON,
+        updated_at=NOW,
     )
 
 
-def test_write_intent_resets_sentinel_confirmed_to_false():
-    # An upsert over a confirmed intent must NOT inherit stale confirmation: a fresh
-    # write starts a new, unconfirmed ownership claim (so a re-armed sentinel cannot
-    # be read as already-confirmed by the stale-SHOW that armed it).
+def _settings(
+    organization_id: str = "org-1", *, global_enabled: bool = True
+) -> SettingsRow:
+    return SettingsRow(
+        organization_id=organization_id,
+        agreed_at=NOW,
+        global_enabled=global_enabled,
+        grant_present=True,
+        grant_checked_at=NOW,
+    )
+
+
+def _direct_event() -> SavingsEvent:
+    return SavingsEvent(
+        organization_id="org-1",
+        warehouse_name="WH1",
+        action="suspend",
+        reason="idle",
+        observed_state="STARTED",
+        observed_running=0,
+        observed_queued=0,
+        observed_quiescing=0,
+        observed_resumed_on=CREATED_ON,
+        observed_started_clusters=1,
+        observed_min_cluster_count=None,
+        observed_max_cluster_count=3,
+        observed_at=NOW,
+    )
+
+
+def _seed_direct_store(
+    *, global_enabled: bool = True, enrollment_enabled: bool = True
+) -> InMemoryStore:
     store = InMemoryStore()
-    store.write_intent("org-1", "WH1", restore_to=300, cycle_id="c1")
-    store.confirm_sentinel("org-1", "WH1", "c1")
-    store.write_intent("org-1", "WH1", restore_to=300)
-    assert store.list_intents("org-1")[0].sentinel_confirmed is False
+    store.seed_settings(_settings(global_enabled=global_enabled))
+    store.seed_enrollment(_enrollment(enabled=enrollment_enabled))
+    return store
 
 
-@pytest.mark.parametrize(
-    ("kind", "cycle_id"),
-    [("sentinel", "replacement"), ("reapply", "c1")],
-)
-def test_in_memory_confirm_sentinel_rejects_replaced_or_non_sentinel_intent(
-    kind: str, cycle_id: str
-):
-    store = InMemoryStore()
-    store.write_intent(
-        "org-1", "WH1", restore_to=300, cycle_id=cycle_id, kind=kind
-    )
+def test_authorize_suspend_accepts_only_current_enabled_state():
+    store = _seed_direct_store()
 
-    with pytest.raises(StoreError):
-        store.confirm_sentinel("org-1", "WH1", "c1")
-
-
-def test_supabase_store_writes_complete_unconfirmed_intent_via_postgrest():
-    seen = {}
-    bodies = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["url"] = str(request.url)
-        seen["method"] = request.method
-        seen["auth"] = request.headers.get("authorization")
-        bodies.append(request.read().decode())
-        return httpx.Response(201, json=[])
-
-    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
-    store.write_intent(
-        "org-1", "WH1", restore_to=300, expected_from=300,
-        baseline_resumed_on=NOW, cycle_id="c1"
-    )
-    store.write_intent("org-1", "WH1", restore_to=300)
-
-    assert "automated_savings_restore_intents" in seen["url"]
-    assert seen["method"] == "POST"
-    assert seen["auth"] == "Bearer svc"
-    assert f'"baseline_resumed_on":"{NOW.isoformat()}"' in bodies[0]
-    assert '"expected_from":300' in bodies[0]
-    assert '"sentinel_confirmed":false' in bodies[0]
-    assert '"cycle_id":"c1"' in bodies[0]
-    assert '"baseline_resumed_on":null' in bodies[1]
-
-
-def test_supabase_store_confirm_sentinel_patches_restore_intent():
-    seen = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["url"] = str(request.url)
-        seen["method"] = request.method
-        seen["body"] = request.read().decode()
-        return httpx.Response(
-            200,
-            json=[
-                {
-                    "organization_id": "org-1",
-                    "warehouse_name": "WH1",
-                    "cycle_id": "c1",
-                    "kind": "sentinel",
-                    "sentinel_confirmed": True,
-                }
-            ],
+    assert (
+        store.authorize_suspend(
+            "org-1",
+            "WH1",
+            warehouse_created_on=CREATED_ON,
+            enrollment_updated_at=NOW,
         )
-
-    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
-    store.confirm_sentinel("org-1", "WH1", "c1")
-
-    assert "automated_savings_restore_intents" in seen["url"]
-    assert seen["method"] == "PATCH"
-    assert "organization_id=eq.org-1" in seen["url"]
-    assert "warehouse_name=eq.WH1" in seen["url"]
-    assert "cycle_id=eq.c1" in seen["url"]
-    assert "kind=eq.sentinel" in seen["url"]
-    assert '"sentinel_confirmed":true' in seen["body"]
-
-
-def test_supabase_store_delete_intent_is_cycle_and_kind_cas():
-    seen = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["url"] = str(request.url)
-        seen["prefer"] = request.headers.get("prefer")
-        return httpx.Response(200, json=[{
-            "organization_id": "org-1",
-            "warehouse_name": "WH1",
-            "cycle_id": "c1",
-            "kind": "sentinel",
-        }])
-
-    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
-
-    assert store.delete_intent("org-1", "WH1", "c1", "sentinel") is True
-    assert "cycle_id=eq.c1" in seen["url"]
-    assert "kind=eq.sentinel" in seen["url"]
-    assert seen["prefer"] == "return=representation"
-
-
-@pytest.mark.parametrize(("response", "expected"), [(True, True), (False, False)])
-def test_supabase_store_cleanup_uses_atomic_rpc(response, expected):
-    seen = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["url"] = str(request.url)
-        seen["body"] = request.read().decode()
-        return httpx.Response(200, json=response)
-
-    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
-    result = store.cleanup_intent_and_enrollment(
-        "org-1", "WH1", "c1", "sentinel"
+        is True
     )
-
-    assert result is expected
-    assert "rpc/automated_savings_cleanup_intent" in seen["url"]
-    body = json.loads(seen["body"])
-    assert body == {
-        "p_organization_id": "org-1",
-        "p_warehouse_name": "WH1",
-        "p_cycle_id": "c1",
-        "p_kind": "sentinel",
-    }
-
-
-@pytest.mark.parametrize(("response", "expected"), [(True, True), (False, False)])
-def test_supabase_store_no_intent_cleanup_uses_locking_rpc(response, expected):
-    seen = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["url"] = str(request.url)
-        seen["body"] = request.read().decode()
-        return httpx.Response(200, json=response)
-
-    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
-    result = store.cleanup_enrollment_if_no_intent("org-1", "WH1")
-
-    assert result is expected
-    assert "rpc/automated_savings_cleanup_enrollment_if_no_intent" in seen["url"]
-    assert json.loads(seen["body"]) == {
-        "p_organization_id": "org-1",
-        "p_warehouse_name": "WH1",
-    }
 
 
 @pytest.mark.parametrize(
-    "response_json",
+    ("change", "created_on", "updated_at"),
     [
-        [],
-        {},
-        [
-            {
-                "organization_id": "org-1",
-                "warehouse_name": "WH1",
-                "cycle_id": "replacement",
-                "kind": "sentinel",
-                "sentinel_confirmed": True,
-            }
-        ],
-        [
-            {
-                "organization_id": "org-1",
-                "warehouse_name": "WH1",
-                "cycle_id": "c1",
-                "kind": "reapply",
-                "sentinel_confirmed": True,
-            }
-        ],
-        [
-            {
-                "organization_id": "org-1",
-                "warehouse_name": "WH1",
-                "cycle_id": "c1",
-                "kind": "sentinel",
-                "sentinel_confirmed": True,
-            },
-            {
-                "organization_id": "org-1",
-                "warehouse_name": "WH1",
-                "cycle_id": "c1",
-                "kind": "sentinel",
-                "sentinel_confirmed": True,
-            },
-        ],
+        ("kill-switch", CREATED_ON, NOW),
+        ("disabled", CREATED_ON, NOW),
+        ("identity", CREATED_ON + timedelta(seconds=1), NOW),
+        ("version", CREATED_ON, NOW + timedelta(seconds=1)),
+    ],
+    ids=["kill-switch", "disabled", "identity", "version"],
+)
+def test_authorize_suspend_rejects_stale_or_disabled_state(
+    change: str, created_on: datetime, updated_at: datetime
+):
+    store = _seed_direct_store(
+        global_enabled=change != "kill-switch",
+        enrollment_enabled=change != "disabled",
+    )
+    assert (
+        store.authorize_suspend(
+            "org-1",
+            "WH1",
+            warehouse_created_on=created_on,
+            enrollment_updated_at=updated_at,
+        )
+        is False
+    )
+
+
+def test_delete_stale_enrollment_requires_exact_identity_and_version():
+    store = _seed_direct_store()
+
+    assert (
+        store.delete_stale_enrollment(
+            "org-1",
+            "WH1",
+            warehouse_created_on=CREATED_ON,
+            enrollment_updated_at=NOW + timedelta(seconds=1),
+        )
+        is False
+    )
+    assert store.list_enrollments("org-1") == [_enrollment()]
+    assert (
+        store.delete_stale_enrollment(
+            "org-1",
+            "WH1",
+            warehouse_created_on=CREATED_ON,
+            enrollment_updated_at=NOW,
+        )
+        is True
+    )
+    assert store.list_enrollments("org-1") == []
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "response", "expected"),
+    [
+        (
+            "authorize_suspend",
+            "automated_savings_authorize_suspend",
+            True,
+            True,
+        ),
+        (
+            "authorize_suspend",
+            "automated_savings_authorize_suspend",
+            False,
+            False,
+        ),
+        (
+            "delete_stale_enrollment",
+            "automated_savings_delete_stale_enrollment",
+            True,
+            True,
+        ),
+        (
+            "delete_stale_enrollment",
+            "automated_savings_delete_stale_enrollment",
+            False,
+            False,
+        ),
     ],
 )
-def test_supabase_store_confirm_sentinel_requires_exactly_one_matching_row(
-    response_json: object,
+def test_supabase_store_calls_direct_state_rpc(
+    method: str, path: str, response: bool, expected: bool
 ):
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=response_json)
-
-    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
-
-    with pytest.raises(StoreError):
-        store.confirm_sentinel("org-1", "WH1", "c1")
-
-
-def test_supabase_store_list_intents_hydrates_ownership_fields():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json=[
-                {
-                    "organization_id": "org-1",
-                    "warehouse_name": "WH1",
-                    "restore_to": 300,
-                    "expected_from": 120,
-                    "set_at": NOW.isoformat(),
-                    "baseline_resumed_on": NOW.isoformat(),
-                    "cycle_id": "c1",
-                    "kind": "sentinel",
-                    "sentinel_confirmed": True,
-                }
-            ],
-        )
-
-    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
-    [intent] = store.list_intents("org-1")
-
-    assert intent.sentinel_confirmed is True
-    assert intent.expected_from == 120
-    assert intent.baseline_resumed_on == NOW
-    assert intent.cycle_id == "c1"
-
-
-def test_supabase_store_list_intents_defaults_sentinel_confirmed_false_when_absent():
-    # A pre-migration row (column absent) hydrates as unconfirmed, not an error.
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json=[
-                {
-                    "organization_id": "org-1",
-                    "warehouse_name": "WH1",
-                    "restore_to": 300,
-                    "set_at": NOW.isoformat(),
-                    "baseline_resumed_on": None,
-                    "cycle_id": "c1",
-                    "kind": "sentinel",
-                }
-            ],
-        )
-
-    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
-    [intent] = store.list_intents("org-1")
-
-    assert intent.sentinel_confirmed is False
-
-
-def test_supabase_store_record_event_posts_to_events_table():
-    seen = {}
+    seen: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen["url"] = str(request.url)
         seen["method"] = request.method
-        seen["body"] = request.read().decode()
+        seen["body"] = json.loads(request.read())
+        seen["authorization"] = request.headers.get("authorization")
+        return httpx.Response(200, json=response)
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+    result = getattr(store, method)(
+        "org-1",
+        "WH1",
+        warehouse_created_on=CREATED_ON,
+        enrollment_updated_at=NOW,
+    )
+
+    assert result is expected
+    assert path in str(seen["url"])
+    assert seen["method"] == "POST"
+    assert seen["authorization"] == "Bearer svc"
+    assert seen["body"] == {
+        "p_organization_id": "org-1",
+        "p_warehouse_name": "WH1",
+        "p_warehouse_created_on": CREATED_ON.isoformat(),
+        "p_enrollment_updated_at": NOW.isoformat(),
+    }
+
+
+@pytest.mark.parametrize("response", [None, 1, "true", [], {}, [True]])
+@pytest.mark.parametrize("method", ["authorize_suspend", "delete_stale_enrollment"])
+def test_supabase_direct_state_rpc_rejects_non_boolean_response(
+    method: str, response: object
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=response)
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+
+    with pytest.raises(StoreError):
+        getattr(store, method)(
+            "org-1",
+            "WH1",
+            warehouse_created_on=CREATED_ON,
+            enrollment_updated_at=NOW,
+        )
+
+
+@pytest.mark.parametrize("method", ["authorize_suspend", "delete_stale_enrollment"])
+@pytest.mark.parametrize("failure", ["transport", "status", "json"])
+def test_supabase_direct_state_rpc_fails_safely(method: str, failure: str):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if failure == "transport":
+            raise httpx.ConnectError("offline", request=request)
+        if failure == "status":
+            return httpx.Response(503, json={"message": "unavailable"})
+        return httpx.Response(200, content=b"not-json")
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+
+    with pytest.raises(StoreError):
+        getattr(store, method)(
+            "org-1",
+            "WH1",
+            warehouse_created_on=CREATED_ON,
+            enrollment_updated_at=NOW,
+        )
+
+
+def test_supabase_rpc_status_error_has_safe_operation_context():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            503,
+            json={"message": "tenant-secret svc must not leak"},
+            request=request,
+        )
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+
+    with pytest.raises(StoreError) as raised:
+        store.authorize_suspend(
+            "org-1",
+            "WH1",
+            warehouse_created_on=CREATED_ON,
+            enrollment_updated_at=NOW,
+        )
+
+    message = str(raised.value)
+    assert message == "authorize suspend failed with HTTP 503"
+    assert "tenant-secret" not in message
+    assert "svc" not in message
+    assert "https://" not in message
+
+
+def test_supabase_rpc_malformed_result_describes_expected_and_actual_kind():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"secret": "tenant-secret"})
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+
+    with pytest.raises(StoreError) as raised:
+        store.delete_stale_enrollment(
+            "org-1",
+            "WH1",
+            warehouse_created_on=CREATED_ON,
+            enrollment_updated_at=NOW,
+        )
+
+    message = str(raised.value)
+    assert message == "delete stale enrollment expected boolean result, got object"
+    assert "tenant-secret" not in message
+
+
+@pytest.mark.parametrize(
+    ("response", "expected_message"),
+    [
+        ({}, "worker tenants expected list result, got object"),
+        (["org-1"], "worker tenants expected object at item 0, got string"),
+        (
+            [{"wrong": "org-1"}],
+            "worker tenants item 0 has invalid organization_id",
+        ),
+    ],
+)
+def test_supabase_worker_tenants_malformed_result_has_safe_shape_context(
+    response: object, expected_message: str
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=response)
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+
+    with pytest.raises(StoreError) as raised:
+        store.worker_tenants()
+
+    assert str(raised.value) == expected_message
+
+
+def test_direct_event_payload_omits_legacy_fields():
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.read())
         return httpx.Response(201, json=[])
 
     store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
-    store.record_event(
-        SavingsEvent(
-            organization_id="org-1", warehouse_name="WH1", action="restore",
-            reason="suspended", to_value=300, observed_at=NOW, from_value=1,
-            observed_state="SUSPENDED", cycle_id="c1",
-        )
-    )
+    store.record_event(_direct_event())
 
-    assert "automated_savings_events" in seen["url"]
-    assert seen["method"] == "POST"
-    assert '"reason":"suspended"' in seen["body"]
-    assert '"cycle_id":"c1"' in seen["body"]
+    assert "automated_savings_events" in str(seen["url"])
+    assert seen["body"] == {
+        "organization_id": "org-1",
+        "warehouse_name": "WH1",
+        "action": "suspend",
+        "reason": "idle",
+        "observed_state": "STARTED",
+        "observed_running": 0,
+        "observed_queued": 0,
+        "observed_quiescing": 0,
+        "observed_resumed_on": CREATED_ON.isoformat(),
+        "observed_started_clusters": 1,
+        "observed_min_cluster_count": None,
+        "observed_max_cluster_count": 3,
+        "observed_at": NOW.isoformat(),
+    }
 
 
-def test_supabase_store_list_enrollments_tolerates_null_partial_row():
-    # A partial/unenrolled row (managed/stored/created_on all null) must parse to
-    # Nones, not raise and fail the entire tenant cycle (finding #6).
+def test_list_enrollments_requires_complete_identity_and_version():
+    row = {
+        "organization_id": "org-1",
+        "warehouse_name": "WH1",
+        "enabled": True,
+        "warehouse_created_on": CREATED_ON.isoformat(),
+        "updated_at": NOW.isoformat(),
+    }
+
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json=[
-                {
-                    "organization_id": "org-1",
-                    "warehouse_name": "WH1",
-                    "enabled": False,
-                    "managed_auto_suspend": None,
-                    "stored_default_auto_suspend": None,
-                    "warehouse_created_on": None,
-                    "cooldown_ts": None,
-                    "drift_state": None,
-                    "drifted_value": None,
-                }
-            ],
-        )
+        return httpx.Response(200, json=[row])
 
     store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
-    [row] = store.list_enrollments("org-1")
 
-    assert row.warehouse_name == "WH1"
-    assert row.managed_auto_suspend is None
-    assert row.stored_default_auto_suspend is None
-    assert row.warehouse_created_on is None
+    assert store.list_enrollments("org-1") == [_enrollment()]
 
 
-def test_in_memory_worker_tenants_requires_enabled_warehouse():
+@pytest.mark.parametrize("missing", ["warehouse_created_on", "updated_at"])
+def test_list_enrollments_rejects_missing_identity_or_version(missing: str):
+    row = {
+        "organization_id": "org-1",
+        "warehouse_name": "WH1",
+        "enabled": True,
+        "warehouse_created_on": CREATED_ON.isoformat(),
+        "updated_at": NOW.isoformat(),
+    }
+    row[missing] = None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[row])
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+
+    with pytest.raises(StoreError):
+        store.list_enrollments("org-1")
+
+
+@pytest.mark.parametrize("field", ["warehouse_created_on", "updated_at"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2026-07-12T12:00:00",
+        "2026-07-12",
+        "not-a-timestamp",
+        None,
+    ],
+    ids=["offset-less", "date-only", "invalid", "null"],
+)
+def test_list_enrollments_rejects_non_timezone_aware_identity_or_version(
+    field: str, value: object
+):
+    row: dict[str, object] = {
+        "organization_id": "org-1",
+        "warehouse_name": "WH1",
+        "enabled": True,
+        "warehouse_created_on": CREATED_ON.isoformat(),
+        "updated_at": NOW.isoformat(),
+    }
+    row[field] = value
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[row])
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+
+    with pytest.raises(StoreError):
+        store.list_enrollments("org-1")
+
+
+@pytest.mark.parametrize("field", ["warehouse_created_on", "updated_at"])
+def test_parse_enrollment_rejects_naive_datetime_identity_or_version(field: str):
+    row: dict[str, object] = {
+        "organization_id": "org-1",
+        "warehouse_name": "WH1",
+        "enabled": True,
+        "warehouse_created_on": CREATED_ON.isoformat(),
+        "updated_at": NOW.isoformat(),
+    }
+    row[field] = datetime(2026, 7, 12, 12, 0, 0)
+
+    with pytest.raises(StoreError):
+        _parse_enrollment(row)
+
+
+@pytest.mark.parametrize("field", ["warehouse_created_on", "updated_at"])
+@pytest.mark.parametrize(
+    "value",
+    ["2026-07-12T12:00:00Z", "2026-07-12T05:00:00-07:00"],
+    ids=["utc", "offset"],
+)
+def test_list_enrollments_accepts_timezone_aware_identity_and_version(
+    field: str, value: str
+):
+    row = {
+        "organization_id": "org-1",
+        "warehouse_name": "WH1",
+        "enabled": True,
+        "warehouse_created_on": CREATED_ON.isoformat(),
+        "updated_at": NOW.isoformat(),
+    }
+    row[field] = value
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[row])
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+
+    [enrollment] = store.list_enrollments("org-1")
+    assert getattr(enrollment, field).utcoffset() is not None
+
+
+def test_worker_tenants_requires_global_switch_and_enabled_enrollment():
     store = InMemoryStore()
-    # global_enabled but no enabled warehouse -> not a worker tenant.
-    store.seed_settings(
-        SettingsRow(
-            organization_id="org-1",
-            agreed_at=NOW,
-            global_enabled=True,
-            grant_present=True,
-            grant_checked_at=NOW,
-        )
-    )
-    store.seed_enrollment(_enrollment_row("org-1", "WH1", enabled=False))
+    store.seed_settings(_settings("org-1", global_enabled=True))
+    store.seed_enrollment(_enrollment("org-1", enabled=False))
+    store.seed_settings(_settings("org-2", global_enabled=True))
+    store.seed_enrollment(_enrollment("org-2", enabled=True))
+    store.seed_settings(_settings("org-3", global_enabled=False))
+    store.seed_enrollment(_enrollment("org-3", enabled=True))
 
-    # global_enabled with an enabled warehouse -> worker tenant.
-    store.seed_settings(
-        SettingsRow(
-            organization_id="org-2",
-            agreed_at=NOW,
-            global_enabled=True,
-            grant_present=True,
-            grant_checked_at=NOW,
-        )
-    )
-    store.seed_enrollment(_enrollment_row("org-2", "WH1", enabled=True))
+    assert store.worker_tenants() == ["org-2"]
 
-    # outstanding intent but globally disabled -> still a worker tenant (drain).
-    store.seed_settings(
-        SettingsRow(
-            organization_id="org-3",
-            agreed_at=NOW,
-            global_enabled=False,
-            grant_present=True,
-            grant_checked_at=NOW,
-        )
-    )
-    store.write_intent("org-3", "WH1", restore_to=300)
 
-    assert store.worker_tenants() == ["org-2", "org-3"]
+@pytest.mark.parametrize("response", [{}, ["org-1"], [{"wrong": "org-1"}]])
+def test_supabase_worker_tenants_rejects_malformed_rows(response: object):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=response)
+
+    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
+
+    with pytest.raises(StoreError):
+        store.worker_tenants()

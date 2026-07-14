@@ -2074,16 +2074,12 @@ def test_warehouse_idle_pct_basic_fraction() -> None:
 
 
 def test_warehouse_idle_pct_zero_compute_is_none() -> None:
-    assert (
-        _warehouse_idle_pct(compute_credits=0.0, attributed_credits=0.0) is None
-    )
+    assert _warehouse_idle_pct(compute_credits=0.0, attributed_credits=0.0) is None
 
 
 def test_warehouse_idle_pct_clamps_epsilon_noise_to_zero() -> None:
     # attributed marginally above compute (float noise) -> 0.0, not negative.
-    idle = _warehouse_idle_pct(
-        compute_credits=10.0, attributed_credits=10.0 + 1e-12
-    )
+    idle = _warehouse_idle_pct(compute_credits=10.0, attributed_credits=10.0 + 1e-12)
     assert idle == 0.0
 
 

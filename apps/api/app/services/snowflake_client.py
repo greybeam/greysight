@@ -1,4 +1,5 @@
 """Re-export shim — implementation moved to the greysight_connect package."""
+
 from greysight_connect import snowflake_client as _impl
 from greysight_connect.snowflake_client import (  # noqa: F401  explicit for name-based patching
     SnowflakeConfigurationError,

@@ -14,38 +14,94 @@ afterEach(() => {
 const base = {
   name: "WH1", size: "X-Small", state: "STARTED", type: "STANDARD", supported: true,
   minClusterCount: 1, maxClusterCount: 1, startedClusters: 1, autoResumeOk: true,
-  managedDefault: 300, storedDefault: 300, enabled: true, driftState: "ok" as const,
-  driftedValue: null, cooldownTs: null, status: "idle" as const,
+  autoSuspend: 300, quiescing: 0, enabled: true, status: "idle" as const,
 };
 
 describe("WarehouseTable", () => {
   it("disables the toggle when AUTO_RESUME is off", () => {
-    render(<WarehouseTable orgId="org-1" isAdmin warehouses={[{ ...base, autoResumeOk: false }]} onChange={() => {}} />);
-    expect(screen.getByRole("switch", { name: /WH1/i })).toBeDisabled();
+    render(<WarehouseTable orgId="org-1" isAdmin warehouses={[{ ...base, autoResumeOk: false, enabled: false }]} onChange={() => {}} />);
+    const rowSwitch = screen.getByRole("switch", { name: /WH1/i });
+    expect(rowSwitch).toBeDisabled();
+    expect(document.getElementById(rowSwitch.getAttribute("aria-describedby") ?? ""))
+      .toHaveTextContent(/AUTO_RESUME is off/i);
   });
 
-  it.each([false, true])("disables a null managed-default input when enabled=%s", (enabled) => {
+  it.each([[300, "300s"], [null, "—"]] as const)("renders AUTO_SUSPEND %s as plain text", (autoSuspend, display) => {
     render(
       <WarehouseTable
         orgId="org-1"
         isAdmin
-        warehouses={[{ ...base, managedDefault: null, enabled }]}
+        warehouses={[{ ...base, autoSuspend }]}
         onChange={() => {}}
       />,
     );
-    expect(screen.getByLabelText(/WH1 auto_suspend/i)).toBeDisabled();
+    expect(screen.getByText(display)).toBeInTheDocument();
+    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /reconcile/i })).not.toBeInTheDocument();
   });
 
   it("disables the toggle and shows unsupported for non-STANDARD warehouses", () => {
-    render(<WarehouseTable orgId="org-1" isAdmin warehouses={[{ ...base, type: "SNOWPARK-OPTIMIZED" }]} onChange={() => {}} />);
-    expect(screen.getByRole("switch", { name: /WH1/i })).toBeDisabled();
+    render(<WarehouseTable orgId="org-1" isAdmin warehouses={[{ ...base, type: "SNOWPARK-OPTIMIZED", enabled: false }]} onChange={() => {}} />);
+    const rowSwitch = screen.getByRole("switch", { name: /WH1/i });
+    expect(rowSwitch).toBeDisabled();
+    expect(document.getElementById(rowSwitch.getAttribute("aria-describedby") ?? ""))
+      .toHaveTextContent(/warehouse type isn't supported/i);
     expect(screen.getByText(/unsupported/i)).toBeInTheDocument();
   });
 
-  it("disables editing for non-admins", () => {
+  it("disables the toggle for non-admins", () => {
     render(<WarehouseTable orgId="org-1" isAdmin={false} warehouses={[base]} onChange={() => {}} />);
     expect(screen.getByRole("switch", { name: /WH1/i })).toBeDisabled();
-    expect(screen.getByLabelText(/WH1 auto_suspend/i)).toBeDisabled();
+  });
+
+  it("presents a backend transition even when enrollment was disabled mid-transition", () => {
+    render(
+      <WarehouseTable
+        orgId="org-1"
+        isAdmin
+        warehouses={[{
+          ...base,
+          autoResumeOk: false,
+          enabled: false,
+          status: "transitioning",
+        }]}
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.getByText("Transitioning")).toBeInTheDocument();
+    const rowSwitch = screen.getByRole("switch", { name: /WH1/i });
+    expect(rowSwitch).toBeDisabled();
+    expect(document.getElementById(rowSwitch.getAttribute("aria-describedby") ?? ""))
+      .toHaveTextContent(/transitioning/i);
+  });
+
+  it.each([
+    ["unsupported", { type: "SNOWPARK-OPTIMIZED", supported: false, status: "unsupported" as const }],
+    ["AUTO_RESUME off", { autoResumeOk: false }],
+    ["transitioning", { status: "transitioning" as const }],
+  ])("allows an admin to disable an enrolled warehouse that is %s", async (_case, unsafeState) => {
+    const warehouse = { ...base, ...unsafeState, enabled: true };
+    const toggleSpy = vi.spyOn(automatedSavingsApi, "toggleWarehouse").mockResolvedValue(undefined);
+    const onChange = vi.fn();
+    render(
+      <WarehouseTable
+        orgId="org-1"
+        isAdmin
+        accessToken="tok"
+        warehouses={[warehouse]}
+        onChange={onChange}
+      />,
+    );
+    const rowSwitch = screen.getByRole("switch", { name: /WH1/i });
+
+    expect(rowSwitch).not.toBeDisabled();
+    expect(rowSwitch).not.toHaveAttribute("aria-describedby");
+    fireEvent.click(rowSwitch);
+
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith({ ...warehouse, enabled: false }));
+    expect(toggleSpy).toHaveBeenCalledWith("org-1", "WH1", false, {
+      accessToken: "tok",
+    });
   });
 
   it("calls toggleWarehouse and reports the change on toggle", async () => {
@@ -59,18 +115,15 @@ describe("WarehouseTable", () => {
     expect(toggleSpy).toHaveBeenCalledWith("org-1", "WH1", false, { accessToken: "tok" });
   });
 
-  it("hydrates the captured managed default after first enrollment", async () => {
+  it("refreshes the authoritative row after first enrollment", async () => {
     const unenrolled: automatedSavingsApi.WarehouseRow = {
       ...base,
       enabled: false,
-      managedDefault: null,
-      storedDefault: null,
     };
     const enrolled = {
       ...unenrolled,
       enabled: true,
-      managedDefault: 300,
-      storedDefault: 300,
+      status: "transitioning" as const,
     };
     vi.spyOn(automatedSavingsApi, "toggleWarehouse").mockResolvedValue(undefined);
     vi.spyOn(automatedSavingsApi, "fetchWarehouses").mockResolvedValue([enrolled]);
@@ -89,13 +142,9 @@ describe("WarehouseTable", () => {
     }
 
     render(<Harness />);
-    const input = screen.getByLabelText(/WH1 auto_suspend/i) as HTMLInputElement;
-    expect(input).toBeDisabled();
-
     fireEvent.click(screen.getByRole("switch", { name: /WH1/i }));
 
-    await waitFor(() => expect(input).not.toBeDisabled());
-    expect(input.value).toBe("300");
+    expect(await screen.findByText("Transitioning")).toBeInTheDocument();
     expect(automatedSavingsApi.fetchWarehouses).toHaveBeenCalledWith("org-1", {
       accessToken: "tok",
     });
@@ -105,8 +154,6 @@ describe("WarehouseTable", () => {
     const unenrolled: automatedSavingsApi.WarehouseRow = {
       ...base,
       enabled: false,
-      managedDefault: null,
-      storedDefault: null,
     };
     vi.spyOn(automatedSavingsApi, "toggleWarehouse").mockResolvedValue(undefined);
     vi.spyOn(automatedSavingsApi, "fetchWarehouses").mockRejectedValue(
@@ -143,8 +190,6 @@ describe("WarehouseTable", () => {
     const unenrolled: automatedSavingsApi.WarehouseRow = {
       ...base,
       enabled: false,
-      managedDefault: null,
-      storedDefault: null,
     };
     vi.spyOn(automatedSavingsApi, "toggleWarehouse").mockResolvedValue(undefined);
     vi.spyOn(automatedSavingsApi, "fetchWarehouses").mockResolvedValue([]);
@@ -172,42 +217,32 @@ describe("WarehouseTable", () => {
     expect(automatedSavingsApi.toggleWarehouse).toHaveBeenCalledOnce();
   });
 
-  it("commits a valid managed-default edit on blur", async () => {
-    const setSpy = vi.spyOn(automatedSavingsApi, "setManagedDefault").mockResolvedValue(undefined);
+  it("surfaces a toggle failure without changing enrollment", async () => {
+    vi.spyOn(automatedSavingsApi, "toggleWarehouse").mockRejectedValue(
+      new Error("Automated savings API request failed with 502: Snowflake unavailable"),
+    );
     const onChange = vi.fn();
     render(<WarehouseTable orgId="org-1" isAdmin accessToken="tok" warehouses={[base]} onChange={onChange} />);
 
-    const input = screen.getByLabelText(/WH1 auto_suspend/i);
-    fireEvent.change(input, { target: { value: "120" } });
-    fireEvent.blur(input);
+    fireEvent.click(screen.getByRole("switch", { name: /WH1/i }));
 
-    await waitFor(() => expect(onChange).toHaveBeenCalledWith({ ...base, managedDefault: 120 }));
-    expect(setSpy).toHaveBeenCalledWith("org-1", "WH1", 120, { accessToken: "tok" });
-  });
-
-  it("rejects a managed-default edit below the floor and reverts it", async () => {
-    const setSpy = vi.spyOn(automatedSavingsApi, "setManagedDefault").mockResolvedValue(undefined);
-    const onChange = vi.fn();
-    render(<WarehouseTable orgId="org-1" isAdmin accessToken="tok" warehouses={[base]} onChange={onChange} />);
-
-    const input = screen.getByLabelText(/WH1 auto_suspend/i) as HTMLInputElement;
-    fireEvent.change(input, { target: { value: "30" } });
-    fireEvent.blur(input);
-
-    await waitFor(() => expect(input.value).toBe("300"));
-    expect(setSpy).not.toHaveBeenCalled();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Snowflake unavailable");
     expect(onChange).not.toHaveBeenCalled();
-    expect(screen.getByRole("alert")).toHaveTextContent(/can't go below 60s/i);
   });
 
-  it("reconciles a drifted warehouse", async () => {
-    const reconcileSpy = vi.spyOn(automatedSavingsApi, "reconcileWarehouse").mockResolvedValue(undefined);
-    const onChange = vi.fn();
-    render(<WarehouseTable orgId="org-1" isAdmin accessToken="tok" warehouses={[{ ...base, driftState: "drifted", status: "drifted" }]} onChange={onChange} />);
+  it("protects a warehouse from overlapping toggle actions", async () => {
+    let resolveToggle: (() => void) | undefined;
+    const toggleSpy = vi.spyOn(automatedSavingsApi, "toggleWarehouse").mockImplementation(
+      () => new Promise<void>((resolve) => { resolveToggle = resolve; }),
+    );
+    render(<WarehouseTable orgId="org-1" isAdmin warehouses={[base]} onChange={() => {}} />);
+    const rowSwitch = screen.getByRole("switch", { name: /WH1/i });
 
-    fireEvent.click(screen.getByRole("button", { name: /reconcile/i }));
+    fireEvent.click(rowSwitch);
+    fireEvent.click(rowSwitch);
 
-    await waitFor(() => expect(onChange).toHaveBeenCalledWith({ ...base, driftState: "ok", status: "idle" }));
-    expect(reconcileSpy).toHaveBeenCalledWith("org-1", "WH1", true, { accessToken: "tok" });
+    expect(toggleSpy).toHaveBeenCalledOnce();
+    resolveToggle?.();
+    await waitFor(() => expect(rowSwitch).not.toBeDisabled());
   });
 });

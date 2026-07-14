@@ -1,182 +1,199 @@
 # Automated Savings — How It Works
 
-A conceptual map of the mechanism. For env vars, cost, and the operational
-runbook see [`automated-savings.md`](./automated-savings.md).
+Automated Savings observes one live warehouse snapshot, makes a fail-closed
+decision, reauthorizes against current Supabase state, and asks Snowflake to
+suspend the warehouse directly.
 
-## The opportunity
+```text
+SHOW WAREHOUSES
+  → parse decision fields and warehouse identity
+  → match an enabled enrollment
+  → evaluate the first eligible snapshot
+  → reauthorize current settings, identity, and enrollment version
+  → ALTER WAREHOUSE … SUSPEND
+  → write a best-effort direct audit event
+```
 
-Snowflake bills a **60-second minimum every time a warehouse resumes**, then keeps
-billing while it sits idle until the customer's `AUTO_SUSPEND` fires. On sporadic
-workloads that idle tail (between the prepaid minute and, say, a 300s `AUTO_SUSPEND`)
-is pure waste. Automated Savings watches each enrolled warehouse and, once it is
-genuinely idle past the 60s floor, forces it to suspend — reclaiming that tail.
+For deployment settings and incident procedures, see
+[`automated-savings.md`](./automated-savings.md).
 
-## Three surfaces, one writer
+## Three surfaces, one Snowflake writer
 
-| Surface | Role |
+| Surface | Responsibility |
 |---|---|
-| **Worker** (`apps/auto-savings/`, own Railway service) | The control loop. Polls Snowflake, decides, and is the **only** component that issues `ALTER WAREHOUSE`. |
-| **API** (`apps/api/`, routes in `automated_savings.py`) | UI-facing reads/writes. Writes only *intent* to Supabase — **never** touches Snowflake. |
-| **Web** (`apps/web/`, `/automated-savings`) | Opt-in gate + per-warehouse enrollment table. |
+| Worker (`apps/auto-savings/`) | Polls, decides, authorizes, and exclusively issues direct suspend commands. |
+| API (`apps/api/`) | Manages agreement, switches, identity-bound enrollment, on-demand access checks, and read-only warehouse metadata. It never alters a warehouse. |
+| Web (`apps/web/`) | Its client contract carries live state, quiescing percentage, cluster counts, and `AUTO_SUSPEND`. The table renders name, read-only `AUTO_SUSPEND`, derived status, and the enabled switch. |
 
-**Single-writer rule:** the worker owns every Snowflake mutation. The API/UI only
-record intent in Supabase; the worker applies it on its next tick. This removes all
-API-vs-worker races on the same warehouse.
+The worker must remain the single Snowflake writer for each shard. Per-tenant
+locks prevent overlapping ticks inside a process, and deterministic sharding
+assigns an organization to one replica. Operators must not deploy overlapping
+processes for the same shard.
 
-## The idle signal
+## One snapshot, one time gate
 
-The worker polls **`SHOW WAREHOUSES`** every ~3s per tenant on a warm, persistent
-Snowflake session (`snowflake_session.py`). Why this call:
+The worker uses `SHOW WAREHOUSES` because it supplies current warehouse state
+without resuming compute. It derives uptime from `resumed_on`; uptime is not
+stored in Supabase.
 
-- It's a **cloud-services metadata** call — sub-second, no compute, and crucially it
-  **does not resume a warehouse**. (A `SELECT` would run on the session's warehouse
-  and wake it on every poll — the exact opposite of the goal.)
-- It returns every warehouse with the columns we need: `state`, `type`, `running`,
-  `queued`, `auto_suspend`, `auto_resume`, `resumed_on`, and (Enterprise+) cluster
-  counts.
-- `ACCOUNT_USAGE` is unusable here — up to ~45 min latent, far too slow for a 60s
-  decision.
+One snapshot is eligible only when all of these facts are proven:
 
-**Uptime is never stored** — always derived live in Python as
-`now(timezone.utc) − resumed_on` (`warehouse_snapshot.py`). Timestamps are coerced
-tz-aware in the parser (the connector may hand them back as strings or naive).
+- `type == STANDARD`;
+- `state == STARTED`;
+- `running == 0` and `queued == 0` after strict parsing of those statement
+  counts;
+- `quiescing == 0` after parsing a valid nonnegative integer or Snowflake's
+  observed idle empty-string encoding (`''`);
+- `AUTO_RESUME == true`;
+- `now - resumed_on >= 62 seconds`;
+- live `created_on` exactly matches the enrollment identity.
 
-## Force-suspend: lower `AUTO_SUSPEND`, never a hard SUSPEND
+`resumed_on` and `created_on` must include timezone information. Missing,
+timezone-naive, malformed, negative, fractional, or non-finite critical values
+fail closed. Transitional states and any nonzero quiescing percentage fail
+closed.
 
-We **never** issue `ALTER WAREHOUSE … SUSPEND` — that would race our (milliseconds-stale)
-telemetry against an incoming query. Instead we lower `AUTO_SUSPEND` to `1` and let
-**Snowflake's own race-free idle accounting** decide: if a query lands, Snowflake
-resets its idle timer and simply never suspends.
+The empty-string exception applies only to `quiescing`; a missing (`None` or
+absent) value still fails closed. A real compute drain exposed
+`SUSPENDING`/`quiescing='100'` in the Snowflake spike. `SYSTEM$WAIT` did not
+reproduce that transition, and `SELECT 1` did not force auto-resume, so use a
+real compute query when testing those behaviors.
 
-The lifecycle (`engine.py` → `reconcile.py`):
+The worker acts on the first eligible snapshot. It does not require consecutive
+idle observations and has no separate idle timer. The 62-second uptime floor is
+the only time gate and protects Snowflake's first billed minute after resume.
 
-1. **Write a durable restore-intent row first** (`{org, warehouse, restore_to,
-   set_at, baseline_resumed_on}`), *then* `SET AUTO_SUSPEND = 1`. Durability before
-   mutation — a crash between the two just means the next tick restores.
-2. **The intent row — not the live `=1` value — proves ownership.** A warehouse can
-   be created/cloned at `1`, or another cost tool (e.g. SELECT.dev) can set the same
-   sentinel. We only ever restore a `=1` we have an intent row for.
-3. **Restore on a later tick, driven by the intent** — reachable from every state,
-   so a warehouse is never stranded at `1`.
+## Direct suspension leaves customer configuration alone
 
-## The restore decision (the subtle part)
+For an eligible and authorized warehouse, the warm tenant session issues:
 
-The worker only sees discrete snapshots, ~1s apart while an intent is outstanding.
-Given an outstanding intent and live `auto_suspend == 1`, `reconcile.py` decides:
+```sql
+ALTER WAREHOUSE "<escaped-name>" SUSPEND
+```
 
-- **`SUSPENDED`** → savings captured → restore `managed_auto_suspend`, start cooldown.
-- **`STARTED` & busy** (`running`/`queued > 0`) → a query landed → restore, start
-  cooldown (it proved bursty, back it off).
-- **`STARTED` & idle & still `1`** → ambiguous: either the suspend just hasn't landed
-  yet *or* it already suspended-and-resumed between two polls. Disambiguated by
-  **`resumed_on`**:
-  - If live `resumed_on` differs from `baseline_resumed_on` captured at set-time → a
-    full suspend→resume cycle completed → restore now + cooldown (stops a
-    resume-storm).
-  - Otherwise **hold** the intent — until it ages past `max_intent_hold_ticks ×
-    poll_interval` (the anti-stranding backstop).
+Snowflake allows executing statements to finish while the warehouse quiesces.
+Greysight never changes `AUTO_SUSPEND`, `AUTO_RESUME`, minimum or maximum
+clusters, or a query. `AUTO_SUSPEND` remains visible through the API and UI as
+read-only customer configuration.
 
-**Why `baseline_resumed_on` matters:** without it, an idle-again-at-`1` snapshot is
-indistinguishable from "hasn't suspended yet," so the worker would keep holding while
-the warehouse suspend→resume→suspend cycles, each resume re-billing 60s — billing
-*more*, not less.
+The API/client contract also carries live state, quiescing percentage, and
+cluster counts, but the current table folds operational state into a derived
+status instead of rendering those fields as separate columns. Worker cluster
+observations are nullable audit data, not decision gates. Direct suspension is
+a warehouse-level command and supports multi-cluster `STANDARD` warehouses.
+The caveat is analytical: warehouse-level `resumed_on` cannot prove per-cluster
+uptime or savings, so Greysight does not claim per-cluster savings from those
+fields.
 
-Other invariants: a restore `ALTER` must **succeed before its intent is deleted** (a
-failed ALTER leaves the intent for retry). New intents restore to the live
-`managed_auto_suspend`, not the immutable opt-in capture.
+## Grant checks are informational
 
-## Reconcile-then-decide, every cycle
+The configured Snowflake role may use account-level `MANAGE WAREHOUSES`, or
+per-warehouse `OPERATE` with the required `USAGE` context, for the direct
+command.
+The API and UI can inspect that privilege on demand, but agreement, enrollment,
+worker tenant discovery, and final authorization do not gate on the stored
+`grant_present` value. If the privilege is missing or revoked, Snowflake rejects
+the command and the tenant uses the normal failure path: close the failed
+session, reconnect, and back off until access is restored or automation is
+disabled. The application does not mark the tenant paused.
 
-Each cycle runs off **one `SHOW WAREHOUSES` snapshot**: reconcile first (heal/restore),
-then decide (new suspends). Reconcile **always drains** outstanding intents — even for
-a disabled, unenrolled, or kill-switched warehouse — so nothing is ever frozen at `1`.
+## Identity prevents stale enrollment reuse
 
-**Drift:** if a warehouse's live `AUTO_SUSPEND` doesn't match `managed_auto_suspend`
-(and isn't our `1`) with no intent, the customer changed it directly. We **don't** stomp
-it — we flag `drifted`, pause automation on it, and surface a **Reconcile** action in
-the UI. Same for a warehouse that turns non-STANDARD (→ `unsupported`, auto-paused).
-Reconcile has two choices: **accept** (adopt the drifted value as the new managed
-default, API-only) or **re-apply old default**. Since only the worker can `ALTER`, the
-API records the re-apply as a restore-intent with `kind='reapply'`; the worker then
-overwrites the drifted value on its next tick. The `reapply` kind is what lets the
-worker distinguish "admin asked to overwrite this" from "customer just edited it"
-(which it must not stomp).
+Enrollment succeeds only after the API captures a live, timezone-aware
+`created_on`. The database requires that identity. Every worker decision checks
+the same field; if it is absent, the decision stops, and if it differs, the
+worker conditionally deletes the stale versioned enrollment without touching
+the live warehouse.
 
-## The suspend decision (`decision.py`)
+This closes ordinary drop/recreate reuse, but not the final name race.
+Snowflake's `ALTER WAREHOUSE` identifies a warehouse only by name. A drop and
+recreate after the snapshot and authorization but before the command is an
+irreducible TOCTOU window. Another `SHOW` could narrow but not eliminate it.
 
-A pure truth table — force-suspend only when **all** hold: `type == STANDARD`,
-`state == STARTED`, `started_clusters == min_cluster_count` (cluster floor),
-`uptime ≥ 62s`, `running == 0`, `queued == 0`, `auto_resume == true`, not in cooldown,
-not drifted, no intent already outstanding.
+## Final authorization and disabling
 
-- **`auto_resume` required** — else suspending breaks queries instead of slowing them.
-- **62s, not 60s** — a small margin so clock skew never forfeits the prepaid minute.
-- **Cluster floor gate** keeps multi-cluster warehouses safe with only `AUTO_SUSPEND`
-  mutation: we act only once Snowflake has organically shed to its `MIN` cluster count
-  and gone idle. We never touch `MIN`/`MAX`. (On Standard edition the cluster columns
-  are absent → treated as single-cluster.)
+Eligibility is not authority. Immediately before each command, the worker asks
+the service-role `automated_savings_authorize_suspend` RPC to match:
 
-## Kill switch & tenant discovery
+- the current global switch;
+- the current warehouse switch;
+- warehouse name and captured identity;
+- the enrollment's exact `updated_at` version.
 
-`global_enabled` is the master gate. When off, the **decide** step is skipped but
-reconcile still drains. `worker_tenants()` returns any org with `global_enabled` **or**
-an outstanding intent — so a kill-switched org keeps being polled until its sentinels
-drain. A supervisor re-enumerates tenants on an interval, so opt-ins/kill-switches
-after startup are picked up without a restart.
+The RPC is read-only. A disable or enrollment edit committed before it runs
+rejects authorization. Once it returns true, that authorization owns the
+in-flight command: disabling afterward prevents later authorizations but does
+not cancel this command. Supabase cannot hold a transaction lock across an
+external Snowflake request, which is why operational single-writer ownership
+also matters.
 
-## Crash recovery
+## Command results
 
-State lives in Supabase (`automated_savings_settings`, `_warehouses`,
-`_restore_intents`, `_events`). Because the intent row is written *before* the ALTER
-and reconcile runs every cycle unconditionally, a worker restart simply finds each
-outstanding intent and restores it from whatever state the warehouse is in.
-Fully-dropped warehouses have their stale intent + enrollment cleaned up after
-`orphan_grace_seconds`.
+An accepted request produces a best-effort append-only event with
+`action=suspend`, `reason=idle`, and complete decision observations. Failure to
+write that event is logged but does not reissue the accepted command in the
+same cycle.
 
-## Audit trail — best-effort mutation events
+Snowflake connector error `90064` is treated as an unknown idempotent outcome,
+not proof that the warehouse was already suspended. No audit event is written.
+The healthy session remains open and the tenant loop backs off. The next
+snapshot independently decides whether the warehouse is transitional,
+suspended, or still eligible.
 
-`automated_savings_events` is **application append-only** while an organization
-exists: application code attempts to insert one row after every successful
-`AUTO_SUSPEND` mutation and never updates or individually deletes events. Deleting
-an organization intentionally cascades to its events as part of tenant-data cleanup:
+A timeout or connection failure is also ambiguous, but the safe response is to
+hard-close the session, reconnect, write no audit event, and use exponential
+backoff. Other command errors use the same failure/backoff path. A restart has
+no durable attempt state; if a later snapshot is still eligible, an idempotent
+duplicate request is allowed.
 
-- **`set_sentinel`** (`reason=decide`, `to_value=1`) — written right after we set the
-  sentinel (`engine.py`).
-- **`restore`** (`reason ∈ {suspended, busy, resume_aware, aged_out, reconcile_reapply}`,
-  `to_value=managed default`) — attempted **before** the intent is deleted
-  (`reconcile.py`), so a failed event write leaves the intent for safe reconciliation.
+## Bounded attempt correlation
 
-Each row snapshots what we observed at decision time (`observed_state`, `running`,
-`queued`, `resumed_on`, `from_value`). A `set_sentinel` and its matching `restore`
-share a **`cycle_id`** (carried on the restore-intent row), so a suspend can be paired
-with its restore to derive reclaimed idle seconds — the foundation for the deferred
-savings-analytics surface. Members can read the log (RLS); only the worker writes it.
+Every observed unique warehouse gets an ephemeral attempt UUID. Structured
+snapshot, authorization, request, outcome, and metric records use it for
+correlation. In those records, `running` and `queued` are statement counts;
+`quiescing` is a compute-resource percentage.
 
-The log covers **Snowflake mutations only** — our own state transitions (drift flag,
-unsupported-pause, enrollment cleanup) are not events, since they don't touch the
-customer's warehouse. Writes are best-effort: a restore-event failure retains its
-intent so reconciliation can retry safely, while a set-sentinel event failure can
-leave an audit gap. Exactly-once logging is a possible follow-up after v1.
+After `90064`, the tenant loop keeps only the warehouse name and attempt ID in
+memory. The next matching snapshot emits that prior ID and removes it even if
+the enrollment no longer exists. If the name disappears, the worker emits
+`unknown_attempt_retired` and removes it. Restart may discard the map. It is
+observability state only and never changes eligibility.
 
-## Resume-storm bounding (why it can't cost more)
+Duplicate same-name rows in a single `SHOW WAREHOUSES` response are ambiguous.
+The worker logs the safe name and row count, consumes any prior unknown entry,
+and performs no authorization, stale deletion, or suspension for that name.
+Other unique names in the response continue normally.
 
-While a `=1` sentinel is live, a bursty warehouse could cycle and re-bill. Three bounds:
-1. **Fast-poll** (~1s, jittered) while any intent is outstanding → ~1 resume max before
-   we observe and restore.
-2. **Busy-restore cooldown** → a warehouse that resumed under our sentinel is backed off.
-3. **Resume-aware restore** (`baseline_resumed_on`) → restore the instant a completed
-   suspend→resume cycle is detected, without waiting out the age backstop.
+## Audit and operational metrics
+
+Supabase stores only settings, identity/version-bound enrollments, and accepted
+direct suspend events. Members can read their organization's records; only the
+service role authorizes, conditionally deletes stale enrollments, and appends
+events.
+
+There is no metrics exporter. Operators aggregate exact structured
+`event="metric"` logs:
+
+| Metric name | Labels |
+|---|---|
+| `auto_savings_suspend_attempt_total` | `attempt_id`, `outcome` |
+| `auto_savings_suspend_error_total` | `attempt_id`, `errno`, `sqlstate` |
+| `auto_savings_authorization_total` | `attempt_id`, `result` |
+
+Outcome logs always include `connector_error_type`, `connector_errno`,
+`connector_sqlstate`, and `connector_message`; fields are null when no connector
+error exists. These records, plus the next correlated snapshot after an unknown
+result, are the source of operational counts and incident evidence.
 
 ## Code map
 
 | Concern | File |
 |---|---|
-| Snapshot parse + uptime | `apps/auto-savings/src/auto_savings/warehouse_snapshot.py` |
-| Suspend truth table | `.../decision.py` |
-| Reconcile + restore decision | `.../reconcile.py` |
-| Cycle orchestration | `.../engine.py` |
-| Warm session + watchdog | `.../snowflake_session.py` |
-| Per-tenant loop + supervisor | `.../tenant_loop.py`, `main.py` |
-| Durable state | `supabase/migrations/202607120001_automated_savings.sql` |
-| API routes / services | `apps/api/app/routes/automated_savings.py`, `services/warehouse_directory.py` |
-| Web UI | `apps/web/src/components/automated-savings/` |
+| Snapshot parsing and uptime | `apps/auto-savings/src/auto_savings/warehouse_snapshot.py` |
+| Eligibility truth table | `apps/auto-savings/src/auto_savings/decision.py` |
+| Correlation, authorization, command, and audit | `apps/auto-savings/src/auto_savings/engine.py` |
+| Warm session, direct command, and connector outcomes | `apps/auto-savings/src/auto_savings/snowflake_session.py` |
+| Per-tenant backoff and supervisor | `apps/auto-savings/src/auto_savings/tenant_loop.py` |
+| Durable state contract | `apps/auto-savings/src/auto_savings/store.py`, `supabase/migrations/202607120001_automated_savings.sql` |
+| API enrollment and live metadata | `apps/api/app/routes/automated_savings.py`, `apps/api/app/services/warehouse_directory.py` |
+| Web controls and display | `apps/web/src/components/automated-savings/` |

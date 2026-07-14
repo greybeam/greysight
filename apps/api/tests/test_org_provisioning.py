@@ -53,7 +53,6 @@ def test_calls_create_rpc_and_returns_org_id() -> None:
     assert "user-1" in seen["body"]
 
 
-
 def test_raises_provisioning_error_on_transport_failure() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused")

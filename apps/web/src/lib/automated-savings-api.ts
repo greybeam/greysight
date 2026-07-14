@@ -4,14 +4,7 @@ export type AutomatedSavingsApiOptions = {
   accessToken?: string | null;
 };
 
-export type SavingsStatus =
-  | "idle"
-  | "mid_suspend"
-  | "in_cooldown"
-  | "drifted"
-  | "unsupported";
-
-export type DriftState = "ok" | "drifted";
+export type SavingsStatus = "idle" | "transitioning" | "unsupported";
 
 export type AutomatedSavingsStatus = {
   agreed: boolean;
@@ -44,26 +37,11 @@ export type WarehouseRow = {
   maxClusterCount: number | null;
   startedClusters: number | null;
   autoResumeOk: boolean;
-  // Null for warehouses that have never been enrolled — the API only
-  // populates these once an enrollment row exists.
-  managedDefault: number | null;
-  storedDefault: number | null;
+  autoSuspend: number | null;
+  quiescing: number | null;
   enabled: boolean;
-  driftState: DriftState;
-  driftedValue: number | null;
-  cooldownTs: string | null;
   status: SavingsStatus;
 };
-
-// Thrown when the API rejects a managed-default write with 422 (below the
-// server-enforced floor). The UI catches this specifically to surface the
-// floor message instead of a generic error.
-export class ManagedDefaultFloorError extends Error {
-  constructor(message = "AUTO_SUSPEND can't be set below the floor.") {
-    super(message);
-    this.name = "ManagedDefaultFloorError";
-  }
-}
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null) {
@@ -87,35 +65,50 @@ function asBoolean(value: unknown): boolean {
 }
 
 function asNullableNumber(value: unknown): number | null {
-  return typeof value === "number" ? value : null;
+  if (value === null) return null;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new Error("Malformed automated-savings API response");
+  }
+  return value;
 }
 
 function asNullableString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+function asStrictNullableString(value: unknown): string | null {
+  if (value !== null && typeof value !== "string") {
+    throw new Error("Malformed automated-savings API response");
+  }
+  return value;
+}
+
+function asSavingsStatus(value: unknown): SavingsStatus {
+  if (value === "idle" || value === "transitioning" || value === "unsupported") {
+    return value;
+  }
+  throw new Error("Malformed automated-savings API response");
+}
+
 // The single snake_case → camelCase boundary for warehouse rows: the API
-// returns snake_case JSON; everything downstream of this function (Tasks
-// 18/19/20) consumes only the camelCase WarehouseRow type.
+// returns snake_case JSON; everything downstream consumes only the validated
+// camelCase WarehouseRow type.
 export function parseWarehouseRow(raw: unknown): WarehouseRow {
   const record = asRecord(raw);
   return {
     name: asString(record.name),
-    size: asNullableString(record.size),
-    state: asNullableString(record.state),
-    type: asNullableString(record.type),
+    size: asStrictNullableString(record.size),
+    state: asStrictNullableString(record.state),
+    type: asStrictNullableString(record.type),
     supported: asBoolean(record.supported),
     minClusterCount: asNullableNumber(record.min_cluster_count),
     maxClusterCount: asNullableNumber(record.max_cluster_count),
     startedClusters: asNullableNumber(record.started_clusters),
     autoResumeOk: asBoolean(record.auto_resume_ok),
-    managedDefault: asNullableNumber(record.managed_default),
-    storedDefault: asNullableNumber(record.stored_default),
+    autoSuspend: asNullableNumber(record.auto_suspend),
+    quiescing: asNullableNumber(record.quiescing),
     enabled: asBoolean(record.enabled),
-    driftState: asString(record.drift_state) as DriftState,
-    driftedValue: asNullableNumber(record.drifted_value),
-    cooldownTs: asNullableString(record.cooldown_ts),
-    status: asString(record.status) as SavingsStatus,
+    status: asSavingsStatus(record.status),
   };
 }
 
@@ -252,55 +245,6 @@ export async function toggleWarehouse(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ enabled }),
-    },
-    options,
-  );
-}
-
-export async function setManagedDefault(
-  orgId: string,
-  name: string,
-  value: number,
-  options: AutomatedSavingsApiOptions = {},
-): Promise<void> {
-  const headers = authHeaders(options.accessToken, {
-    "content-type": "application/json",
-  });
-  const response = await fetch(
-    resolveApiUrl(
-      `/api/automated-savings/${orgId}/warehouses/${encodeURIComponent(name)}/managed-default`,
-    ),
-    {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ value }),
-      cache: "no-store",
-    },
-  );
-
-  if (!response.ok) {
-    const detail = await readErrorDetail(response);
-    if (response.status === 422) {
-      throw new ManagedDefaultFloorError(detail ?? undefined);
-    }
-    throw new Error(
-      `Automated savings API request failed with ${response.status}${detail ? `: ${detail}` : ""}`,
-    );
-  }
-}
-
-export async function reconcileWarehouse(
-  orgId: string,
-  name: string,
-  accept: boolean,
-  options: AutomatedSavingsApiOptions = {},
-): Promise<void> {
-  await fetchJson(
-    `/api/automated-savings/${orgId}/warehouses/${encodeURIComponent(name)}/reconcile`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ accept }),
     },
     options,
   );

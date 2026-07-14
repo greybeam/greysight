@@ -18,16 +18,11 @@ from app.services.automated_savings_store import (
     AutomatedSavingsStoreError,
     get_automated_savings_store,
 )
+from app.services.warehouse_directory import WarehouseStatus
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/automated-savings", tags=["automated-savings"])
-
-# A captured AUTO_SUSPEND of 0 (never suspend) or 1 (Snowflake's own minimum,
-# indistinguishable from "already managed") can't be safely adopted as the
-# enrollment's stored/managed default.
-_SENTINEL_DEFAULTS = {0, 1}
-MANAGED_DEFAULT_FLOOR_SECONDS = 60
 
 
 class StatusResponse(BaseModel):
@@ -46,14 +41,6 @@ class ToggleRequest(BaseModel):
     enabled: bool
 
 
-class ManagedDefaultRequest(BaseModel):
-    value: int
-
-
-class ReconcileRequest(BaseModel):
-    accept: bool
-
-
 class CheckAccessResponse(BaseModel):
     grant_present: bool
     grant_checked_at: str | None
@@ -70,32 +57,21 @@ class WarehouseResponse(BaseModel):
     max_cluster_count: int | None
     started_clusters: int | None
     auto_resume_ok: bool
-    managed_default: int | None
-    stored_default: int | None
+    auto_suspend: int | None
+    quiescing: int | None
     enabled: bool
-    drift_state: str
-    drifted_value: int | None
-    cooldown_ts: str | None
-    status: str
+    status: WarehouseStatus
 
 
 @dataclass(frozen=True)
-class CapturedWarehouseDefaults:
-    stored_default: int | None
+class CapturedWarehouseIdentity:
     warehouse_created_on: str | None
 
 
-def capture_stored_default(
+def capture_warehouse_identity(
     *, organization_id: str, warehouse_name: str, settings: Settings
-) -> CapturedWarehouseDefaults:
-    """Indirection seam: fetch the warehouse's current AUTO_SUSPEND and
-    created_on from Snowflake in a single live lookup.
-
-    Split out so tests can stub the Snowflake round-trip without touching the
-    resolver/connection plumbing. Both values are captured from the same live
-    row so the worker's drop+recreate detection (which keys off
-    `warehouse_created_on`) has a value to compare against.
-    """
+) -> CapturedWarehouseIdentity:
+    """Fetch the live warehouse identity used to detect name reuse."""
     from app.services.org_connection_resolver import resolve_snowflake_config
     from app.services.snowflake_runtime import get_connection_fetcher
     from app.services import warehouse_directory
@@ -107,16 +83,24 @@ def capture_stored_default(
     )
     live = warehouse_directory.list_live_warehouses(config)
     for row in live:
-        if str(row.get("name", "")).upper() == warehouse_name.upper():
-            value = row.get("auto_suspend")
+        if row.get("name") == warehouse_name:
             created_on = row.get("created_on")
-            return CapturedWarehouseDefaults(
-                stored_default=int(value) if value is not None else None,
+            return CapturedWarehouseIdentity(
                 warehouse_created_on=(
                     str(created_on) if created_on is not None else None
                 ),
             )
-    return CapturedWarehouseDefaults(stored_default=None, warehouse_created_on=None)
+    return CapturedWarehouseIdentity(warehouse_created_on=None)
+
+
+def _has_valid_warehouse_identity(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return False
+    return parsed.tzinfo is not None and parsed.utcoffset() is not None
 
 
 def _resolve_role_name(organization_id: str, settings: Settings) -> str | None:
@@ -153,6 +137,15 @@ def _require_store():
     return store
 
 
+def _log_store_failure(operation: str, error: AutomatedSavingsStoreError) -> None:
+    logger.warning(
+        "automated savings store failure operation=%s kind=%s status=%s",
+        operation,
+        error.kind,
+        error.status_code if error.status_code is not None else "none",
+    )
+
+
 @router.get("/{organization_id}/status", response_model=StatusResponse)
 def get_status(
     organization_id: str,
@@ -187,10 +180,9 @@ def agree(
     require_org_admin(auth_context, organization_id)
     store = _require_store()
     try:
-        store.upsert_agreement(
-            organization_id, datetime.now(timezone.utc).isoformat()
-        )
-    except AutomatedSavingsStoreError:
+        store.upsert_agreement(organization_id, datetime.now(timezone.utc).isoformat())
+    except AutomatedSavingsStoreError as exc:
+        _log_store_failure("upsert_agreement", exc)
         raise HTTPException(
             status_code=502, detail="Could not record agreement."
         ) from None
@@ -213,7 +205,8 @@ def set_global_switch(
     store = _require_store()
     try:
         store.set_global_enabled(organization_id, request.enabled)
-    except AutomatedSavingsStoreError:
+    except AutomatedSavingsStoreError as exc:
+        _log_store_failure("set_global_switch", exc)
         raise HTTPException(
             status_code=502, detail="Could not update the global switch."
         ) from None
@@ -261,7 +254,15 @@ def list_warehouses(
         ) from None
 
     store = get_automated_savings_store()
-    enrollments = store.list_warehouses(organization_id) if store is not None else []
+    try:
+        enrollments = (
+            store.list_warehouses(organization_id) if store is not None else []
+        )
+    except AutomatedSavingsStoreError as exc:
+        _log_store_failure("list_warehouse_enrollments", exc)
+        raise HTTPException(
+            status_code=502, detail="Could not load warehouse enrollments."
+        ) from None
 
     views = warehouse_directory.join_warehouse_view(live, enrollments)
     return [WarehouseResponse(**vars(view)) for view in views]
@@ -277,13 +278,11 @@ def toggle_warehouse(
     require_org_admin(auth_context, organization_id)
 
     if not request.enabled:
-        # Unenroll only clears `enabled` — never writes a restore-intent. Any
-        # already-outstanding intent still drains on the worker's next tick
-        # via worker_tenants()'s union over outstanding intents.
         store = _require_store()
         try:
             store.unenroll(organization_id, warehouse_name)
-        except AutomatedSavingsStoreError:
+        except AutomatedSavingsStoreError as exc:
+            _log_store_failure("unenroll_warehouse", exc)
             raise HTTPException(
                 status_code=502, detail="Could not unenroll the warehouse."
             ) from None
@@ -291,38 +290,25 @@ def toggle_warehouse(
 
     settings = Settings()
     try:
-        captured = capture_stored_default(
+        captured = capture_warehouse_identity(
             organization_id=organization_id,
             warehouse_name=warehouse_name,
             settings=settings,
         )
     except Exception:  # noqa: BLE001 — user-safe query failure surface
-        logger.exception(
-            "capture_stored_default failed for org=%s warehouse=%s",
-            organization_id,
-            warehouse_name,
+        logger.warning(
+            "automated savings upstream failure "
+            "operation=capture_warehouse_identity kind=query status=none"
         )
         raise HTTPException(
             status_code=502,
-            detail="Could not read the warehouse's current AUTO_SUSPEND.",
+            detail="Could not read the warehouse's identity.",
         ) from None
 
-    stored_default = captured.stored_default
-    if stored_default is None or stored_default in _SENTINEL_DEFAULTS:
+    if not _has_valid_warehouse_identity(captured.warehouse_created_on):
         raise HTTPException(
             status_code=422,
-            detail=(
-                "This warehouse's current AUTO_SUSPEND is not eligible for "
-                "automated savings."
-            ),
-        )
-    if stored_default < MANAGED_DEFAULT_FLOOR_SECONDS:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "This warehouse's current AUTO_SUSPEND must be at least "
-                f"{MANAGED_DEFAULT_FLOOR_SECONDS} seconds before enrollment."
-            ),
+            detail="This warehouse does not have a valid identity.",
         )
 
     store = _require_store()
@@ -331,59 +317,12 @@ def toggle_warehouse(
             organization_id,
             warehouse_name,
             enabled=True,
-            stored_default=stored_default,
-            managed_default=stored_default,
             warehouse_created_on=captured.warehouse_created_on,
         )
-    except AutomatedSavingsStoreError:
-        logger.exception(
-            "upsert_enrollment failed for org=%s warehouse=%s",
-            organization_id,
-            warehouse_name,
-        )
+    except AutomatedSavingsStoreError as exc:
+        _log_store_failure("upsert_warehouse_enrollment", exc)
         raise HTTPException(
             status_code=502, detail="Could not enroll the warehouse."
-        ) from None
-    return None
-
-
-@router.post("/{organization_id}/warehouses/{warehouse_name}/managed-default")
-def set_managed_default(
-    organization_id: str,
-    warehouse_name: str,
-    request: ManagedDefaultRequest,
-    auth_context: AuthContext = Depends(require_auth_context),
-) -> None:
-    require_org_admin(auth_context, organization_id)
-    if request.value < MANAGED_DEFAULT_FLOOR_SECONDS:
-        raise HTTPException(
-            status_code=422,
-            detail=f"managed-default must be >= {MANAGED_DEFAULT_FLOOR_SECONDS} seconds.",
-        )
-    store = _require_store()
-    try:
-        store.set_managed_default(organization_id, warehouse_name, request.value)
-    except AutomatedSavingsStoreError:
-        raise HTTPException(
-            status_code=502, detail="Could not update the managed default."
-        ) from None
-    return None
-
-
-@router.post("/{organization_id}/warehouses/{warehouse_name}/reconcile")
-def reconcile_warehouse(
-    organization_id: str,
-    warehouse_name: str,
-    request: ReconcileRequest,
-    auth_context: AuthContext = Depends(require_auth_context),
-) -> None:
-    require_org_admin(auth_context, organization_id)
-    store = _require_store()
-    try:
-        store.reconcile(organization_id, warehouse_name, accept=request.accept)
-    except AutomatedSavingsStoreError:
-        raise HTTPException(
-            status_code=502, detail="Could not reconcile the warehouse."
         ) from None
     return None
 
@@ -434,7 +373,8 @@ def check_access(
     if store is not None:
         try:
             store.set_grant_status(organization_id, present, checked_at)
-        except AutomatedSavingsStoreError:
+        except AutomatedSavingsStoreError as exc:
+            _log_store_failure("set_grant_status", exc)
             raise HTTPException(
                 status_code=502, detail="Could not persist the grant status."
             ) from None

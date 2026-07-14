@@ -81,8 +81,12 @@ function AutomatedSavingsContent() {
   const [warehouses, setWarehouses] = useState<WarehouseRow[]>([]);
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [checking, setChecking] = useState(false);
+  const [globalSwitching, setGlobalSwitching] = useState(false);
+  const [controlError, setControlError] = useState<string | null>(null);
   const loadSequenceRef = useRef(0);
   const currentOrgIdRef = useRef<string | null>(null);
+  const checkOperationRef = useRef<object | null>(null);
+  const globalOperationRef = useRef<object | null>(null);
 
   const load = useCallback(async () => {
     const requestSequence = ++loadSequenceRef.current;
@@ -95,7 +99,11 @@ function AutomatedSavingsContent() {
     setLoadState("loading");
     setStatus(null);
     setWarehouses([]);
+    checkOperationRef.current = null;
+    globalOperationRef.current = null;
     setChecking(false);
+    setGlobalSwitching(false);
+    setControlError(null);
     try {
       const nextStatus = await fetchStatus(requestOrgId, { accessToken });
       if (!isCurrentRequest()) return;
@@ -128,30 +136,50 @@ function AutomatedSavingsContent() {
   }, [load, orgId]);
 
   async function handleGlobalToggle() {
-    if (!orgId || !isAdmin || !status?.agreed) return;
-    const operationOrgId = orgId;
-    const operationSequence = loadSequenceRef.current;
-    const nextEnabled = !status.globalEnabled;
-    await setGlobalSwitch(operationOrgId, nextEnabled, { accessToken });
-    if (
-      currentOrgIdRef.current !== operationOrgId ||
-      loadSequenceRef.current !== operationSequence
-    ) {
+    if (!orgId || !isAdmin || !status?.agreed || globalOperationRef.current) {
       return;
     }
-    setStatus((current) =>
-      current?.agreed ? { ...current, globalEnabled: nextEnabled } : current,
-    );
-  }
-
-  async function handleCheckAccess() {
-    if (!orgId || !status?.agreed) return;
     const operationOrgId = orgId;
     const operationSequence = loadSequenceRef.current;
+    const operation = {};
     const isCurrentOperation = () =>
       currentOrgIdRef.current === operationOrgId &&
       loadSequenceRef.current === operationSequence;
+    const nextEnabled = !status.globalEnabled;
+    globalOperationRef.current = operation;
+    setGlobalSwitching(true);
+    setControlError(null);
+    try {
+      await setGlobalSwitch(operationOrgId, nextEnabled, { accessToken });
+      if (!isCurrentOperation()) return;
+      setStatus((current) =>
+        current?.agreed ? { ...current, globalEnabled: nextEnabled } : current,
+      );
+    } catch {
+      if (isCurrentOperation()) {
+        setControlError(
+          "Couldn’t update Automated Savings. Please try again.",
+        );
+      }
+    } finally {
+      if (globalOperationRef.current === operation) {
+        globalOperationRef.current = null;
+        if (isCurrentOperation()) setGlobalSwitching(false);
+      }
+    }
+  }
+
+  async function handleCheckAccess() {
+    if (!orgId || !status?.agreed || checkOperationRef.current) return;
+    const operationOrgId = orgId;
+    const operationSequence = loadSequenceRef.current;
+    const operation = {};
+    const isCurrentOperation = () =>
+      currentOrgIdRef.current === operationOrgId &&
+      loadSequenceRef.current === operationSequence;
+    checkOperationRef.current = operation;
     setChecking(true);
+    setControlError(null);
     try {
       const result = await checkAccess(operationOrgId, { accessToken });
       if (!isCurrentOperation()) return;
@@ -165,9 +193,28 @@ function AutomatedSavingsContent() {
             }
           : current,
       );
+    } catch {
+      if (isCurrentOperation()) {
+        setControlError("Couldn’t check Snowflake access. Please try again.");
+      }
     } finally {
-      if (isCurrentOperation()) setChecking(false);
+      if (checkOperationRef.current === operation) {
+        checkOperationRef.current = null;
+        if (isCurrentOperation()) setChecking(false);
+      }
     }
+  }
+
+  const agreementGeneration = loadSequenceRef.current;
+  function handleAgreementComplete() {
+    if (
+      !orgId ||
+      currentOrgIdRef.current !== orgId ||
+      loadSequenceRef.current !== agreementGeneration
+    ) {
+      return;
+    }
+    void load();
   }
 
   function handleRowChange(row: WarehouseRow) {
@@ -226,8 +273,8 @@ function AutomatedSavingsContent() {
               >
                 <p className="font-semibold">Grant missing</p>
                 <p className="mt-1 text-rose-300">
-                  The Snowflake role no longer has MANAGE WAREHOUSES. Automation
-                  is paused until the grant is restored:
+                  The Snowflake role no longer has MANAGE WAREHOUSES. Suspend
+                  commands will fail and back off until the grant is restored:
                 </p>
                 <pre className="mt-2 overflow-auto rounded-md border border-hairline bg-canvas p-3 text-xs text-slate-100">
                   <code>{grantSql}</code>
@@ -239,8 +286,9 @@ function AutomatedSavingsContent() {
               <label className="flex items-center gap-2 text-sm font-medium text-slate-200">
                 <Switch
                   aria-label="Automated Savings enabled for all warehouses"
+                  aria-busy={globalSwitching}
                   checked={status.globalEnabled}
-                  disabled={!isAdmin || !status.agreed}
+                  disabled={!isAdmin || !status.agreed || globalSwitching}
                   onCheckedChange={() => void handleGlobalToggle()}
                 />
                 {status.globalEnabled
@@ -258,6 +306,12 @@ function AutomatedSavingsContent() {
               </button>
             </div>
 
+            {controlError ? (
+              <p className="text-sm font-medium text-red-400" role="alert">
+                {controlError}
+              </p>
+            ) : null}
+
             <WarehouseTable
               accessToken={accessToken}
               isAdmin={isAdmin && status.agreed}
@@ -274,7 +328,7 @@ function AutomatedSavingsContent() {
                 roleName={
                   normalizeRoleName(status.roleName) ?? UNKNOWN_ROLE_PLACEHOLDER
                 }
-                onAgreed={() => void load()}
+                onAgreed={handleAgreementComplete}
               />
             </BlockingOptInModal>
           ) : null}

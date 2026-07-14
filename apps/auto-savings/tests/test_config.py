@@ -18,22 +18,14 @@ def test_from_environment_reads_cadence_and_sharding(monkeypatch):
     assert config.uptime_floor_seconds == 62  # hardcoded guardrail default
 
 
-@pytest.mark.parametrize(("env_value", "expected"), [(None, 1.0), ("0.5", 0.5)])
-def test_from_environment_maps_intent_poll_interval(monkeypatch, env_value, expected):
-    monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
-    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "svc")
-    if env_value is None:
-        monkeypatch.delenv("AUTO_SAVINGS_INTENT_POLL_INTERVAL_SECONDS", raising=False)
-    else:
-        monkeypatch.setenv("AUTO_SAVINGS_INTENT_POLL_INTERVAL_SECONDS", env_value)
-
-    assert WorkerConfig.from_environment().intent_poll_interval_seconds == expected
-
-
 def test_socket_timeout_must_be_below_poll_timeout():
     with pytest.raises(ValueError):
-        WorkerConfig(supabase_url="u", supabase_service_role_key="k",
-                     socket_timeout_seconds=20, poll_timeout_seconds=20)
+        WorkerConfig(
+            supabase_url="u",
+            supabase_service_role_key="k",
+            socket_timeout_seconds=20,
+            poll_timeout_seconds=20,
+        )
 
 
 @pytest.mark.parametrize(
@@ -43,12 +35,7 @@ def test_socket_timeout_must_be_below_poll_timeout():
         ("poll_interval_seconds", -1),
         ("poll_interval_seconds", float("nan")),
         ("poll_interval_seconds", float("inf")),
-        ("cooldown_seconds", 0),
-        ("cooldown_seconds", -5),
-        ("intent_poll_interval_seconds", 0),
         ("uptime_floor_seconds", -1),
-        ("max_intent_hold_ticks", 0),
-        ("orphan_grace_seconds", 0),
         ("tenant_refresh_seconds", 0),
         ("query_timeout_seconds", 0),
         ("socket_timeout_seconds", 0),
@@ -66,19 +53,30 @@ def test_num_replicas_must_be_at_least_one():
         WorkerConfig(supabase_url="u", supabase_service_role_key="k", num_replicas=0)
 
 
+def test_max_workers_must_be_at_least_one():
+    with pytest.raises(ValueError, match="max_workers"):
+        WorkerConfig(supabase_url="u", supabase_service_role_key="k", max_workers=0)
+
+
 def test_replica_index_must_be_within_num_replicas():
     with pytest.raises(ValueError):
         WorkerConfig(
-            supabase_url="u", supabase_service_role_key="k",
-            num_replicas=3, replica_index=3,
+            supabase_url="u",
+            supabase_service_role_key="k",
+            num_replicas=3,
+            replica_index=3,
         )
     with pytest.raises(ValueError):
         WorkerConfig(
-            supabase_url="u", supabase_service_role_key="k",
-            num_replicas=3, replica_index=-1,
+            supabase_url="u",
+            supabase_service_role_key="k",
+            num_replicas=3,
+            replica_index=-1,
         )
     # Sanity: a valid index does not raise.
     WorkerConfig(
-        supabase_url="u", supabase_service_role_key="k",
-        num_replicas=3, replica_index=2,
+        supabase_url="u",
+        supabase_service_role_key="k",
+        num_replicas=3,
+        replica_index=2,
     )

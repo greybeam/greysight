@@ -46,6 +46,8 @@ yarn-error.log*
 
 # supabase (CLI local state)
 supabase/.temp/
+# Supabase CLI local branch metadata
+/supabase/.branches/
 
 # typescript
 *.tsbuildinfo

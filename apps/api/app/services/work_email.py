@@ -7,13 +7,9 @@ import json
 import re
 from pathlib import Path
 
-_FIXTURE = (
-    Path(__file__).resolve().parents[4] / "shared" / "free-email-domains.json"
-)
+_FIXTURE = Path(__file__).resolve().parents[4] / "shared" / "free-email-domains.json"
 
-FREE_EMAIL_DOMAINS: frozenset[str] = frozenset(
-    json.loads(_FIXTURE.read_text())
-)
+FREE_EMAIL_DOMAINS: frozenset[str] = frozenset(json.loads(_FIXTURE.read_text()))
 
 # Mirrors EMAIL_PATTERN in apps/web/src/lib/work-email.ts: non-empty local part,
 # exactly one "@", dotted domain with each label non-empty.

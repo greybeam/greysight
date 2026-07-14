@@ -111,6 +111,45 @@ describe("OptInGate", () => {
     );
   });
 
+  it("allows an owner to retry after an agreement failure", async () => {
+    const agreeSpy = vi.spyOn(automatedSavingsApi, "agree")
+      .mockRejectedValueOnce(new Error("temporary failure"))
+      .mockResolvedValueOnce(undefined);
+    const onAgreed = vi.fn();
+    render(
+      <AccountChromeProvider value={withRole("owner")}>
+        <OptInGate orgId="org-1" roleName="GREYSIGHT_RL" onAgreed={onAgreed} />
+      </AccountChromeProvider>,
+    );
+    const agreeButton = screen.getByRole("button", { name: /agree/i });
+
+    fireEvent.click(agreeButton);
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    fireEvent.click(agreeButton);
+
+    await waitFor(() => expect(onAgreed).toHaveBeenCalledOnce());
+    expect(agreeSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("protects an organization from overlapping agreement requests", async () => {
+    let resolveAgree: (() => void) | undefined;
+    const agreeSpy = vi.spyOn(automatedSavingsApi, "agree").mockImplementation(
+      () => new Promise<void>((resolve) => { resolveAgree = resolve; }),
+    );
+    render(
+      <AccountChromeProvider value={withRole("owner")}>
+        <OptInGate orgId="org-1" roleName="GREYSIGHT_RL" onAgreed={() => {}} />
+      </AccountChromeProvider>,
+    );
+    const agreeButton = screen.getByRole("button", { name: /agree/i });
+
+    fireEvent.click(agreeButton);
+    fireEvent.click(agreeButton);
+
+    expect(agreeSpy).toHaveBeenCalledOnce();
+    resolveAgree?.();
+  });
+
   it("copies the GRANT SQL to the clipboard, clearing a pending copy timeout on repeat clicks", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText } });

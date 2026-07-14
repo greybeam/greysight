@@ -4,11 +4,9 @@ import {
   checkAccess,
   fetchStatus,
   fetchWarehouses,
-  reconcileWarehouse,
+  parseWarehouseRow,
   setGlobalSwitch,
-  setManagedDefault,
   toggleWarehouse,
-  ManagedDefaultFloorError,
 } from "./automated-savings-api";
 
 describe("automated-savings-api", () => {
@@ -24,29 +22,34 @@ describe("automated-savings-api", () => {
     expect(new Headers(init?.headers).get("authorization")).toBe("Bearer tok");
   });
 
-  it("maps 422 on managed-default to a floor error with API detail", async () => {
-    vi.spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response(JSON.stringify({ detail: "must be at least 60 seconds" }), { status: 422 }));
-    await expect(setManagedDefault("org-1", "WH1", 45, { accessToken: "t" }))
-      .rejects.toMatchObject({
-        name: "ManagedDefaultFloorError",
-        message: "must be at least 60 seconds",
-      } satisfies Partial<ManagedDefaultFloorError>);
-  });
+  it.each(["idle", "transitioning", "unsupported"] as const)(
+    "maps the complete %s warehouse contract",
+    async (status) => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify([{
+        name: "WH1", size: "X-Small", state: "STARTED", type: "STANDARD", supported: true,
+        min_cluster_count: 1, max_cluster_count: 2, started_clusters: 1, auto_resume_ok: true,
+        auto_suspend: 300, quiescing: 0, enabled: true, status,
+      }]), { status: 200 }));
 
-  it("maps snake_case API JSON to camelCase WarehouseRow", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify([{
-      name: "WH1", size: "X-Small", state: "STARTED", type: "STANDARD", supported: true,
-      min_cluster_count: 1, max_cluster_count: 2, started_clusters: 1, auto_resume_ok: true,
-      managed_default: 300, stored_default: 300, enabled: true, drift_state: "ok",
-      drifted_value: null, cooldown_ts: null, status: "idle",
-    }]), { status: 200 }));
-    const [row] = await fetchWarehouses("org-1", { accessToken: "t" });
-    expect(row.minClusterCount).toBe(1);
-    expect(row.autoResumeOk).toBe(true);
-    expect(row.managedDefault).toBe(300);
-    expect(row.driftState).toBe("ok");
-  });
+      const [row] = await fetchWarehouses("org-1", { accessToken: "t" });
+
+      expect(row).toEqual({
+        name: "WH1",
+        size: "X-Small",
+        state: "STARTED",
+        type: "STANDARD",
+        supported: true,
+        minClusterCount: 1,
+        maxClusterCount: 2,
+        startedClusters: 1,
+        autoResumeOk: true,
+        autoSuspend: 300,
+        quiescing: 0,
+        enabled: true,
+        status,
+      });
+    },
+  );
 
   it("maps snake_case status JSON to camelCase AutomatedSavingsStatus", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
@@ -68,52 +71,73 @@ describe("automated-savings-api", () => {
     expect(status.roleName).toBeNull();
   });
 
-  it("accepts null managed_default/stored_default without throwing", async () => {
+  it("accepts nullable live warehouse fields", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify([{
-      name: "WH2", size: "X-Small", state: "SUSPENDED", type: "STANDARD", supported: true,
-      min_cluster_count: 1, max_cluster_count: 2, started_clusters: 0, auto_resume_ok: true,
-      managed_default: null, stored_default: null, enabled: false, drift_state: "ok",
-      drifted_value: null, cooldown_ts: null, status: "idle",
-    }]), { status: 200 }));
-    const [row] = await fetchWarehouses("org-1", { accessToken: "t" });
-    expect(row.managedDefault).toBeNull();
-    expect(row.storedDefault).toBeNull();
-  });
-
-  it("accepts null cluster counts and size/state/type from a Standard-edition account", async () => {
-    // SHOW WAREHOUSES on Standard edition omits the Enterprise-only cluster
-    // columns, so the API emits max_cluster_count: null (and size/state/type
-    // can be null too). The parser must tolerate the nullable API contract
-    // instead of throwing and blanking the whole page.
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify([{
-      name: "WH3", size: null, state: null, type: null, supported: false,
+      name: "WH2", size: null, state: null, type: null, supported: false,
       min_cluster_count: null, max_cluster_count: null, started_clusters: null,
-      auto_resume_ok: false, managed_default: null, stored_default: null,
-      enabled: false, drift_state: "ok", drifted_value: null, cooldown_ts: null,
-      status: "unsupported",
+      auto_resume_ok: false, auto_suspend: null, quiescing: null,
+      enabled: false, status: "unsupported",
     }]), { status: 200 }));
     const [row] = await fetchWarehouses("org-1", { accessToken: "t" });
-    expect(row.size).toBeNull();
-    expect(row.state).toBeNull();
-    expect(row.type).toBeNull();
-    expect(row.minClusterCount).toBeNull();
-    expect(row.maxClusterCount).toBeNull();
-    expect(row.startedClusters).toBeNull();
+    expect(row).toMatchObject({
+      size: null,
+      state: null,
+      type: null,
+      minClusterCount: null,
+      maxClusterCount: null,
+      startedClusters: null,
+      autoSuspend: null,
+      quiescing: null,
+    });
   });
 
-  it("surfaces API detail on a non-422 setManagedDefault failure", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
-      JSON.stringify({ detail: "warehouse enrollment disappeared" }),
-      { status: 500 },
-    ));
-    await expect(setManagedDefault("org-1", "WH1", 120, { accessToken: "t" }))
-      .rejects.toThrow(/500: warehouse enrollment disappeared/);
+  it.each([
+    ["unknown status", { status: "mid_suspend" }],
+    ["missing auto_suspend", { auto_suspend: undefined }],
+    ["invalid quiescing", { quiescing: "0" }],
+    ["invalid nullable cluster count", { max_cluster_count: "2" }],
+  ])("rejects a warehouse response with %s", async (_case, override) => {
+    const raw = {
+      name: "WH1", size: "X-Small", state: "STARTED", type: "STANDARD", supported: true,
+      min_cluster_count: 1, max_cluster_count: 2, started_clusters: 1, auto_resume_ok: true,
+      auto_suspend: 300, quiescing: 0, enabled: true, status: "idle",
+      ...override,
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify([raw]), { status: 200 }),
+    );
+
+    await expect(fetchWarehouses("org-1", { accessToken: "t" }))
+      .rejects.toThrow("Malformed automated-savings API response");
+  });
+
+  it.each([
+    ["negative", -1],
+    ["boolean", true],
+    ["fractional", 1.5],
+    ["malformed", "1"],
+    ["NaN", Number.NaN],
+    ["infinite", Number.POSITIVE_INFINITY],
+  ])("rejects %s values for every nullable live numeric field", (_case, invalid) => {
+    const raw = {
+      name: "WH1", size: "X-Small", state: "STARTED", type: "STANDARD", supported: true,
+      min_cluster_count: 1, max_cluster_count: 2, started_clusters: 1, auto_resume_ok: true,
+      auto_suspend: 300, quiescing: 0, enabled: true, status: "idle",
+    };
+
+    for (const field of [
+      "min_cluster_count",
+      "max_cluster_count",
+      "started_clusters",
+      "auto_suspend",
+      "quiescing",
+    ] as const) {
+      expect(() => parseWarehouseRow({ ...raw, [field]: invalid }), field)
+        .toThrow("Malformed automated-savings API response");
+    }
   });
 
   it("surfaces the API's error detail when the shared fetchJson helper hits a non-ok response", async () => {
-    // fetchStatus (like fetchWarehouses/toggleWarehouse/reconcileWarehouse/
-    // checkAccess/agree) goes through the shared fetchJson helper, distinct
-    // from setManagedDefault's standalone fetch call above.
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ detail: "org not found" }), { status: 500 }),
     );
@@ -125,8 +149,6 @@ describe("automated-savings-api", () => {
     ["agree", () => agree("org-1", { accessToken: "t" }), "/agree", undefined],
     ["global switch", () => setGlobalSwitch("org-1", true, { accessToken: "t" }), "/global-switch", { enabled: true }],
     ["warehouse toggle", () => toggleWarehouse("org-1", "WH1", false, { accessToken: "t" }), "/warehouses/WH1/toggle", { enabled: false }],
-    ["managed default", () => setManagedDefault("org-1", "WH1", 120, { accessToken: "t" }), "/warehouses/WH1/managed-default", { value: 120 }],
-    ["reconcile", () => reconcileWarehouse("org-1", "WH1", true, { accessToken: "t" }), "/warehouses/WH1/reconcile", { accept: true }],
   ])("posts the %s mutation contract", async (_name, invoke, route, body) => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }));

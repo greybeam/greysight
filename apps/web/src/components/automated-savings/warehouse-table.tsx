@@ -5,15 +5,11 @@ import { Badge } from "@tremor/react";
 
 import {
   fetchWarehouses,
-  reconcileWarehouse,
-  setManagedDefault,
   toggleWarehouse,
   type WarehouseRow,
 } from "../../lib/automated-savings-api";
 import { Switch } from "../ui/switch";
 import { Tooltip } from "../ui/tooltip";
-
-const MANAGED_DEFAULT_FLOOR = 60;
 
 // The API surfaces a user-facing reason as the `detail` after the status code
 // (see fetchJson). Prefer that over the raw "failed with 502: …" prefix; fall
@@ -45,19 +41,38 @@ type DisplayStatus = {
 // warehouse right now?" — collapsing the old separate AUTO_RESUME-health and
 // operational-status columns. First matching condition wins.
 function deriveDisplayStatus(warehouse: WarehouseRow): DisplayStatus {
-  if (warehouse.type !== "STANDARD") return { label: "Unsupported", color: "slate" };
+  if (
+    warehouse.type !== "STANDARD" ||
+    !warehouse.supported ||
+    warehouse.status === "unsupported"
+  ) {
+    return { label: "Unsupported", color: "slate" };
+  }
+  if (warehouse.status === "transitioning") {
+    return { label: "Transitioning", color: "amber" };
+  }
   if (!warehouse.autoResumeOk) return { label: "Can't automate", color: "rose" };
   if (!warehouse.enabled) return { label: "Disabled", color: "slate" };
-  switch (warehouse.status) {
-    case "drifted":
-      return { label: "Drifted", color: "rose" };
-    case "mid_suspend":
-      return { label: "Suspending", color: "amber" };
-    case "in_cooldown":
-      return { label: "In cooldown", color: "amber" };
-    default:
-      return { label: "Savings enabled", color: "emerald" };
+  return { label: "Savings enabled", color: "emerald" };
+}
+
+function deriveToggleDisabledReason(
+  warehouse: WarehouseRow,
+  isAdmin: boolean,
+  busy: boolean,
+  unsupported: boolean,
+): string | null {
+  if (!isAdmin) return "Only owners and admins can change warehouse enrollment.";
+  if (busy) return "Warehouse enrollment is updating.";
+  if (warehouse.enabled) return null;
+  if (warehouse.status === "transitioning") {
+    return "This warehouse is transitioning and can't be enrolled yet.";
   }
+  if (unsupported) return "This warehouse type isn't supported.";
+  if (!warehouse.autoResumeOk) {
+    return "AUTO_RESUME is off — Greysight can't automate safely.";
+  }
+  return null;
 }
 
 // A column header with an instant, styled explanatory tooltip (see ui/Tooltip).
@@ -82,8 +97,8 @@ export function WarehouseTable({ orgId, warehouses, isAdmin, accessToken, onChan
         <tr>
           <th className="whitespace-nowrap px-4 py-3.5 font-semibold">Name</th>
           <HeaderWithTooltip
-            label="Default Auto Suspend"
-            tooltip="This is the AUTO_SUSPEND a warehouse will be restored to after Greysight suspends it."
+            label="Auto Suspend"
+            tooltip="The current Snowflake AUTO_SUSPEND setting. Greysight requests safe Snowflake suspension after the billing floor."
           />
           <HeaderWithTooltip
             label="Status"
@@ -119,48 +134,23 @@ type WarehouseRowViewProps = {
 };
 
 function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange, onRefresh }: WarehouseRowViewProps) {
-  const inputId = useId();
-  // Unenrolled warehouses have a null managed_default — show an empty input
-  // rather than coercing to a misleading number.
-  const [draftValue, setDraftValue] = useState(
-    warehouse.managedDefault === null ? "" : String(warehouse.managedDefault),
-  );
-  const [floorWarning, setFloorWarning] = useState(false);
+  const disabledReasonId = useId();
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [refreshFailed, setRefreshFailed] = useState(false);
 
-  const unsupported = warehouse.type !== "STANDARD";
-  const toggleDisabled = !isAdmin || !warehouse.autoResumeOk || unsupported || busy;
-  // A warehouse that isn't enrolled (or has no captured managed default yet)
-  // has no server-side row to persist an edit against — editing the blank
-  // input would create stale/partial state that the next enroll overwrites.
-  const editDisabled =
-    !isAdmin || unsupported || busy || !warehouse.enabled || warehouse.managedDefault == null;
+  const unsupported =
+    warehouse.type !== "STANDARD" ||
+    !warehouse.supported ||
+    warehouse.status === "unsupported";
+  const disabledReason = deriveToggleDisabledReason(
+    warehouse,
+    isAdmin,
+    busy,
+    unsupported,
+  );
+  const toggleDisabled = disabledReason !== null;
   const displayStatus = deriveDisplayStatus(warehouse);
-
-  async function commitManagedDefault() {
-    const parsed = Number(draftValue);
-    if (!Number.isFinite(parsed) || parsed < MANAGED_DEFAULT_FLOOR) {
-      setFloorWarning(true);
-      setDraftValue(
-        warehouse.managedDefault === null ? "" : String(warehouse.managedDefault),
-      );
-      return;
-    }
-    setFloorWarning(false);
-    if (parsed === warehouse.managedDefault) return;
-    setBusy(true);
-    setActionError(null);
-    try {
-      await setManagedDefault(orgId, warehouse.name, parsed, { accessToken });
-      onChange({ ...warehouse, managedDefault: parsed });
-    } catch (error) {
-      setActionError(toUserMessage(error));
-    } finally {
-      setBusy(false);
-    }
-  }
 
   async function handleToggle() {
     if (toggleDisabled) return;
@@ -184,11 +174,6 @@ function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange, on
         if (!authoritative) {
           throw new Error("The enrolled warehouse could not be refreshed.");
         }
-        setDraftValue(
-          authoritative.managedDefault === null
-            ? ""
-            : String(authoritative.managedDefault),
-        );
         onChange(authoritative);
       } catch {
         setRefreshFailed(true);
@@ -214,81 +199,29 @@ function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange, on
     }
   }
 
-  async function handleReconcile() {
-    setBusy(true);
-    setActionError(null);
-    try {
-      await reconcileWarehouse(orgId, warehouse.name, true, { accessToken });
-      onChange({ ...warehouse, driftState: "ok", status: "idle" });
-    } catch (error) {
-      setActionError(toUserMessage(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <tr>
       <td className="px-4 py-2 font-semibold text-slate-100">{warehouse.name}</td>
       <td className="px-4 py-2">
-        <label className="sr-only" htmlFor={inputId}>
-          {`${warehouse.name} AUTO_SUSPEND`}
-        </label>
-        <input
-          id={inputId}
-          type="number"
-          min={MANAGED_DEFAULT_FLOOR}
-          placeholder="—"
-          disabled={editDisabled}
-          value={draftValue}
-          className="w-20 rounded border border-hairline bg-canvas px-2 py-1 text-slate-100 disabled:opacity-50"
-          onChange={(event) => setDraftValue(event.target.value)}
-          onBlur={commitManagedDefault}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              void commitManagedDefault();
-            }
-          }}
-        />
-        {floorWarning ? (
-          <p className="mt-1 max-w-[10rem] text-xs text-amber-300" role="alert">
-            AUTO_SUSPEND can&apos;t go below {MANAGED_DEFAULT_FLOOR}s — Snowflake&apos;s billing floor.
-          </p>
-        ) : null}
+        {warehouse.autoSuspend === null ? "—" : `${warehouse.autoSuspend}s`}
       </td>
       <td className="px-4 py-2">
-        <span className="inline-flex items-center gap-1">
-          <Badge color={displayStatus.color}>{displayStatus.label}</Badge>
-          {displayStatus.label === "Drifted" ? (
-            <button
-              type="button"
-              disabled={!isAdmin || busy}
-              onClick={handleReconcile}
-              className="rounded border border-hairline px-2 py-0.5 text-xs font-medium text-slate-200 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Reconcile
-            </button>
-          ) : null}
-        </span>
+        <Badge color={displayStatus.color}>{displayStatus.label}</Badge>
       </td>
       <td className="px-4 py-2">
-        <span
-          className="group relative inline-flex"
-          title={
-            unsupported
-              ? "Snowpark-optimized warehouses aren't supported yet"
-              : !warehouse.autoResumeOk
-                ? "AUTO_RESUME off — can't automate safely"
-                : undefined
-          }
-        >
+        <span className="group relative inline-flex">
           <Switch
             aria-label={warehouse.name}
+            aria-describedby={disabledReason ? disabledReasonId : undefined}
             checked={warehouse.enabled}
             disabled={toggleDisabled}
             onCheckedChange={handleToggle}
           />
+          {disabledReason ? (
+            <span className="sr-only" id={disabledReasonId}>
+              {disabledReason}
+            </span>
+          ) : null}
         </span>
         {actionError ? (
           <p className="mt-1 max-w-[16rem] text-xs text-rose-300" role="alert">

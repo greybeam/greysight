@@ -13,9 +13,9 @@ Three layers, cleanly separated so each is independently testable:
   ``< poll_timeout_seconds``) frees the *pool thread* — a blocked C-level
   ``recv`` cannot be cancelled from Python, it can only time out on its own.
 
-* ``tenant_loop`` — polls forever until its ``stop`` event is set, sleeping
-  ``poll_interval_seconds`` on success (backoff reset) and a jittered
-  exponential backoff on failure.
+* ``tenant_loop`` — polls forever until its ``stop`` event is set. Normal cycles
+  use the jittered poll cadence. Unknown-idempotent outcomes and actual failures
+  use exponential backoff, but only failures recycle the Snowflake session.
 
 * ``supervisor`` — re-enumerates owned tenants every ``tenant_refresh_seconds``,
   starting loops for newcomers and stop-signalling + draining loops whose
@@ -30,7 +30,7 @@ import logging
 import random
 from concurrent.futures import Executor
 from datetime import datetime, timezone
-from typing import Callable, NamedTuple
+from typing import Awaitable, Callable, NamedTuple
 
 from greysight_connect.org_connection_resolver import (
     OrgConnectionNotConfiguredError,
@@ -38,7 +38,7 @@ from greysight_connect.org_connection_resolver import (
 )
 
 from auto_savings.config import WorkerConfig
-from auto_savings.engine import run_cycle
+from auto_savings.engine import CycleResult, run_cycle
 from auto_savings.sharding import owns_tenant
 from auto_savings.snowflake_session import TenantSession, next_backoff
 from auto_savings.store import Store
@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 NowFn = Callable[[], datetime]
 JitterFn = Callable[[], float]
-SleepFn = Callable[[float], "asyncio.Future[None]"]
+SleepFn = Callable[[float], Awaitable[None]]
 # A factory resolves an org's connection ONCE and returns both the warm session
 # and the fingerprint of that same resolved connection, so the two can never be
 # derived from separate reads that disagree after a rotation (finding #2).
@@ -58,6 +58,7 @@ FingerprintFn = Callable[[str], str]
 class _RunningLoop(NamedTuple):
     """A live per-tenant loop plus the state needed to supervise it."""
 
+    organization_id: str
     task: "asyncio.Task[None]"
     stop_event: asyncio.Event
     session: TenantSession
@@ -66,21 +67,51 @@ class _RunningLoop(NamedTuple):
     # its account/credentials and the warm session must be recycled.
     fingerprint: str | None
 
-# One asyncio.Lock per org so a slow tenant never overlaps its own polls, even
-# if two ticks are somehow dispatched concurrently for the same tenant.
-_locks: dict[str, asyncio.Lock] = {}
-
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _lock_for(org_id: str) -> asyncio.Lock:
-    lock = _locks.get(org_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _locks[org_id] = lock
-    return lock
+def _close_session_safely(
+    session: TenantSession,
+    *,
+    org_id: str,
+    phase: str,
+) -> None:
+    """Best-effort hard close without replacing the authoritative failure."""
+    try:
+        session.close_hard()
+    except Exception as exc:
+        logger.warning(
+            "Automated Savings session hard-close failed",
+            extra={
+                "event": "session_close_failed",
+                "organization_id": org_id,
+                "phase": phase,
+                "error_type": type(exc).__name__,
+            },
+        )
+
+
+async def _wait_or_stop(stop: asyncio.Event, delay: float, sleep: SleepFn) -> None:
+    """Wait for the cadence delay unless tenant shutdown wins the race."""
+    if stop.is_set():
+        return
+    sleep_task = asyncio.ensure_future(sleep(delay))
+    stop_task = asyncio.create_task(stop.wait())
+    tasks = {sleep_task, stop_task}
+    try:
+        done, _pending = await asyncio.wait(
+            tasks,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if sleep_task in done:
+            await sleep_task
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def run_tenant_once(
@@ -91,19 +122,19 @@ async def run_tenant_once(
     config: WorkerConfig,
     executor: Executor,
     now_fn: NowFn,
-) -> bool:
+    unknown_attempts: dict[str, str],
+    lock: asyncio.Lock,
+) -> CycleResult:
     """One guarded poll → cycle tick for a single tenant.
 
-    On success runs the engine cycle and returns whether any restore-intent
-    remains outstanding (so the caller can fast-poll). If a failed tick started,
+    On success returns the engine's cadence result. If a failed tick started,
     the warm session is force-closed; a still-queued tick is cancelled. The
-    original error is re-raised so the caller backs off.
+    original error is re-raised so the caller reconnects and backs off.
     """
-    lock = _lock_for(org_id)
     async with lock:
         loop = asyncio.get_running_loop()
 
-        def _tick() -> bool:
+        def _tick() -> CycleResult:
             # The ENTIRE blocking tick runs on a pool thread: the Snowflake
             # SHOW WAREHOUSES *and* run_cycle (which does Supabase httpx reads
             # and Snowflake ALTERs). Running run_cycle on the event loop would
@@ -115,7 +146,8 @@ async def run_tenant_once(
                 store=store,
                 config=config,
                 now=now_fn(),
-                apply_alter=session.alter_auto_suspend,
+                suspend=session.suspend_warehouse,
+                unknown_attempts=unknown_attempts,
             )
 
         # Retain the underlying concurrent future so a still-queued tick can be
@@ -135,7 +167,7 @@ async def run_tenant_once(
                 raise
             # Cleanup a possibly-wedged connection; closing the socket makes the
             # blocked recv on the pool thread raise promptly.
-            session.close_hard()
+            _close_session_safely(session, org_id=org_id, phase="pre_drain")
             # GUARANTEED drain: wait for the abandoned _tick thread to ACTUALLY
             # terminate before returning, so the NEXT tick can never overlap it
             # on the same session/connection (concurrent Supabase/Snowflake
@@ -145,11 +177,18 @@ async def run_tenant_once(
             # every Supabase store call by store_timeout_seconds — so the thread
             # is guaranteed to finish promptly. asyncio.wait never re-raises the
             # future's own exception, so we surface the ORIGINAL error below.
-            await asyncio.wait({future})
-            if not future.cancelled():
-                # Mark a released worker failure as retrieved. The timeout/error
-                # that brought us here remains the authoritative exception.
-                future.exception()
+            try:
+                await asyncio.wait({future})
+                if not future.cancelled():
+                    # Mark a released worker failure as retrieved. The timeout/error
+                    # that brought us here remains the authoritative exception.
+                    future.exception()
+            finally:
+                # A tick blocked in the store can resume after the first close and
+                # reconnect while finishing its direct suspend. Close again only
+                # after the worker has fully drained so that connection cannot leak
+                # into the next tick.
+                _close_session_safely(session, org_id=org_id, phase="post_drain")
             raise
 
 
@@ -167,43 +206,51 @@ async def tenant_loop(
 ) -> None:
     """Poll a single tenant until ``stop`` is set.
 
-    Success → sleep ``poll_interval_seconds`` and reset the backoff attempt.
-    Failure → sleep ``next_backoff(attempt, …)`` and increment the attempt.
+    A normal cycle sleeps on the jittered poll cadence and resets the backoff
+    attempt. Unknown-idempotent results and failures use ``next_backoff`` and
+    increment the attempt; only failures hard-close the session.
     """
     if stop is None:
         stop = asyncio.Event()
     attempt = 0
+    unknown_attempts: dict[str, str] = {}
+    lock = asyncio.Lock()
     while not stop.is_set():
         try:
-            has_intents = await run_tenant_once(
+            result = await run_tenant_once(
                 org_id,
                 session=session,
                 store=store,
                 config=config,
                 executor=executor,
                 now_fn=now_fn,
+                unknown_attempts=unknown_attempts,
+                lock=lock,
             )
-        except Exception:
+        except Exception as exc:
             delay = next_backoff(attempt, jitter=jitter)
-            attempt += 1
-            await sleep(delay)
-        else:
-            attempt = 0
-            # Fast-poll while an intent is outstanding to shrink the
-            # AUTO_SUSPEND=1-live window. The ±15% jitter is applied to BOTH the
-            # fast intent-poll cadence AND the normal steady-state cadence
-            # (finding #17) — this is deliberate, not an oversight: without it,
-            # every tenant on this replica would settle into the exact same
-            # poll_interval_seconds phase and hammer Snowflake/Supabase in
-            # lockstep. Jittering steady-state too spreads the fleet's poll
-            # timing evenly instead of phase-locking on a shared cadence.
-            base = (
-                config.intent_poll_interval_seconds
-                if has_intents
-                else config.poll_interval_seconds
+            logger.warning(
+                "Automated Savings tenant tick failed; backing off",
+                extra={
+                    "event": "tenant_tick_backoff",
+                    "organization_id": org_id,
+                    "attempt": attempt,
+                    "error_type": type(exc).__name__,
+                },
             )
-            delay = base * (0.85 + 0.30 * jitter())
-            await sleep(delay)
+            attempt += 1
+            await _wait_or_stop(stop, delay, sleep)
+        else:
+            if result is CycleResult.RETRY_BACKOFF:
+                delay = next_backoff(attempt, jitter=jitter)
+                attempt += 1
+                await _wait_or_stop(stop, delay, sleep)
+                continue
+            if result is not CycleResult.NORMAL:
+                raise RuntimeError(f"unexpected cycle result: {result!r}")
+            attempt = 0
+            delay = config.poll_interval_seconds * (0.85 + 0.30 * jitter())
+            await _wait_or_stop(stop, delay, sleep)
 
 
 async def supervisor(
@@ -235,23 +282,34 @@ async def supervisor(
     try:
         while stop is None or not stop.is_set():
             try:
+                tenants = await loop.run_in_executor(executor, store.worker_tenants)
                 owned = {
                     tenant
-                    for tenant in store.worker_tenants()
+                    for tenant in tenants
                     if owns_tenant(
                         tenant,
                         num_replicas=config.num_replicas,
                         replica_index=config.replica_index,
                     )
                 }
-            except Exception:
+            except Exception as exc:
                 # A transient store failure must not kill the supervisor; retry
                 # on the next refresh with the current set of loops intact.
-                await sleep(config.tenant_refresh_seconds)
+                logger.warning(
+                    "Automated Savings tenant enumeration failed",
+                    extra={
+                        "event": "tenant_enumeration_failed",
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                if stop is None:
+                    await sleep(config.tenant_refresh_seconds)
+                else:
+                    await _wait_or_stop(stop, config.tenant_refresh_seconds, sleep)
                 continue
 
             for org_id in owned - running.keys():
-                started = _start_loop(
+                started = await _start_loop(
                     org_id,
                     session_factory=session_factory,
                     store=store,
@@ -262,8 +320,10 @@ async def supervisor(
                 if started is not None:
                     running[org_id] = started
 
-            for org_id in [org for org in running if org not in owned]:
-                await _drain_loop(running.pop(org_id))
+            removed = [
+                running.pop(org_id) for org_id in list(running) if org_id not in owned
+            ]
+            await _drain_loops(removed)
 
             # Revalidate still-owned loops: restart crashed tasks (#12b) and
             # recycle warm sessions whose connection rotated/vanished (#3).
@@ -275,7 +335,7 @@ async def supervisor(
                 if entry.task.done():
                     await _drain_loop(entry)
                     running.pop(org_id)
-                    restarted = _start_loop(
+                    restarted = await _start_loop(
                         org_id,
                         session_factory=session_factory,
                         store=store,
@@ -294,7 +354,9 @@ async def supervisor(
                     # run it on the pool thread so the supervisor loop never blocks
                     # on network I/O (which would delay sleeps and weaken the
                     # watchdog across many tenants — finding #IMPORTANT-3).
-                    current = await loop.run_in_executor(executor, fingerprint_fn, org_id)
+                    current = await loop.run_in_executor(
+                        executor, fingerprint_fn, org_id
+                    )
                 except OrgConnectionUnavailableError:
                     # A TRANSIENT lookup failure (network/timeout/5xx): we cannot
                     # tell whether the connection is gone. KEEP the warm session
@@ -312,12 +374,17 @@ async def supervisor(
                     await _drain_loop(entry)
                     running.pop(org_id)
                     continue
-                except Exception:
+                except Exception as exc:
                     # Any other unexpected error must not kill the warm session
                     # or the refresh; keep the current loop and retry next time.
-                    logger.exception(
-                        "Failed to revalidate connection for %s; keeping session",
-                        org_id,
+                    logger.warning(
+                        "Automated Savings connection revalidation failed; "
+                        "keeping session",
+                        extra={
+                            "event": "connection_revalidation_failed",
+                            "organization_id": org_id,
+                            "error_type": type(exc).__name__,
+                        },
                     )
                     continue
                 if current != entry.fingerprint:
@@ -325,7 +392,7 @@ async def supervisor(
                     # OLD account. Stop + close it and start a fresh one.
                     await _drain_loop(entry)
                     running.pop(org_id)
-                    restarted = _start_loop(
+                    restarted = await _start_loop(
                         org_id,
                         session_factory=session_factory,
                         store=store,
@@ -336,14 +403,19 @@ async def supervisor(
                     if restarted is not None:
                         running[org_id] = restarted
 
-            await sleep(config.tenant_refresh_seconds)
+            if stop is None:
+                await sleep(config.tenant_refresh_seconds)
+            else:
+                await _wait_or_stop(stop, config.tenant_refresh_seconds, sleep)
     finally:
-        # Shutdown: stop, drain, and release every remaining tenant loop.
-        for org_id in list(running.keys()):
-            await _drain_loop(running.pop(org_id))
+        # Signal every tenant first, then drain concurrently. One slow tenant
+        # cannot delay stop delivery to the rest during global shutdown.
+        entries = list(running.values())
+        running.clear()
+        await _drain_loops(entries)
 
 
-def _start_loop(
+async def _start_loop(
     org_id: str,
     *,
     session_factory: SessionFactory,
@@ -361,10 +433,18 @@ def _start_loop(
     and return None so every other tenant keeps running. It retries next refresh.
     """
     try:
-        session, fingerprint = session_factory(org_id)
-    except Exception:
-        logger.exception(
-            "Failed to start tenant loop for %s; skipping this refresh", org_id
+        loop = asyncio.get_running_loop()
+        session, fingerprint = await loop.run_in_executor(
+            executor, session_factory, org_id
+        )
+    except Exception as exc:
+        logger.warning(
+            "Automated Savings tenant session start failed; skipping refresh",
+            extra={
+                "event": "tenant_session_start_failed",
+                "organization_id": org_id,
+                "error_type": type(exc).__name__,
+            },
         )
         return None
 
@@ -380,7 +460,7 @@ def _start_loop(
             stop=stop_event,
         )
     )
-    return _RunningLoop(task, stop_event, session, fingerprint)
+    return _RunningLoop(org_id, task, stop_event, session, fingerprint)
 
 
 async def _drain_loop(entry: _RunningLoop) -> None:
@@ -390,9 +470,23 @@ async def _drain_loop(entry: _RunningLoop) -> None:
         await entry.task
     except asyncio.CancelledError:
         raise
-    except Exception:
+    except Exception as exc:
         # The loop already handles its own errors; a failed task on teardown is
         # not fatal to the supervisor's shutdown.
-        pass
+        logger.warning(
+            "Automated Savings tenant loop crashed",
+            extra={
+                "event": "tenant_loop_crashed",
+                "organization_id": entry.organization_id,
+                "error_type": type(exc).__name__,
+            },
+        )
     finally:
         entry.session.close_hard()
+
+
+async def _drain_loops(entries: list[_RunningLoop]) -> None:
+    """Signal a batch before concurrently draining any individual loop."""
+    for entry in entries:
+        entry.stop_event.set()
+    await asyncio.gather(*(_drain_loop(entry) for entry in entries))

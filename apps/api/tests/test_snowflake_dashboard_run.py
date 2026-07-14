@@ -265,9 +265,7 @@ def test_snowflake_dashboard_run_falls_back_to_estimated_mode(
     assert run_response.status_code == 202
     run_id = run_response.json()["id"]
     assert _wait_terminal(run_id) == "completed"
-    datasets_response = TestClient(app).get(
-        f"/api/dashboard-runs/{run_id}/datasets"
-    )
+    datasets_response = TestClient(app).get(f"/api/dashboard-runs/{run_id}/datasets")
     body = datasets_response.json()
     assert body["metadata"]["data_mode"] == "estimated"
     assert body["metadata"]["organization_usage"]["available"] is False

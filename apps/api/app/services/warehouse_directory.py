@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from greysight_connect.snowflake_client import (
     SnowflakeConnectionConfig,
@@ -14,6 +13,8 @@ from greysight_connect.snowflake_client import (
 # that tests can monkeypatch (`warehouse_directory.execute_metadata_query`).
 
 _VALID_ROLE_NAME = re.compile(r'^[A-Za-z0-9_$ "]+$')
+
+WarehouseStatus = Literal["idle", "transitioning", "unsupported"]
 
 
 @dataclass(frozen=True)
@@ -27,13 +28,10 @@ class WarehouseView:
     max_cluster_count: int | None
     started_clusters: int | None
     auto_resume_ok: bool
-    managed_default: int | None
-    stored_default: int | None
+    auto_suspend: int | None
+    quiescing: int | None
     enabled: bool
-    drift_state: str
-    drifted_value: int | None
-    cooldown_ts: str | None
-    status: str
+    status: WarehouseStatus
 
 
 def list_live_warehouses(
@@ -63,20 +61,18 @@ def _escape_role_identifier(role_name: str) -> str:
     if not isinstance(role_name, str) or not role_name.strip():
         raise ValueError("role_name must be a non-empty string")
     if not _VALID_ROLE_NAME.fullmatch(role_name):
-        raise ValueError(f"role_name is not a valid Snowflake identifier: {role_name!r}")
+        raise ValueError(
+            f"role_name is not a valid Snowflake identifier: {role_name!r}"
+        )
     return role_name.replace('"', '""')
 
 
 def join_warehouse_view(
     live: list[dict[str, Any]],
     enrollments: list[Any],
-    *,
-    now: datetime | None = None,
 ) -> list[WarehouseView]:
-    # `now` is injectable for deterministic tests; default to wall-clock UTC.
-    now = now or datetime.now(timezone.utc)
     enrollment_by_name = {
-        str(getattr(row, "warehouse_name", "")).upper(): row for row in enrollments
+        str(getattr(row, "warehouse_name", "")): row for row in enrollments
     }
     views: list[WarehouseView] = []
     for row in live:
@@ -85,7 +81,7 @@ def join_warehouse_view(
         supported = str(warehouse_type).upper() == "STANDARD"
         auto_resume_raw = row.get("auto_resume")
         auto_resume_ok = str(auto_resume_raw).strip().lower() == "true"
-        enrollment = enrollment_by_name.get(name.upper())
+        enrollment = enrollment_by_name.get(name)
 
         # `min_cluster_count`/`started_clusters`/`max_cluster_count` are Enterprise+-only
         # columns; SHOW WAREHOUSES omits them on Standard edition (Task 0 spike,
@@ -100,12 +96,9 @@ def join_warehouse_view(
             started_clusters = 1
 
         enabled = bool(getattr(enrollment, "enabled", False))
-        managed_default = getattr(enrollment, "managed_auto_suspend", None)
-        stored_default = getattr(enrollment, "stored_default_auto_suspend", None)
-        drift_state = getattr(enrollment, "drift_state", "ok")
-        drifted_value = getattr(enrollment, "drifted_value", None)
-        cooldown_ts = getattr(enrollment, "cooldown_ts", None)
         state = row.get("state")
+        auto_suspend = _parse_nonnegative_int(row.get("auto_suspend"))
+        quiescing = _parse_quiescing(row.get("quiescing"))
 
         views.append(
             WarehouseView(
@@ -118,18 +111,13 @@ def join_warehouse_view(
                 max_cluster_count=row.get("max_cluster_count"),
                 started_clusters=started_clusters,
                 auto_resume_ok=auto_resume_ok,
-                managed_default=managed_default,
-                stored_default=stored_default,
+                auto_suspend=auto_suspend,
+                quiescing=quiescing,
                 enabled=enabled,
-                drift_state=drift_state,
-                drifted_value=drifted_value,
-                cooldown_ts=cooldown_ts,
                 status=_compute_status(
                     supported=supported,
-                    drift_state=drift_state,
-                    cooldown_ts=cooldown_ts,
                     state=state,
-                    now=now,
+                    quiescing=quiescing,
                 ),
             )
         )
@@ -139,42 +127,33 @@ def join_warehouse_view(
 def _compute_status(
     *,
     supported: bool,
-    drift_state: str,
-    cooldown_ts: str | None,
     state: str | None,
-    now: datetime,
-) -> str:
+    quiescing: int | None,
+) -> WarehouseStatus:
     if not supported:
         return "unsupported"
-    if drift_state == "drifted":
-        return "drifted"
-    if _cooldown_active(cooldown_ts, now):
-        return "in_cooldown"
-    if str(state or "").upper() in ("SUSPENDING", "RESUMING"):
-        return "mid_suspend"
+    if str(state or "").upper() in ("SUSPENDING", "RESUMING") or (
+        quiescing is not None and quiescing > 0
+    ):
+        return "transitioning"
     return "idle"
 
 
-def _cooldown_active(cooldown_ts: str | None, now: datetime) -> bool:
-    """True only while the anti-thrash cooldown is still in the future.
-
-    The worker writes `cooldown_ts = restore_time + cooldown_seconds` and never
-    nulls it, so a bare truthiness check would pin the status to `in_cooldown`
-    forever after the first restore. Mirror the worker's own expiry check
-    (engine.py: `cooldown_ts is not None and cooldown_ts > now`): parse the
-    stored timestamp and compare it to `now`. An unparseable value is treated as
-    inactive rather than sticking the badge on."""
-    if not cooldown_ts:
-        return False
-    parsed = _coerce_utc(cooldown_ts)
-    if parsed is None:
-        return False
-    return parsed > now
-
-
-def _coerce_utc(value: str) -> datetime | None:
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
+def _parse_nonnegative_int(value: Any) -> int | None:
+    if isinstance(value, bool):
         return None
-    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if parsed < 0 or (not isinstance(value, str) and value != parsed):
+        return None
+    return parsed
+
+
+def _parse_quiescing(value: Any) -> int | None:
+    # Observed SHOW WAREHOUSES contract: Snowflake encodes idle quiescing as the
+    # exact empty string, while a draining warehouse returns a numeric value.
+    if value == "":
+        return 0
+    return _parse_nonnegative_int(value)

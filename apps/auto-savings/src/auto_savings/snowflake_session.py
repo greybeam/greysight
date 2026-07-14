@@ -11,6 +11,9 @@ fails before the watchdog trips (see WorkerConfig.__post_init__).
 from __future__ import annotations
 
 import hashlib
+import logging
+from dataclasses import dataclass
+from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -18,6 +21,61 @@ try:
     import snowflake.connector as _snowflake_connector
 except ImportError:  # pragma: no cover - snowflake connector optional at import time
     _snowflake_connector = None
+
+logger = logging.getLogger(__name__)
+
+
+class SuspendOutcome(Enum):
+    ACCEPTED = auto()
+    UNKNOWN_IDEMPOTENT = auto()
+
+
+@dataclass(frozen=True)
+class ConnectorErrorMetadata:
+    """Sanitized connector fields retained for correlated engine telemetry."""
+
+    error_type: str
+    errno: int | None
+    sqlstate: str | None
+    message: str | None
+
+
+@dataclass(frozen=True)
+class SuspendResult:
+    outcome: SuspendOutcome
+    connector_error: ConnectorErrorMetadata | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            self.outcome is SuspendOutcome.ACCEPTED
+            and self.connector_error is not None
+        ):
+            raise ValueError(
+                "accepted suspend results cannot include connector metadata"
+            )
+        if (
+            self.outcome is SuspendOutcome.UNKNOWN_IDEMPOTENT
+            and self.connector_error is None
+        ):
+            raise ValueError("unknown suspend results require connector metadata")
+
+
+def _sanitize_connector_message(value: object) -> str | None:
+    if value is None:
+        return None
+    message = " ".join(str(value).split())
+    if not message:
+        return None
+    return message[:512]
+
+
+def connector_error_metadata(exc: Any) -> ConnectorErrorMetadata:
+    return ConnectorErrorMetadata(
+        error_type=type(exc).__name__,
+        errno=getattr(exc, "errno", None),
+        sqlstate=getattr(exc, "sqlstate", None),
+        message=_sanitize_connector_message(getattr(exc, "raw_msg", None)),
+    )
 
 
 def _connect_with_kwargs(kwargs: dict) -> Any:
@@ -81,17 +139,37 @@ class TenantSession:
         finally:
             cursor.close()
 
-    def alter_auto_suspend(self, name: str, value: int) -> None:
+    def suspend_warehouse(self, name: str) -> SuspendResult:
         self.ensure_connected()
         cursor = self._connection.cursor()
         try:
             quoted = _quote_identifier(name)
-            cursor.execute(f"ALTER WAREHOUSE {quoted} SET AUTO_SUSPEND = {value}")
-        except BaseException:
+            cursor.execute(f"ALTER WAREHOUSE {quoted} SUSPEND")
+        except BaseException as exc:
             try:
                 cursor.close()
             except Exception:
                 pass
+
+            if (
+                _snowflake_connector is not None
+                and isinstance(exc, _snowflake_connector.errors.Error)
+                and exc.errno == 90064
+            ):
+                metadata = connector_error_metadata(exc)
+                logger.warning(
+                    "Snowflake suspend outcome is unknown but idempotent",
+                    extra={
+                        "connector_error_type": metadata.error_type,
+                        "connector_errno": metadata.errno,
+                        "connector_sqlstate": metadata.sqlstate,
+                        "connector_message": metadata.message,
+                    },
+                )
+                return SuspendResult(
+                    outcome=SuspendOutcome.UNKNOWN_IDEMPOTENT,
+                    connector_error=metadata,
+                )
             raise
         else:
             try:
@@ -100,6 +178,7 @@ class TenantSession:
                 # The ALTER succeeded. Cleanup failure must not trigger a retry or
                 # cause the successful mutation to be recorded as failed.
                 pass
+            return SuspendResult(outcome=SuspendOutcome.ACCEPTED)
 
     def close_hard(self) -> None:
         connection = self._connection
