@@ -15,6 +15,7 @@ interface ConnectWizardProps {
   accessToken?: string | null;
   connect?: (input: ConnectSnowflakeInput, options: { accessToken?: string | null }) => Promise<string>;
   onConnected: (organizationId: string) => void;
+  outboundIps?: readonly string[];
 }
 
 const KEY_PAIR_DOCS =
@@ -22,6 +23,45 @@ const KEY_PAIR_DOCS =
 
 const ACCOUNT_LOCATOR_SQL =
   "SELECT CURRENT_ORGANIZATION_NAME() || '-' || CURRENT_ACCOUNT_NAME();";
+
+function parseConfiguredOutboundIps(raw: string | undefined): readonly string[] {
+  if (!raw?.trim()) return [];
+  const values = raw.split(",").map((value) => value.trim());
+  const isIpv4 = (value: string) => {
+    const octets = value.split(".");
+    if (octets.length !== 4 || octets.some((octet) =>
+      !/^(0|[1-9]\d{0,2})$/.test(octet) || Number(octet) > 255,
+    )) return false;
+    const [first, second, third] = octets.map(Number);
+    return !(
+      first === 0 ||
+      first === 10 ||
+      first === 127 ||
+      (first === 100 && second >= 64 && second <= 127) ||
+      (first === 169 && second === 254) ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 0 && third === 0) ||
+      (first === 192 && second === 0 && third === 2) ||
+      (first === 192 && second === 31 && third === 196) ||
+      (first === 192 && second === 52 && third === 193) ||
+      (first === 192 && second === 88 && third === 99) ||
+      (first === 192 && second === 168) ||
+      (first === 192 && second === 175 && third === 48) ||
+      (first === 198 && (second === 18 || second === 19)) ||
+      (first === 198 && second === 51 && third === 100) ||
+      (first === 203 && second === 0 && third === 113) ||
+      first >= 224
+    );
+  };
+  if (values.length === 0 || values.length > 32 || values.some((value) => !isIpv4(value))) {
+    return [];
+  }
+  return [...new Set(values)];
+}
+
+const CONFIGURED_OUTBOUND_IPS = parseConfiguredOutboundIps(
+  process.env.NEXT_PUBLIC_GREYSIGHT_OUTBOUND_IPS,
+);
 
 const SQL_KEYWORDS = new Set([
   "SET", "USE", "ROLE", "CREATE", "USER", "ALTER", "WAREHOUSE", "GRANT", "IF",
@@ -91,6 +131,7 @@ export default function ConnectWizard({
   accessToken = null,
   connect = defaultConnect,
   onConnected,
+  outboundIps = CONFIGURED_OUTBOUND_IPS,
 }: ConnectWizardProps) {
   const [form, setForm] = useState<ConnectSnowflakeInput>({
     orgName: "", account: "", user: "", role: "", warehouse: "",
@@ -100,14 +141,20 @@ export default function ConnectWizard({
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [accountCopied, setAccountCopied] = useState(false);
+  const [ipsCopyStatus, setIpsCopyStatus] = useState<"idle" | "copied" | "error">("idle");
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const accountCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ipsCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ipsCopyOperationRef = useRef(0);
   const accountTooltipId = useId();
+  const outboundIpsText = outboundIps.join("\n");
 
   useEffect(() => {
     return () => {
       if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
       if (accountCopyTimeoutRef.current) clearTimeout(accountCopyTimeoutRef.current);
+      if (ipsCopyTimeoutRef.current) clearTimeout(ipsCopyTimeoutRef.current);
+      ipsCopyOperationRef.current += 1;
     };
   }, []);
 
@@ -127,6 +174,23 @@ export default function ConnectWizard({
     setAccountCopied(true);
     if (accountCopyTimeoutRef.current) clearTimeout(accountCopyTimeoutRef.current);
     accountCopyTimeoutRef.current = setTimeout(() => setAccountCopied(false), 2000);
+  }
+
+  async function handleCopyOutboundIps() {
+    const operation = ++ipsCopyOperationRef.current;
+    if (ipsCopyTimeoutRef.current) clearTimeout(ipsCopyTimeoutRef.current);
+    setIpsCopyStatus("idle");
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(outboundIpsText);
+      if (ipsCopyOperationRef.current !== operation) return;
+      setIpsCopyStatus("copied");
+      ipsCopyTimeoutRef.current = setTimeout(() => {
+        if (ipsCopyOperationRef.current === operation) setIpsCopyStatus("idle");
+      }, 2000);
+    } catch {
+      if (ipsCopyOperationRef.current === operation) setIpsCopyStatus("error");
+    }
   }
 
   async function handleSubmit(event: React.FormEvent) {
@@ -249,6 +313,40 @@ export default function ConnectWizard({
               <code>{highlightSql(SNOWFLAKE_SETUP_SQL)}</code>
             </pre>
           </div>
+          {outboundIpsText ? (
+            <section className="rounded-md border border-hairline bg-canvas p-4">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-200">
+                    Network allowlist
+                  </h2>
+                  <p className="mt-1 text-xs leading-5 text-slate-400">
+                    If your Snowflake account restricts inbound traffic, allow
+                    Greysight’s outbound IPs before testing the connection.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  aria-label="Copy outbound IPs"
+                  onClick={handleCopyOutboundIps}
+                  className="shrink-0 rounded-md border border-hairline bg-surface px-2 py-1 text-xs font-medium text-slate-200 hover:bg-hairline"
+                >
+                  {ipsCopyStatus === "copied" ? "Copied!" : "Copy"}
+                </button>
+                <span className="sr-only" role="status" aria-live="polite">
+                  {ipsCopyStatus === "copied" ? "Outbound IPs copied" : ""}
+                </span>
+              </div>
+              <pre className="mt-3 overflow-x-auto rounded-md border border-hairline bg-surface p-3 text-xs text-slate-100">
+                <code>{outboundIpsText}</code>
+              </pre>
+              {ipsCopyStatus === "error" ? (
+                <p className="mt-2 text-xs font-medium text-red-400" role="alert">
+                  Couldn’t copy the IPs. Select them above and copy manually.
+                </p>
+              ) : null}
+            </section>
+          ) : null}
         </aside>
       </div>
     </section>

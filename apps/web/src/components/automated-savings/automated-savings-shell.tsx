@@ -22,6 +22,7 @@ import {
 import { WarehouseTable } from "./warehouse-table";
 
 type LoadState = "idle" | "loading" | "ready" | "error";
+type LoadOptions = { refreshAccess?: boolean };
 
 // The dark app chrome the dashboard establishes (`dark … bg-canvas
 // [color-scheme:dark]`). OrgShell renders its signed-in children bare, so —
@@ -84,7 +85,7 @@ export function AutomatedSavingsShell() {
   const checkOperationRef = useRef<object | null>(null);
   const globalOperationRef = useRef<object | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (options: LoadOptions = {}) => {
     const requestSequence = ++loadSequenceRef.current;
     const requestOrgId = orgId;
     if (!requestOrgId) return;
@@ -101,8 +102,24 @@ export function AutomatedSavingsShell() {
     setGlobalSwitching(false);
     setControlError(null);
     try {
-      const nextStatus = await fetchStatus(requestOrgId, { accessToken });
+      let nextStatus = await fetchStatus(requestOrgId, { accessToken });
       if (!isCurrentRequest()) return;
+      let accessCheckFailed = false;
+      if (nextStatus.agreed && options.refreshAccess) {
+        try {
+          const access = await checkAccess(requestOrgId, { accessToken });
+          if (!isCurrentRequest()) return;
+          nextStatus = {
+            ...nextStatus,
+            grantPresent: access.grantPresent,
+            grantCheckedAt: access.grantCheckedAt,
+            roleName: access.roleName,
+          };
+        } catch {
+          if (!isCurrentRequest()) return;
+          accessCheckFailed = true;
+        }
+      }
       let rows: WarehouseRow[] = [];
       if (nextStatus.agreed) {
         rows = await fetchWarehouses(requestOrgId, { accessToken });
@@ -111,6 +128,9 @@ export function AutomatedSavingsShell() {
       setStatus(nextStatus);
       setWarehouses(rows);
       setLoadState("ready");
+      if (accessCheckFailed) {
+        setControlError("Couldn’t check Snowflake access. Please try again.");
+      }
     } catch {
       if (!isCurrentRequest()) return;
       setLoadState("error");
@@ -210,7 +230,7 @@ export function AutomatedSavingsShell() {
     ) {
       return;
     }
-    void load();
+    void load({ refreshAccess: true });
   }
 
   function handleRowChange(row: WarehouseRow) {
@@ -275,7 +295,10 @@ export function AutomatedSavingsShell() {
       ) : (
         <>
           <div className="space-y-4">
-            {status.agreed && status.grantPresent === false && grantSql ? (
+            {status.agreed &&
+            status.grantPresent === false &&
+            status.grantCheckedAt !== null &&
+            grantSql ? (
               <div
                 className="rounded-md border border-rose-500/40 bg-rose-500/10 p-4 text-sm text-rose-200"
                 role="alert"
