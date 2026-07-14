@@ -14,6 +14,8 @@ WORKDIR /app/apps/api
 
 # Install dependencies in their own cached layer. The lockfile is the source of
 # truth: --frozen fails the build if pyproject.toml has drifted from uv.lock.
+# greysight-connect is a path dependency, so it must be present before sync.
+COPY shared/connect/ /app/shared/connect/
 COPY apps/api/pyproject.toml apps/api/uv.lock ./
 RUN uv sync --frozen --no-install-project
 

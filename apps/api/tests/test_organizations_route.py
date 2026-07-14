@@ -66,9 +66,7 @@ def test_invite_succeeds_for_admin(monkeypatch) -> None:
 
 def test_invite_forbidden_for_member(monkeypatch) -> None:
     app.dependency_overrides[require_auth_context] = _member_ctx
-    monkeypatch.setattr(
-        organizations, "invite_member_to_org", lambda **kw: kw["email"]
-    )
+    monkeypatch.setattr(organizations, "invite_member_to_org", lambda **kw: kw["email"])
     client = TestClient(app)
     response = client.post(
         "/api/organizations/org-1/invitations", json={"email": "new@acme.com"}
@@ -130,9 +128,7 @@ def test_invite_rate_limited_returns_429(monkeypatch) -> None:
         InMemoryConnectLimiter(max_attempts=1, window_seconds=300),
     )
     app.dependency_overrides[require_auth_context] = _admin_ctx
-    monkeypatch.setattr(
-        organizations, "invite_member_to_org", lambda **kw: kw["email"]
-    )
+    monkeypatch.setattr(organizations, "invite_member_to_org", lambda **kw: kw["email"])
     client = TestClient(app)
     statuses = [
         client.post(
@@ -147,9 +143,7 @@ def test_invite_rate_limited_returns_429(monkeypatch) -> None:
 
 def test_invite_records_audit_event(monkeypatch) -> None:
     app.dependency_overrides[require_auth_context] = _admin_ctx
-    monkeypatch.setattr(
-        organizations, "invite_member_to_org", lambda **kw: kw["email"]
-    )
+    monkeypatch.setattr(organizations, "invite_member_to_org", lambda **kw: kw["email"])
     client = TestClient(app)
     response = client.post(
         "/api/organizations/org-1/invitations", json={"email": "new@acme.com"}

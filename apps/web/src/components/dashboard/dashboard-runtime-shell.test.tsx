@@ -1,7 +1,14 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import DashboardRuntimeShell from "./dashboard-runtime-shell";
+import { WorkspaceRuntimeShell } from "../workspace/workspace-runtime-shell";
 
 vi.mock("../org/org-shell", () => ({
   default: ({
@@ -56,7 +63,11 @@ describe("DashboardRuntimeShell", () => {
   });
 
   it("keeps demo mode for auth bypass", () => {
-    render(<DashboardRuntimeShell authRequired={false} />);
+    render(
+      <WorkspaceRuntimeShell authRequired={false} dataSource="demo">
+        <DashboardRuntimeShell />
+      </WorkspaceRuntimeShell>,
+    );
 
     expect(screen.getByText("Bypass label: Demo mode")).toBeInTheDocument();
     expect(screen.getByTestId("dashboard-props")).toHaveTextContent(
@@ -65,7 +76,11 @@ describe("DashboardRuntimeShell", () => {
   });
 
   it("uses a local runtime for unauthenticated Snowflake mode", () => {
-    render(<DashboardRuntimeShell authRequired={false} dataSource="snowflake" />);
+    render(
+      <WorkspaceRuntimeShell authRequired={false} dataSource="snowflake">
+        <DashboardRuntimeShell />
+      </WorkspaceRuntimeShell>,
+    );
 
     expect(
       screen.getByText("Bypass label: Local Snowflake mode"),
@@ -84,9 +99,15 @@ describe("DashboardRuntimeShell", () => {
   });
 
   it("passes selected organization and access token to dashboard runtime", async () => {
-    render(<DashboardRuntimeShell authRequired dataSource="snowflake" />);
+    render(
+      <WorkspaceRuntimeShell authRequired dataSource="snowflake">
+        <DashboardRuntimeShell />
+      </WorkspaceRuntimeShell>,
+    );
 
-    fireEvent.click(screen.getByRole("button", { name: "Select organization" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Select organization" }),
+    );
 
     await waitFor(() =>
       expect(screen.getByTestId("dashboard-props")).toHaveTextContent(
@@ -105,9 +126,15 @@ describe("DashboardRuntimeShell", () => {
   });
 
   it("uses the authenticated runtime for auth-required demo data", async () => {
-    render(<DashboardRuntimeShell authRequired />);
+    render(
+      <WorkspaceRuntimeShell authRequired dataSource="demo">
+        <DashboardRuntimeShell />
+      </WorkspaceRuntimeShell>,
+    );
 
-    fireEvent.click(screen.getByRole("button", { name: "Select organization" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Select organization" }),
+    );
 
     await waitFor(() =>
       expect(screen.getByTestId("dashboard-props")).toHaveTextContent(

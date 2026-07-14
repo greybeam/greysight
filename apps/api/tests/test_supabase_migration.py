@@ -9,6 +9,21 @@ def _migration_paths() -> list[Path]:
     return migrations
 
 
+def test_migration_versions_are_unique() -> None:
+    versions: dict[str, list[str]] = {}
+    for path in _migration_paths():
+        version, separator, _ = path.name.partition("_")
+        assert (
+            separator and version.isdigit()
+        ), f"invalid migration filename: {path.name}"
+        versions.setdefault(version, []).append(path.name)
+
+    duplicates = {
+        version: names for version, names in versions.items() if len(names) > 1
+    }
+    assert not duplicates, f"duplicate migration versions: {duplicates}"
+
+
 REQUIRED_TABLES = [
     "organizations",
     "organization_memberships",

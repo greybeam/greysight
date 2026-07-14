@@ -323,7 +323,9 @@ def _build_ai_spend_summary(
         if service_type not in AI_KPI_SERVICE_TYPES:
             continue
         credits = _required_float_field(row, "service_spend_daily", "credits_used")
-        total += convert(credits, _as_date(row["usage_date"]), service_type, "AI_COMPUTE")
+        total += convert(
+            credits, _as_date(row["usage_date"]), service_type, "AI_COMPUTE"
+        )
     return AISpendSummaryViewModel(
         total=total,
         total_label=_format_currency(total, currency),
@@ -1026,7 +1028,9 @@ def _build_total_spend(
     )
 
 
-MAX_FORECAST_DAYS = 1825  # ~5 years; bounds the payload if the runway is implausibly long
+MAX_FORECAST_DAYS = (
+    1825  # ~5 years; bounds the payload if the runway is implausibly long
+)
 FORECAST_AVERAGE_WINDOW_DAYS = 7
 
 
@@ -1062,7 +1066,11 @@ def _build_forecast_series(
     points: list[BalancePoint] = []
     for offset in range(days_to_zero + 1):
         point_date = current_date + timedelta(days=offset)
-        balance = 0.0 if offset == days_to_zero else max(current_balance - forecast_daily_spend * offset, 0.0)
+        balance = (
+            0.0
+            if offset == days_to_zero
+            else max(current_balance - forecast_daily_spend * offset, 0.0)
+        )
         points.append(
             BalancePoint(
                 date=point_date.isoformat(),
@@ -1169,9 +1177,7 @@ def _warehouse_idle_pct(
     raise rather than silently returning null.
     """
     if compute_credits < 0.0:
-        raise ValueError(
-            "warehouse_spend_daily credits_used_compute must be >= 0"
-        )
+        raise ValueError("warehouse_spend_daily credits_used_compute must be >= 0")
     if compute_credits == 0.0:
         return None
     idle_credits = compute_credits - attributed_credits
@@ -1242,9 +1248,7 @@ def _build_warehouse_spend(
         warehouse_name = _string_field(row, "warehouse_name", "Unknown warehouse")
         compute_by_warehouse[warehouse_name] = compute_by_warehouse.get(
             warehouse_name, 0.0
-        ) + _required_float_field(
-            row, "warehouse_spend_daily", "credits_used_compute"
-        )
+        ) + _required_float_field(row, "warehouse_spend_daily", "credits_used_compute")
         attributed_by_warehouse[warehouse_name] = attributed_by_warehouse.get(
             warehouse_name, 0.0
         ) + _required_float_field(

@@ -83,8 +83,7 @@ def build_snowflake_dashboard_data(
     window = {"window_days": FETCH_WINDOW_DAYS}
 
     jobs: list[SourceJob] = [
-        SourceJob(key, source.sql, window)
-        for key, source in account_sources.items()
+        SourceJob(key, source.sql, window) for key, source in account_sources.items()
     ]
     # capacity is org-scoped: window only, no locator. Its SQL is locator-free,
     # so it must run regardless of whether locator resolution succeeded — gating
@@ -101,9 +100,7 @@ def build_snowflake_dashboard_data(
             for key, source in org_sources.items()
         )
 
-    outcomes = run_sources_parallel(
-        jobs, execute_source, on_complete=on_source_outcome
-    )
+    outcomes = run_sources_parallel(jobs, execute_source, on_complete=on_source_outcome)
 
     account_datasets, account_availability = _group_from_outcomes(
         account_sources,

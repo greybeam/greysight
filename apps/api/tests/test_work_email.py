@@ -3,9 +3,7 @@ from pathlib import Path
 
 from app.services.work_email import FREE_EMAIL_DOMAINS, is_work_email
 
-_FIXTURE = (
-    Path(__file__).resolve().parents[3] / "shared" / "free-email-domains.json"
-)
+_FIXTURE = Path(__file__).resolve().parents[3] / "shared" / "free-email-domains.json"
 
 
 def test_accepts_work_email() -> None:

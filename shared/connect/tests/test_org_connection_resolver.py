@@ -1,13 +1,21 @@
+from dataclasses import dataclass
+
 import httpx
 import pytest
 
-from app.config import Settings
-from app.services.org_connection_resolver import (
+from greysight_connect.org_connection_resolver import (
     OrgConnectionNotConfiguredError,
     OrgConnectionRow,
+    OrgConnectionUnavailableError,
     SupabaseConnectionFetcher,
     resolve_snowflake_config,
 )
+
+
+@dataclass
+class Settings:
+    auth_required: bool = False
+    query_timeout_seconds: int = 120
 
 
 def _row() -> OrgConnectionRow:
@@ -51,14 +59,43 @@ def test_falls_back_to_env_when_auth_not_required(
     assert config.account == "env-acct"
 
 
-def test_fails_closed_when_lookup_errors_and_auth_required() -> None:
+def test_unexpected_fetcher_error_is_not_reclassified_as_transient() -> None:
     settings = Settings(auth_required=True)
 
     def _boom(_org_id: str) -> OrgConnectionRow | None:
         raise RuntimeError("vault down")
 
-    with pytest.raises(OrgConnectionNotConfiguredError):
+    with pytest.raises(RuntimeError, match="vault down"):
         resolve_snowflake_config("org-1", settings, fetch_connection=_boom)
+
+
+def test_classified_transient_error_propagates_but_stays_fail_closed() -> None:
+    # The fetcher boundary classifies retryable transport/HTTP failures so the
+    # worker can KEEP a warm session, while the API's broader parent catch remains
+    # fail closed.
+    settings = Settings(auth_required=True)
+
+    def _boom(_org_id: str) -> OrgConnectionRow | None:
+        raise OrgConnectionUnavailableError("supabase timed out")
+
+    with pytest.raises(OrgConnectionUnavailableError):
+        resolve_snowflake_config("org-1", settings, fetch_connection=_boom)
+    # Subclass relationship preserves the API's fail-closed catch.
+    assert issubclass(OrgConnectionUnavailableError, OrgConnectionNotConfiguredError)
+
+
+def test_definitive_not_configured_from_fetcher_is_not_reclassified() -> None:
+    # A DEFINITIVE verdict the fetcher already made (e.g. malformed/duplicate)
+    # must propagate as-is (genuinely not configured), NOT as a transient error,
+    # so the worker drops it instead of keeping a dead session.
+    settings = Settings(auth_required=True)
+
+    def _misconfigured(_org_id: str) -> OrgConnectionRow | None:
+        raise OrgConnectionNotConfiguredError("multiple rows")
+
+    with pytest.raises(OrgConnectionNotConfiguredError) as excinfo:
+        resolve_snowflake_config("org-1", settings, fetch_connection=_misconfigured)
+    assert not isinstance(excinfo.value, OrgConnectionUnavailableError)
 
 
 def test_fails_closed_when_row_status_not_active() -> None:
@@ -127,15 +164,13 @@ def test_fetcher_combines_row_metadata_and_secret() -> None:
     assert row.status == "active"
 
 
-def test_fetcher_returns_none_when_no_row() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=[])
-
+def test_fetcher_returns_none_when_metadata_is_empty() -> None:
     fetcher = SupabaseConnectionFetcher(
         supabase_url="https://example.supabase.co",
         service_role_key="svc",
-        transport=_transport(handler),
+        transport=_transport(lambda _request: httpx.Response(200, json=[])),
     )
+
     assert fetcher("org-1") is None
 
 
@@ -207,6 +242,138 @@ def test_fetcher_raises_on_malformed_metadata() -> None:
     )
     with pytest.raises(OrgConnectionNotConfiguredError):
         fetcher("org-1")
+
+
+@pytest.mark.parametrize("status_code", [400, 401, 403, 404, 422])
+def test_fetcher_classifies_nonretryable_http_errors_as_not_configured(
+    status_code: int,
+) -> None:
+    fetcher = SupabaseConnectionFetcher(
+        supabase_url="https://example.supabase.co",
+        service_role_key="svc",
+        transport=_transport(
+            lambda _request: httpx.Response(status_code, json={"message": "bad"})
+        ),
+    )
+
+    with pytest.raises(OrgConnectionNotConfiguredError) as exc_info:
+        fetcher("org-1")
+
+    assert not isinstance(exc_info.value, OrgConnectionUnavailableError)
+
+
+@pytest.mark.parametrize("status_code", [408, 429, 500, 503])
+def test_fetcher_classifies_retryable_http_errors_as_unavailable(
+    status_code: int,
+) -> None:
+    fetcher = SupabaseConnectionFetcher(
+        supabase_url="https://example.supabase.co",
+        service_role_key="svc",
+        transport=_transport(
+            lambda _request: httpx.Response(status_code, json={"message": "retry"})
+        ),
+    )
+
+    with pytest.raises(OrgConnectionUnavailableError):
+        fetcher("org-1")
+
+
+def test_fetcher_classifies_transport_error_as_unavailable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("timed out", request=request)
+
+    fetcher = SupabaseConnectionFetcher(
+        supabase_url="https://example.supabase.co",
+        service_role_key="svc",
+        transport=_transport(handler),
+    )
+
+    with pytest.raises(OrgConnectionUnavailableError):
+        fetcher("org-1")
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(200, content=b"{"),
+        httpx.Response(200, json=[None]),
+        httpx.Response(200, json=[{"secret_id": "sec-1"}]),
+        httpx.Response(
+            200,
+            json=[
+                {
+                    "account": "acct",
+                    "snowflake_user": "u",
+                    "role": "r",
+                    "warehouse": "w",
+                }
+            ],
+        ),
+    ],
+)
+def test_fetcher_classifies_invalid_metadata_as_not_configured(
+    response: httpx.Response,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return response
+        return httpx.Response(
+            200,
+            json=[{"private_key_pem": "PEMDATA", "passphrase": None}],
+        )
+
+    fetcher = SupabaseConnectionFetcher(
+        supabase_url="https://example.supabase.co",
+        service_role_key="svc",
+        transport=_transport(handler),
+    )
+
+    with pytest.raises(OrgConnectionNotConfiguredError) as exc_info:
+        fetcher("org-1")
+
+    assert not isinstance(exc_info.value, OrgConnectionUnavailableError)
+
+
+@pytest.mark.parametrize(
+    "secret_response",
+    [
+        httpx.Response(200, content=b"{"),
+        httpx.Response(200, json=[None]),
+        httpx.Response(200, json=[{}]),
+    ],
+)
+def test_fetcher_classifies_invalid_secret_as_not_configured(
+    secret_response: httpx.Response,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "account": "acct",
+                        "snowflake_user": "u",
+                        "role": "r",
+                        "warehouse": "w",
+                        "database": None,
+                        "schema": None,
+                        "status": "active",
+                        "secret_id": "sec-1",
+                    }
+                ],
+            )
+        return secret_response
+
+    fetcher = SupabaseConnectionFetcher(
+        supabase_url="https://example.supabase.co",
+        service_role_key="svc",
+        transport=_transport(handler),
+    )
+
+    with pytest.raises(OrgConnectionNotConfiguredError) as exc_info:
+        fetcher("org-1")
+
+    assert not isinstance(exc_info.value, OrgConnectionUnavailableError)
 
 
 def _row_with_locator(**over):

@@ -1,3 +1,4 @@
+-- 202606190002_org_member_invitations.sql
 -- Invite/attach a user to an org by email. Returns a status the API maps to an
 -- action (send invite, resend link, attach silently) and HTTP code. SECURITY
 -- DEFINER so it can read auth.users; search_path='' + fully-qualified names +

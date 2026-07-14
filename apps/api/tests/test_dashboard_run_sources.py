@@ -21,6 +21,7 @@ def _repo_with_run():
         retention_days=7,
     )
     from uuid import UUID
+
     return repo, UUID(run.id)
 
 
@@ -38,7 +39,9 @@ def test_complete_source_appends_dataset_and_inherits_expiry():
     repo.complete_source(
         run_id,
         "ai_consumption_daily",
-        rows=[{"usage_date": "2026-06-01", "consumption_type": "X", "credits_used": 1.0}],
+        rows=[
+            {"usage_date": "2026-06-01", "consumption_type": "X", "credits_used": 1.0}
+        ],
         partial=True,
         skipped_branches=["cortex_code_cli"],
     )
@@ -74,7 +77,9 @@ def test_claim_rejects_expired_run_and_clears_stale_source_state():
     repo.complete_source(
         run_id,
         "ai_consumption_daily",
-        rows=[{"usage_date": "2026-06-01", "consumption_type": "X", "credits_used": 1.0}],
+        rows=[
+            {"usage_date": "2026-06-01", "consumption_type": "X", "credits_used": 1.0}
+        ],
         partial=False,
         skipped_branches=[],
     )

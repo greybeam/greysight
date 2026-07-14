@@ -35,9 +35,10 @@ def test_set_dataset_and_mark_ready_updates_view_inputs():
     repo, run_id = _new_running_repo()
     repo.set_dataset(run_id, "service_spend_daily", [{"usage_date": "2026-06-01"}])
     repo.complete_source(run_id, "service_spend_daily")
-    assert _source_statuses_from_existing_records(repo, run_id)[
-        "service_spend_daily"
-    ] == "ready"
+    assert (
+        _source_statuses_from_existing_records(repo, run_id)["service_spend_daily"]
+        == "ready"
+    )
     view_inputs = repo.get_view_inputs(run_id)
     assert view_inputs is not None
     _run, datasets, _metadata, bounds, _statuses, _auth = view_inputs
@@ -49,9 +50,10 @@ def test_set_dataset_and_mark_ready_updates_view_inputs():
 def test_fail_source_marks_base_source_unavailable():
     repo, run_id = _new_running_repo()
     repo.fail_source(run_id, "capacity_balance_daily", error="unavailable")
-    assert _source_statuses_from_existing_records(repo, run_id)[
-        "capacity_balance_daily"
-    ] == "unavailable"
+    assert (
+        _source_statuses_from_existing_records(repo, run_id)["capacity_balance_daily"]
+        == "unavailable"
+    )
 
 
 def test_finalize_run_sets_completed_and_authoritative_bounds():
@@ -115,8 +117,13 @@ def test_finalize_run_is_atomic_on_bounds_failure(monkeypatch):
 
 def test_writes_after_terminal_state_are_discarded():
     repo, run_id = _new_running_repo()
-    repo.finalize_run(run_id, status="completed", summary={}, metadata=None,
-                      datasets={"service_spend_daily": [{"usage_date": "2026-05-01"}]})
+    repo.finalize_run(
+        run_id,
+        status="completed",
+        summary={},
+        metadata=None,
+        datasets={"service_spend_daily": [{"usage_date": "2026-05-01"}]},
+    )
     # A late worker write must not mutate the finalized run.
     repo.set_dataset(run_id, "service_spend_daily", [{"usage_date": "1999-01-01"}])
     repo.complete_source(run_id, "service_spend_daily")
@@ -189,7 +196,4 @@ def _source_statuses_from_existing_records(
     repo: InMemoryDashboardRunRepository, run_id: UUID
 ) -> dict[str, str]:
     """Use the repo's existing deferred-source record read path in real tests."""
-    return {
-        key: repo.get_source(run_id, key).status
-        for key in BASE_RUN_SOURCE_KEYS
-    }
+    return {key: repo.get_source(run_id, key).status for key in BASE_RUN_SOURCE_KEYS}

@@ -34,7 +34,7 @@ def test_unavailable_source_does_not_fail_run():
     jobs = [SourceJob("ok", "s", {}), SourceJob("bad", "s", {"fail": True})]
     outcomes = run_sources_parallel(jobs, execute)
     assert outcomes["ok"].available is True
-    assert outcomes["ok"].rows == []          # zero rows != unavailable
+    assert outcomes["ok"].rows == []  # zero rows != unavailable
     assert outcomes["bad"].available is False
     assert outcomes["bad"].rows is None
 
@@ -92,5 +92,7 @@ def test_on_complete_called_per_job():
     query_concurrency.configure(8)
     seen = []
     jobs = [SourceJob("a", "s", {}), SourceJob("b", "s", {})]
-    run_sources_parallel(jobs, lambda s, p: [], on_complete=lambda o: seen.append(o.key))
+    run_sources_parallel(
+        jobs, lambda s, p: [], on_complete=lambda o: seen.append(o.key)
+    )
     assert sorted(seen) == ["a", "b"]

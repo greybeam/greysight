@@ -36,16 +36,12 @@ class SupabaseMemberRpc:
         timeout_seconds: float = 30.0,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
-        self._url = (
-            f"{supabase_url.rstrip('/')}/rest/v1/rpc/add_org_member_by_email"
-        )
+        self._url = f"{supabase_url.rstrip('/')}/rest/v1/rpc/add_org_member_by_email"
         self._key = service_role_key
         self._timeout = timeout_seconds
         self._transport = transport
 
-    def __call__(
-        self, actor_user_id: str, organization_id: str, email: str
-    ) -> str:
+    def __call__(self, actor_user_id: str, organization_id: str, email: str) -> str:
         try:
             with httpx.Client(
                 timeout=self._timeout, transport=self._transport

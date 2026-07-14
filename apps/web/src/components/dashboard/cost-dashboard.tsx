@@ -755,6 +755,7 @@ function CostDashboardContent({
           void startRun();
         }}
       />
+      <h1 className="sr-only">Snowflake cost dashboard</h1>
       <div
         aria-label="Dashboard content"
         className="mx-auto grid w-full max-w-[1200px] gap-6 px-6 py-6"

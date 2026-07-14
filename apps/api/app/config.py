@@ -53,7 +53,9 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("GREYSIGHT_CORS_ALLOWED_ORIGINS"),
     )
     query_concurrency: int = Field(
-        default=8, gt=0, le=64,
+        default=8,
+        gt=0,
+        le=64,
         validation_alias=AliasChoices("GREYSIGHT_QUERY_CONCURRENCY"),
     )
 

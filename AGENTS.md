@@ -5,11 +5,11 @@ small, tested, and tied to requested behavior.
 
 ## Quick Reference
 
-Run from the repository root unless noted. Both test suites are hermetic —
+Run from the repository root unless noted. All test suites are hermetic —
 no Supabase or Snowflake credentials required.
 
 ```bash
-npm run test                 # all tests: web (Vitest) + api (pytest)
+npm run test                 # web (Vitest) + api (pytest)
 npm run test:web             # apps/web only
 npm run test:api             # apps/api only
 npm run lint                 # eslint (web) + ruff check/format (api)
@@ -17,7 +17,12 @@ npm run typecheck            # tsc --noEmit (web only)
 npm run dev                  # web :3000 + api :8000, demo mode by default
 npx vitest run <file>        # single web test (run from apps/web/)
 uv run pytest tests/<file>   # single api test (run from apps/api/)
+uv run --directory apps/auto-savings pytest   # automated-savings worker suite
+uv run --directory shared/connect pytest      # shared greysight-connect package
 ```
+
+`npm run test` does not cover the `apps/auto-savings` worker or the
+`shared/connect` package — run their `uv` suites separately.
 
 Copy `.env.example` to `.env` for local demo mode — no external services
 needed. Run shell commands through `rtk` when it is available.
@@ -45,6 +50,18 @@ needed. Run shell commands through `rtk` when it is available.
   with no credentials. Authenticated mode uses Supabase auth with
   organization membership and RLS, and executes registry SQL against
   Snowflake. The demo bypass must never leak into authenticated code paths.
+- **Automated Savings control loop (separate from the dashboard pipeline).**
+  A standalone opt-in worker (`apps/auto-savings/`, its own Railway service)
+  polls `SHOW WAREHOUSES` per tenant and directly suspends an enrolled
+  `STANDARD` warehouse on the first snapshot that proves it idle, with valid
+  zero running and queued statement counts, zero quiescing percentage, and at
+  least 62 seconds of uptime.
+  Invariants: the worker is the only Snowflake writer and only issues
+  `ALTER WAREHOUSE … SUSPEND`; it never changes `AUTO_SUSPEND` or cluster
+  settings. Enrollment captures mandatory timezone-aware `created_on`
+  identity, and the worker rechecks the versioned enrollment plus global and
+  warehouse switches immediately before each command. See
+  `docs/automated-savings.md` for the operational runbook and env knobs.
 
 ## Dashboard Design System
 
@@ -65,6 +82,8 @@ needed. Run shell commands through `rtk` when it is available.
 
 - `apps/web/`: Next.js app, dashboard UI, auth/org shell, browser API clients, and Vitest tests.
 - `apps/api/`: FastAPI backend, trusted auth/org guards, Snowflake access, metric calculation, route tests, and `uv` config.
+- `apps/auto-savings/`: standalone Automated Savings worker (own Railway service + Dockerfile) — per-tenant async poll/authorize/suspend loop; hermetic pytest suite mocking the Snowflake session and store.
+- `shared/connect/`: installable `greysight-connect` package (Snowflake/Supabase connection code) consumed by `apps/api` and `apps/auto-savings` via a uv path dependency; thin re-export shims remain at `apps/api/app/services/`.
 - `sql/snowflake/`: approved read-only Snowflake Account Usage source queries.
 - `sql/dashboard_sources.yml`: registry that maps dashboard dataset keys to approved SQL assets and derived datasets.
 - `supabase/migrations/`: Supabase schema, RLS policies, organization membership model, and aggregate dataset tables.
@@ -82,8 +101,14 @@ needed. Run shell commands through `rtk` when it is available.
 | Snowflake source queries | `sql/snowflake/`, `sql/dashboard_sources.yml` | Execute only registry-approved read-only SQL assets. |
 | Supabase schema/RLS | `supabase/migrations/` | Preserve member read access and owner/admin-only sensitive mutations. |
 | Auth/org behavior | `apps/api/app/auth.py`, `apps/web/src/components/auth/`, `apps/web/src/components/org/` | Keep local demo bypass separate from authenticated org flows. |
+| Automated Savings worker | `apps/auto-savings/src/auto_savings/` | Cycle: `engine.py` (observe→decide→authorize→suspend), `decision.py` (suspend truth table), `warehouse_snapshot.py` (fail-closed `SHOW WAREHOUSES` parsing + uptime), `store.py` (service-role Supabase + in-memory fake), `snowflake_session.py` (warm session, direct suspend, socket-timeout watchdog), `tenant_loop.py`/`main.py` (async supervisor), `config.py` (env knobs). |
+| Automated Savings API | `apps/api/app/routes/automated_savings.py`, `apps/api/app/services/automated_savings_store.py`, `apps/api/app/services/warehouse_directory.py` | API never `ALTER`s Snowflake. Opt-in/enroll/config + `SHOW WAREHOUSES`/`SHOW GRANTS` reads; `AUTO_SUSPEND` and cluster counts are read-only display data. |
+| Automated Savings UI | `apps/web/src/app/(workspace)/automated-savings/page.tsx`, `apps/web/src/components/automated-savings/`, `apps/web/src/lib/automated-savings-api.ts` | Opt-in gate, warehouse enrollment table, global switch. Client parsers are the single snake_case→camelCase boundary; top-nav tab in `components/dashboard/app-nav.tsx`. |
+| Shared connection code | `shared/connect/src/greysight_connect/` | Snowflake/Supabase clients incl. `execute_metadata_query` (SHOW statements). Edit here, not the `apps/api/app/services/` shims. |
+| Automated Savings schema | `supabase/migrations/202607120001_automated_savings.sql` | Settings, identity-bound per-warehouse enrollment, direct suspend events, RLS, and service-role authorization/tenant RPCs. Shape-tested in `apps/api/tests/test_automated_savings_migration.py`. |
 | Web tests | `*.test.tsx` colocated in `apps/web/src/` | Vitest + Testing Library on jsdom. |
 | API tests | `apps/api/tests/` | pytest + httpx test client; no network calls. |
+| Worker tests | `apps/auto-savings/tests/` | pytest; Snowflake session + store mocked, no network. |
 
 ## Core Principles
 
@@ -96,8 +121,10 @@ needed. Run shell commands through `rtk` when it is available.
    for guards, state machines, edge cases, and error paths (e.g. double-submit
    guards, retry-loop prevention, input normalization, error differentiation).
    Fewer, sharper tests beat coverage-padding.
-2. **Execute only registry SQL.** Never construct or run Snowflake SQL
-   outside the assets approved in `sql/dashboard_sources.yml`.
+2. **Execute only approved Snowflake SQL.** Dashboard queries must come from
+   assets approved in `sql/dashboard_sources.yml`. Automated Savings is the
+   narrow control-plane exception: approved metadata reads plus the worker-only
+   `ALTER WAREHOUSE … SUSPEND`; do not add other dynamic Snowflake mutations.
 3. **Never widen RLS.** Members read; owners/admins perform sensitive
    mutations. Treat any loosening as a security change needing explicit
    user approval.
@@ -147,4 +174,5 @@ engineering manager and does not write implementation code itself.
 - `docs/security-model.md` — auth, org membership, and RLS rationale; read before touching `auth.py` or migrations.
 - `docs/deployment.md` — hosting and deploy steps.
 - `docs/dependency-compatibility.md` — version pinning constraints; read before bumping dependencies.
+- `docs/automated-savings.md` — Automated Savings worker: direct-suspend runbook, cloud-services cost note, current `AUTO_SAVINGS_*` env knobs, sharding, and the `MANAGE WAREHOUSES` opt-in grant.
 - `docs/specs/` — implementation plans and specs for in-flight work.
