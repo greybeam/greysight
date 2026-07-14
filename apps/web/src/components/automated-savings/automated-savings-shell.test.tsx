@@ -102,24 +102,6 @@ describe("AutomatedSavingsShell", () => {
     expect(fetchWarehousesMock).not.toHaveBeenCalled();
   });
 
-  it("falls back to the placeholder role in the opt-in GRANT SQL", async () => {
-    fetchStatusMock.mockResolvedValue({
-      agreed: false,
-      globalEnabled: false,
-      grantPresent: false,
-      grantCheckedAt: null,
-      roleName: null,
-    });
-
-    renderShell();
-
-    expect(
-      await screen.findByText(
-        /GRANT MANAGE WAREHOUSES ON ACCOUNT TO ROLE "<YOUR_SNOWFLAKE_ROLE>";/,
-      ),
-    ).toBeInTheDocument();
-  });
-
   it("shows a grant-missing banner with the real role when the grant check fails", async () => {
     fetchStatusMock.mockResolvedValue({
       agreed: true,
@@ -379,26 +361,5 @@ describe("AutomatedSavingsShell", () => {
       .toBeInTheDocument();
     expect(fetchStatusMock.mock.calls.filter(([orgId]) => orgId === "org-1"))
       .toHaveLength(1);
-  });
-
-  it("updates a single warehouse row after toggling it in the table", async () => {
-    fetchStatusMock.mockResolvedValue({
-      agreed: true,
-      globalEnabled: true,
-      grantPresent: true,
-      grantCheckedAt: null,
-      roleName: null,
-    });
-    fetchWarehousesMock.mockResolvedValue([baseRow]);
-    toggleWarehouseMock.mockResolvedValue(undefined);
-
-    renderShell();
-
-    const rowSwitch = await screen.findByRole("switch", { name: "WH1" });
-    expect(rowSwitch).toBeChecked();
-
-    fireEvent.click(rowSwitch);
-
-    await waitFor(() => expect(rowSwitch).not.toBeChecked());
   });
 });

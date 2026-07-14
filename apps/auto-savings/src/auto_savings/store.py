@@ -23,10 +23,7 @@ class EnrollmentRow:
 @dataclass(frozen=True)
 class SettingsRow:
     organization_id: str
-    agreed_at: datetime | None
     global_enabled: bool
-    grant_present: bool
-    grant_checked_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -53,8 +50,6 @@ class StoreError(RuntimeError):
 
 
 class Store(Protocol):
-    def get_settings(self, organization_id: str) -> SettingsRow | None: ...
-
     def list_enrollments(self, organization_id: str) -> list[EnrollmentRow]: ...
 
     def authorize_suspend(
@@ -93,9 +88,6 @@ class InMemoryStore:
 
     def seed_settings(self, row: SettingsRow) -> None:
         self._settings[row.organization_id] = row
-
-    def get_settings(self, organization_id: str) -> SettingsRow | None:
-        return self._settings.get(organization_id)
 
     def list_enrollments(self, organization_id: str) -> list[EnrollmentRow]:
         return [
@@ -194,14 +186,6 @@ class SupabaseStore:
             timeout=self._timeout_seconds,
             transport=self._transport,
         )
-
-    def get_settings(self, organization_id: str) -> SettingsRow | None:
-        rows = self._get("/automated_savings_settings", organization_id)
-        if not rows:
-            return None
-        if len(rows) != 1:
-            raise StoreError()
-        return _parse_settings(rows[0])
 
     def list_enrollments(self, organization_id: str) -> list[EnrollmentRow]:
         rows = self._get("/automated_savings_warehouses", organization_id)
@@ -386,10 +370,6 @@ def _parse_ts(value: object) -> datetime:
     return parsed
 
 
-def _parse_optional_ts(value: object) -> datetime | None:
-    return None if value is None else _parse_ts(value)
-
-
 def _required_str(row: dict[object, object], key: str) -> str:
     value = row.get(key)
     if not isinstance(value, str) or not value:
@@ -402,18 +382,6 @@ def _required_bool(row: dict[object, object], key: str) -> bool:
     if not isinstance(value, bool):
         raise StoreError()
     return value
-
-
-def _parse_settings(row: object) -> SettingsRow:
-    if not isinstance(row, dict):
-        raise StoreError()
-    return SettingsRow(
-        organization_id=_required_str(row, "organization_id"),
-        agreed_at=_parse_optional_ts(row.get("agreed_at")),
-        global_enabled=_required_bool(row, "global_enabled"),
-        grant_present=_required_bool(row, "grant_present"),
-        grant_checked_at=_parse_optional_ts(row.get("grant_checked_at")),
-    )
 
 
 def _parse_enrollment(row: object) -> EnrollmentRow:

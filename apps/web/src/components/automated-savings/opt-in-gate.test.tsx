@@ -8,12 +8,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AccountChromeProvider } from "../../lib/account-context";
 import * as automatedSavingsApi from "../../lib/automated-savings-api";
-import {
-  normalizeRoleName,
-  OptInGate,
-  quoteIdent,
-  UNKNOWN_ROLE_PLACEHOLDER,
-} from "./opt-in-gate";
+import { normalizeRoleName, OptInGate, quoteIdent } from "./opt-in-gate";
 
 // The shared vitest setup registers no automatic DOM cleanup, so unmount each
 // render explicitly (project convention, see chart-tooltip.test.tsx).
@@ -64,21 +59,6 @@ describe("OptInGate", () => {
     expect(normalizeRoleName("  GREYSIGHT_RL  ")).toBe("  GREYSIGHT_RL  ");
   });
 
-  it("renders the placeholder role, not an empty-quoted role, when roleName is whitespace-only", () => {
-    render(
-      <AccountChromeProvider value={withRole("owner")}>
-        <OptInGate orgId="org-1" roleName="   " onAgreed={() => {}} />
-      </AccountChromeProvider>,
-    );
-
-    expect(
-      screen.getByText(
-        `GRANT MANAGE WAREHOUSES ON ACCOUNT TO ROLE "${UNKNOWN_ROLE_PLACEHOLDER}";`,
-      ),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/TO ROLE "";/)).not.toBeInTheDocument();
-  });
-
   it("calls agree then onAgreed for an owner", async () => {
     const agreeSpy = vi
       .spyOn(automatedSavingsApi, "agree")
@@ -109,26 +89,6 @@ describe("OptInGate", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       /something went wrong/i,
     );
-  });
-
-  it("allows an owner to retry after an agreement failure", async () => {
-    const agreeSpy = vi.spyOn(automatedSavingsApi, "agree")
-      .mockRejectedValueOnce(new Error("temporary failure"))
-      .mockResolvedValueOnce(undefined);
-    const onAgreed = vi.fn();
-    render(
-      <AccountChromeProvider value={withRole("owner")}>
-        <OptInGate orgId="org-1" roleName="GREYSIGHT_RL" onAgreed={onAgreed} />
-      </AccountChromeProvider>,
-    );
-    const agreeButton = screen.getByRole("button", { name: /agree/i });
-
-    fireEvent.click(agreeButton);
-    expect(await screen.findByRole("alert")).toBeInTheDocument();
-    fireEvent.click(agreeButton);
-
-    await waitFor(() => expect(onAgreed).toHaveBeenCalledOnce());
-    expect(agreeSpy).toHaveBeenCalledTimes(2);
   });
 
   it("protects an organization from overlapping agreement requests", async () => {

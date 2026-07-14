@@ -50,39 +50,6 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function asString(value: unknown): string {
-  if (typeof value !== "string") {
-    throw new Error("Malformed automated-savings API response");
-  }
-  return value;
-}
-
-function asBoolean(value: unknown): boolean {
-  if (typeof value !== "boolean") {
-    throw new Error("Malformed automated-savings API response");
-  }
-  return value;
-}
-
-function asNullableNumber(value: unknown): number | null {
-  if (value === null) return null;
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
-    throw new Error("Malformed automated-savings API response");
-  }
-  return value;
-}
-
-function asNullableString(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
-}
-
-function asStrictNullableString(value: unknown): string | null {
-  if (value !== null && typeof value !== "string") {
-    throw new Error("Malformed automated-savings API response");
-  }
-  return value;
-}
-
 function asSavingsStatus(value: unknown): SavingsStatus {
   if (value === "idle" || value === "transitioning" || value === "unsupported") {
     return value;
@@ -91,23 +58,25 @@ function asSavingsStatus(value: unknown): SavingsStatus {
 }
 
 // The single snake_case → camelCase boundary for warehouse rows: the API
-// returns snake_case JSON; everything downstream consumes only the validated
-// camelCase WarehouseRow type.
+// returns snake_case JSON; everything downstream consumes only the camelCase
+// WarehouseRow type. We validate the status enum (it drives display/branching)
+// and trust the TS contract for the rest, matching the repo norm in
+// dashboard-api.ts.
 export function parseWarehouseRow(raw: unknown): WarehouseRow {
   const record = asRecord(raw);
   return {
-    name: asString(record.name),
-    size: asStrictNullableString(record.size),
-    state: asStrictNullableString(record.state),
-    type: asStrictNullableString(record.type),
-    supported: asBoolean(record.supported),
-    minClusterCount: asNullableNumber(record.min_cluster_count),
-    maxClusterCount: asNullableNumber(record.max_cluster_count),
-    startedClusters: asNullableNumber(record.started_clusters),
-    autoResumeOk: asBoolean(record.auto_resume_ok),
-    autoSuspend: asNullableNumber(record.auto_suspend),
-    quiescing: asNullableNumber(record.quiescing),
-    enabled: asBoolean(record.enabled),
+    name: record.name as string,
+    size: record.size as string | null,
+    state: record.state as string | null,
+    type: record.type as string | null,
+    supported: record.supported as boolean,
+    minClusterCount: record.min_cluster_count as number | null,
+    maxClusterCount: record.max_cluster_count as number | null,
+    startedClusters: record.started_clusters as number | null,
+    autoResumeOk: record.auto_resume_ok as boolean,
+    autoSuspend: record.auto_suspend as number | null,
+    quiescing: record.quiescing as number | null,
+    enabled: record.enabled as boolean,
     status: asSavingsStatus(record.status),
   };
 }
@@ -116,11 +85,11 @@ export function parseWarehouseRow(raw: unknown): WarehouseRow {
 export function parseStatus(raw: unknown): AutomatedSavingsStatus {
   const record = asRecord(raw);
   return {
-    agreed: asBoolean(record.agreed),
-    globalEnabled: asBoolean(record.global_enabled),
-    grantPresent: asBoolean(record.grant_present),
-    grantCheckedAt: asNullableString(record.grant_checked_at),
-    roleName: asNullableString(record.role_name),
+    agreed: record.agreed as boolean,
+    globalEnabled: record.global_enabled as boolean,
+    grantPresent: record.grant_present as boolean,
+    grantCheckedAt: (record.grant_checked_at as string | null) ?? null,
+    roleName: (record.role_name as string | null) ?? null,
   };
 }
 
@@ -129,9 +98,9 @@ export function parseStatus(raw: unknown): AutomatedSavingsStatus {
 export function parseCheckAccessResult(raw: unknown): CheckAccessResult {
   const record = asRecord(raw);
   return {
-    grantPresent: asBoolean(record.grant_present),
-    grantCheckedAt: asNullableString(record.grant_checked_at),
-    roleName: asNullableString(record.role_name),
+    grantPresent: record.grant_present as boolean,
+    grantCheckedAt: (record.grant_checked_at as string | null) ?? null,
+    roleName: (record.role_name as string | null) ?? null,
   };
 }
 

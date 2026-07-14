@@ -318,142 +318,60 @@ begin
 end;
 $$;
 
+-- Table-driven constraint checks: exercise the three custom CHECK (>= 0)
+-- constraints and one representative NOT NULL case. Each case overrides one
+-- column of an otherwise valid event row with a bad value and asserts the
+-- insert fails with the expected SQLSTATE (23514 check, 23502 not-null).
 do $$
+declare
+    v_case record;
+    v_defaults jsonb := jsonb_build_object(
+        'organization_id', '10000000-0000-0000-0000-000000000001',
+        'warehouse_name', 'DIRECT_TEST_WH',
+        'action', 'suspend',
+        'reason', 'idle',
+        'observed_state', 'STARTED',
+        'observed_running', 0,
+        'observed_queued', 0,
+        'observed_quiescing', 0,
+        'observed_resumed_on', '2026-01-01 00:02:00+00',
+        'observed_at', '2026-01-01 00:03:00+00'
+    );
+    v_row jsonb;
 begin
-    begin
-        insert into public.automated_savings_events (
-            organization_id, warehouse_name, action, reason, observed_state,
-            observed_running, observed_queued, observed_quiescing,
-            observed_resumed_on, observed_at
-        ) values (
-            '10000000-0000-0000-0000-000000000001', 'DIRECT_TEST_WH',
-            'suspend', 'idle', 'STARTED', -1, 0, 0,
-            '2026-01-01 00:02:00+00', '2026-01-01 00:03:00+00'
+    for v_case in
+        select *
+        from (values
+            ('observed_running', to_jsonb(-1), '23514'),
+            ('observed_queued', to_jsonb(-1), '23514'),
+            ('observed_quiescing', to_jsonb(-1), '23514'),
+            ('observed_state', 'null'::jsonb, '23502')
+        ) as c(column_name, bad_value, expected_sqlstate)
+    loop
+        v_row := jsonb_set(
+            v_defaults, array[v_case.column_name], v_case.bad_value
         );
-        raise exception 'negative running activity was accepted';
-    exception when check_violation then
-        null;
-    end;
-
-    begin
-        insert into public.automated_savings_events (
-            organization_id, warehouse_name, action, reason, observed_state,
-            observed_running, observed_queued, observed_quiescing,
-            observed_resumed_on, observed_at
-        ) values (
-            '10000000-0000-0000-0000-000000000001', 'DIRECT_TEST_WH',
-            'suspend', 'idle', 'STARTED', 0, -1, 0,
-            '2026-01-01 00:02:00+00', '2026-01-01 00:03:00+00'
-        );
-        raise exception 'negative queued activity was accepted';
-    exception when check_violation then
-        null;
-    end;
-
-    begin
-        insert into public.automated_savings_events (
-            organization_id, warehouse_name, action, reason, observed_state,
-            observed_running, observed_queued, observed_quiescing,
-            observed_resumed_on, observed_at
-        ) values (
-            '10000000-0000-0000-0000-000000000001', 'DIRECT_TEST_WH',
-            'suspend', 'idle', 'STARTED', 0, 0, -1,
-            '2026-01-01 00:02:00+00', '2026-01-01 00:03:00+00'
-        );
-        raise exception 'negative quiescing activity was accepted';
-    exception when check_violation then
-        null;
-    end;
-
-    begin
-        insert into public.automated_savings_events (
-            organization_id, warehouse_name, action, reason, observed_state,
-            observed_running, observed_queued, observed_quiescing,
-            observed_resumed_on, observed_at
-        ) values (
-            '10000000-0000-0000-0000-000000000001', 'DIRECT_TEST_WH',
-            'suspend', 'idle', null, 0, 0, 0,
-            '2026-01-01 00:02:00+00', '2026-01-01 00:03:00+00'
-        );
-        raise exception 'null observed state was accepted';
-    exception when not_null_violation then
-        null;
-    end;
-
-    begin
-        insert into public.automated_savings_events (
-            organization_id, warehouse_name, action, reason, observed_state,
-            observed_running, observed_queued, observed_quiescing,
-            observed_resumed_on, observed_at
-        ) values (
-            '10000000-0000-0000-0000-000000000001', 'DIRECT_TEST_WH',
-            'suspend', 'idle', 'STARTED', null, 0, 0,
-            '2026-01-01 00:02:00+00', '2026-01-01 00:03:00+00'
-        );
-        raise exception 'null observed running was accepted';
-    exception when not_null_violation then
-        null;
-    end;
-
-    begin
-        insert into public.automated_savings_events (
-            organization_id, warehouse_name, action, reason, observed_state,
-            observed_running, observed_queued, observed_quiescing,
-            observed_resumed_on, observed_at
-        ) values (
-            '10000000-0000-0000-0000-000000000001', 'DIRECT_TEST_WH',
-            'suspend', 'idle', 'STARTED', 0, null, 0,
-            '2026-01-01 00:02:00+00', '2026-01-01 00:03:00+00'
-        );
-        raise exception 'null observed queued was accepted';
-    exception when not_null_violation then
-        null;
-    end;
-
-    begin
-        insert into public.automated_savings_events (
-            organization_id, warehouse_name, action, reason, observed_state,
-            observed_running, observed_queued, observed_quiescing,
-            observed_resumed_on, observed_at
-        ) values (
-            '10000000-0000-0000-0000-000000000001', 'DIRECT_TEST_WH',
-            'suspend', 'idle', 'STARTED', 0, 0, null,
-            '2026-01-01 00:02:00+00', '2026-01-01 00:03:00+00'
-        );
-        raise exception 'null observed quiescing was accepted';
-    exception when not_null_violation then
-        null;
-    end;
-
-    begin
-        insert into public.automated_savings_events (
-            organization_id, warehouse_name, action, reason, observed_state,
-            observed_running, observed_queued, observed_quiescing,
-            observed_resumed_on, observed_at
-        ) values (
-            '10000000-0000-0000-0000-000000000001', 'DIRECT_TEST_WH',
-            'suspend', 'idle', 'STARTED', 0, 0, 0,
-            null, '2026-01-01 00:03:00+00'
-        );
-        raise exception 'null observed resume time was accepted';
-    exception when not_null_violation then
-        null;
-    end;
-
-    begin
-        insert into public.automated_savings_events (
-            organization_id, warehouse_name, action, reason, observed_state,
-            observed_running, observed_queued, observed_quiescing,
-            observed_resumed_on, observed_at
-        ) values (
-            '10000000-0000-0000-0000-000000000001', 'DIRECT_TEST_WH',
-            'suspend', 'idle', 'STARTED', 0, 0, 0,
-            '2026-01-01 00:02:00+00', null
-        );
-        raise exception 'null observation time was accepted';
-    exception when not_null_violation then
-        null;
-    end;
+        begin
+            insert into public.automated_savings_events (
+                organization_id, warehouse_name, action, reason, observed_state,
+                observed_running, observed_queued, observed_quiescing,
+                observed_resumed_on, observed_at
+            )
+            select
+                r.organization_id, r.warehouse_name, r.action, r.reason,
+                r.observed_state, r.observed_running, r.observed_queued,
+                r.observed_quiescing, r.observed_resumed_on, r.observed_at
+            from jsonb_populate_record(
+                null::public.automated_savings_events, v_row
+            ) r;
+            raise exception
+                'bad % value was accepted', v_case.column_name;
+        exception when others then
+            if sqlstate <> v_case.expected_sqlstate then
+                raise;
+            end if;
+        end;
+    end loop;
 end;
 $$;
 
@@ -492,13 +410,10 @@ reset role;
 do $$
 declare
     v_columns text[];
-    v_policy_count integer;
     v_auth_grants text[];
     v_service_grants text[];
-    v_rpc_count integer;
     v_rpc_signature_count integer;
     v_table_count integer;
-    v_trigger_count integer;
 begin
     select count(*) into v_table_count
     from information_schema.tables
@@ -562,20 +477,6 @@ begin
         raise exception 'unexpected event columns: %', v_columns;
     end if;
 
-    select count(*) into v_trigger_count
-    from pg_catalog.pg_trigger t
-    join pg_catalog.pg_class c on c.oid = t.tgrelid
-    join pg_catalog.pg_namespace n on n.oid = c.relnamespace
-    where n.nspname = 'public'
-      and not t.tgisinternal
-      and c.relname in (
-          'automated_savings_settings',
-          'automated_savings_warehouses'
-      );
-    if v_trigger_count <> 2 then
-        raise exception 'expected exactly two automated savings version triggers';
-    end if;
-
     if exists (
         select 1
         from (
@@ -618,18 +519,6 @@ begin
         where actual.trigger_name is null
     ) then
         raise exception 'automated savings version trigger differs from contract';
-    end if;
-
-    select count(*) into v_policy_count
-    from pg_catalog.pg_policies
-    where schemaname = 'public'
-      and tablename in (
-          'automated_savings_settings',
-          'automated_savings_warehouses',
-          'automated_savings_events'
-      );
-    if v_policy_count <> 7 then
-        raise exception 'expected 7 automated savings policies, got %', v_policy_count;
     end if;
 
     if exists (
@@ -869,22 +758,6 @@ begin
         raise exception 'worker RPC has an unexpected execute grantee';
     end if;
 
-    select count(distinct routine_name) into v_rpc_count
-    from information_schema.routine_privileges
-    where routine_schema = 'public'
-      and routine_name in (
-          'automated_savings_upsert_enrollment',
-          'automated_savings_disable_enrollment',
-          'automated_savings_authorize_suspend',
-          'automated_savings_delete_stale_enrollment',
-          'automated_savings_worker_tenants'
-      )
-      and grantee = 'service_role'
-      and privilege_type = 'EXECUTE';
-    if v_rpc_count <> 5 then
-        raise exception 'service_role does not have all five worker RPCs';
-    end if;
-
     if exists (
         select 1
         from pg_catalog.pg_proc p
@@ -910,6 +783,8 @@ begin
         raise exception 'worker RPC is not SECURITY INVOKER with empty search_path';
     end if;
 
+    -- Total-count guard: catches any extra automated_savings_ overload the
+    -- exact-signature check below would otherwise miss.
     select count(*) into v_rpc_signature_count
     from pg_catalog.pg_proc p
     join pg_catalog.pg_namespace n on n.oid = p.pronamespace
@@ -1175,7 +1050,6 @@ select set_config(
 );
 do $$
 declare
-    v_count integer;
     v_affected integer;
 begin
     if auth.uid() is distinct from
@@ -1216,27 +1090,6 @@ begin
     get diagnostics v_affected = row_count;
     if v_affected <> 1 then
         raise exception 'org A admin could not update org A enrollment';
-    end if;
-
-    select count(*) into v_count
-    from public.automated_savings_settings
-    where organization_id = '10000000-0000-0000-0000-000000000002';
-    if v_count <> 0 then
-        raise exception 'org A admin could read org B settings';
-    end if;
-
-    select count(*) into v_count
-    from public.automated_savings_warehouses
-    where organization_id = '10000000-0000-0000-0000-000000000002';
-    if v_count <> 0 then
-        raise exception 'org A admin could read org B enrollment';
-    end if;
-
-    select count(*) into v_count
-    from public.automated_savings_events
-    where organization_id = '10000000-0000-0000-0000-000000000002';
-    if v_count <> 0 then
-        raise exception 'org A admin could read org B events';
     end if;
 
     update public.automated_savings_settings

@@ -4,7 +4,6 @@ import logging
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 import httpx
-from pydantic import ValidationError
 import pytest
 
 from app.auth import AuthContext, require_auth_context
@@ -140,9 +139,7 @@ def test_enrollment_persists_aware_identity_without_defaults(monkeypatch, create
     monkeypatch.setattr(
         automated_savings,
         "capture_warehouse_identity",
-        lambda **kwargs: automated_savings.CapturedWarehouseIdentity(
-            warehouse_created_on=created_on
-        ),
+        lambda **kwargs: created_on,
     )
     captured = {}
     monkeypatch.setattr(
@@ -223,8 +220,8 @@ def test_capture_warehouse_identity_requires_exact_live_name(monkeypatch):
         settings=automated_savings.Settings(),
     )
 
-    assert captured.warehouse_created_on is None
-    assert exact.warehouse_created_on == "2026-01-01T00:00:00Z"
+    assert captured is None
+    assert exact == "2026-01-01T00:00:00Z"
 
 
 def test_management_routes_are_absent():
@@ -249,9 +246,7 @@ def test_enrollment_rejects_missing_or_malformed_identity(monkeypatch, created_o
     monkeypatch.setattr(
         automated_savings,
         "capture_warehouse_identity",
-        lambda **kwargs: automated_savings.CapturedWarehouseIdentity(
-            warehouse_created_on=created_on
-        ),
+        lambda **kwargs: created_on,
     )
     monkeypatch.setattr(
         automated_savings,
@@ -266,28 +261,8 @@ def test_enrollment_rejects_missing_or_malformed_identity(monkeypatch, created_o
     assert response.status_code == 422
 
 
-def test_warehouse_response_rejects_status_outside_public_contract():
-    payload = {
-        "name": "WH1",
-        "size": "X-Small",
-        "state": "STARTED",
-        "type": "STANDARD",
-        "supported": True,
-        "min_cluster_count": 1,
-        "max_cluster_count": 1,
-        "started_clusters": 1,
-        "auto_resume_ok": True,
-        "auto_suspend": 300,
-        "quiescing": 0,
-        "enabled": True,
-        "status": "drifted",
-    }
-
-    with pytest.raises(ValidationError):
-        automated_savings.WarehouseResponse.model_validate(payload)
-
-
-def test_list_warehouses_hides_store_failure(monkeypatch, caplog):
+def _list_warehouses_store_failure(monkeypatch):
+    """Drive a 503 store failure through GET /warehouses (member context)."""
     app.dependency_overrides[require_auth_context] = _member_ctx
     secret_body = "secret-postgrest-body"
     store = SupabaseAutomatedSavingsStore(
@@ -297,7 +272,6 @@ def test_list_warehouses_hides_store_failure(monkeypatch, caplog):
             lambda request: httpx.Response(503, text=secret_body)
         ),
     )
-
     monkeypatch.setattr(
         "app.services.org_connection_resolver.resolve_snowflake_config",
         lambda *args, **kwargs: object(),
@@ -311,23 +285,21 @@ def test_list_warehouses_hides_store_failure(monkeypatch, caplog):
         lambda config: [],
     )
     monkeypatch.setattr(automated_savings, "get_automated_savings_store", lambda: store)
-
-    with caplog.at_level(logging.WARNING):
-        response = TestClient(app).get("/api/automated-savings/org-1/warehouses")
-    app.dependency_overrides.clear()
-
-    assert response.status_code == 502
-    assert response.json() == {"detail": "Could not load warehouse enrollments."}
-    assert secret_body not in response.text
-    assert "operation=list_warehouse_enrollments" in caplog.text
-    assert "kind=http_status" in caplog.text
-    assert "status=503" in caplog.text
-    assert secret_body not in caplog.text
-    assert "secret-service-role-key" not in caplog.text
-    assert "secret-project.supabase.co" not in caplog.text
+    response = TestClient(app).get("/api/automated-savings/org-1/warehouses")
+    return response, {
+        "detail": "Could not load warehouse enrollments.",
+        "operation": "list_warehouse_enrollments",
+        "status": "status=503",
+        "secrets": [
+            secret_body,
+            "secret-service-role-key",
+            "secret-project.supabase.co",
+        ],
+    }
 
 
-def test_enrollment_store_failure_logs_only_sanitized_metadata(monkeypatch, caplog):
+def _enrollment_store_failure(monkeypatch):
+    """Drive a 409 store failure through POST /toggle (admin context)."""
     app.dependency_overrides[require_auth_context] = _secret_admin_ctx
 
     class _FailingStore:
@@ -337,29 +309,40 @@ def test_enrollment_store_failure_logs_only_sanitized_metadata(monkeypatch, capl
     monkeypatch.setattr(
         automated_savings,
         "capture_warehouse_identity",
-        lambda **kwargs: automated_savings.CapturedWarehouseIdentity(
-            warehouse_created_on="2026-01-01T00:00:00Z"
-        ),
+        lambda **kwargs: "2026-01-01T00:00:00Z",
     )
     monkeypatch.setattr(automated_savings, "_require_store", lambda: _FailingStore())
+    response = TestClient(app).post(
+        "/api/automated-savings/secret-org-sentinel/"
+        "warehouses/SECRET_WAREHOUSE_SENTINEL/toggle",
+        json={"enabled": True},
+    )
+    return response, {
+        "detail": "Could not enroll the warehouse.",
+        "operation": "upsert_warehouse_enrollment",
+        "status": "status=409",
+        "secrets": ["secret-org-sentinel", "SECRET_WAREHOUSE_SENTINEL"],
+    }
 
+
+@pytest.mark.parametrize(
+    "drive", [_list_warehouses_store_failure, _enrollment_store_failure]
+)
+def test_store_failure_returns_502_and_logs_only_sanitized_metadata(
+    monkeypatch, caplog, drive
+):
     with caplog.at_level(logging.WARNING):
-        response = TestClient(app).post(
-            "/api/automated-savings/secret-org-sentinel/"
-            "warehouses/SECRET_WAREHOUSE_SENTINEL/toggle",
-            json={"enabled": True},
-        )
+        response, expected = drive(monkeypatch)
     app.dependency_overrides.clear()
 
     assert response.status_code == 502
-    assert response.json() == {"detail": "Could not enroll the warehouse."}
-    assert "operation=upsert_warehouse_enrollment" in caplog.text
+    assert response.json() == {"detail": expected["detail"]}
+    assert f"operation={expected['operation']}" in caplog.text
     assert "kind=http_status" in caplog.text
-    assert "status=409" in caplog.text
-    assert "secret-org-sentinel" not in caplog.text
-    assert "SECRET_WAREHOUSE_SENTINEL" not in caplog.text
-    assert "secret-org-sentinel" not in response.text
-    assert "SECRET_WAREHOUSE_SENTINEL" not in response.text
+    assert expected["status"] in caplog.text
+    for secret in expected["secrets"]:
+        assert secret not in caplog.text
+        assert secret not in response.text
 
 
 def test_status_role_name_null_when_snowflake_not_configured(monkeypatch):

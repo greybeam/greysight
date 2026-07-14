@@ -113,24 +113,20 @@ def test_join_maps_empty_show_quiescing_to_idle_zero():
         ("auto_suspend", ""),
         ("auto_suspend", "not-an-int"),
         ("auto_suspend", -1),
+        ("quiescing", None),
+        ("quiescing", " "),
         ("quiescing", "not-an-int"),
         ("quiescing", -1),
+        ("quiescing", True),
+        ("quiescing", 0.5),
+        ("quiescing", "0.5"),
+        ("quiescing", float("nan")),
+        ("quiescing", float("inf")),
     ],
 )
 def test_join_treats_malformed_nonnegative_counts_as_unknown(field, value):
     [view] = warehouse_directory.join_warehouse_view(_live(**{field: value}), [])
     assert getattr(view, field) is None
-    assert view.status == "idle"
-
-
-@pytest.mark.parametrize(
-    "value",
-    [None, " ", "not-an-int", -1, True, 0.5, "0.5", float("nan"), float("inf")],
-)
-def test_join_rejects_nonempty_invalid_quiescing_encodings(value):
-    [view] = warehouse_directory.join_warehouse_view(_live(quiescing=value), [])
-
-    assert view.quiescing is None
     assert view.status == "idle"
 
 

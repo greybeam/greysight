@@ -122,7 +122,6 @@ async def run_tenant_once(
     config: WorkerConfig,
     executor: Executor,
     now_fn: NowFn,
-    unknown_attempts: dict[str, str],
     lock: asyncio.Lock,
 ) -> CycleResult:
     """One guarded poll → cycle tick for a single tenant.
@@ -147,7 +146,6 @@ async def run_tenant_once(
                 config=config,
                 now=now_fn(),
                 suspend=session.suspend_warehouse,
-                unknown_attempts=unknown_attempts,
             )
 
         # Retain the underlying concurrent future so a still-queued tick can be
@@ -213,7 +211,6 @@ async def tenant_loop(
     if stop is None:
         stop = asyncio.Event()
     attempt = 0
-    unknown_attempts: dict[str, str] = {}
     lock = asyncio.Lock()
     while not stop.is_set():
         try:
@@ -224,7 +221,6 @@ async def tenant_loop(
                 config=config,
                 executor=executor,
                 now_fn=now_fn,
-                unknown_attempts=unknown_attempts,
                 lock=lock,
             )
         except Exception as exc:

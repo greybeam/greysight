@@ -70,53 +70,28 @@ def _log_metric(metric_name: str, *, attempt_id: str, **labels: object) -> None:
     )
 
 
-def _retire_missing_unknown_attempts(
-    org_id: str,
-    observed_names: set[str],
-    unknown_attempts: dict[str, str],
-) -> None:
-    for name in list(unknown_attempts):
-        if name in observed_names:
-            continue
-        previous_attempt_id = unknown_attempts.pop(name)
-        logger.info(
-            "Automated Savings unknown attempt retired without snapshot",
-            extra={
-                "event": "unknown_attempt_retired",
-                "attempt_id": previous_attempt_id,
-                "organization_id": org_id,
-                "warehouse_name": name,
-                "reason": "snapshot_missing",
-            },
-        )
-
-
 def _correlate_snapshots(
     org_id: str,
     snapshots: list[WarehouseSnapshot],
     *,
     now: datetime,
-    unknown_attempts: dict[str, str],
 ) -> tuple[dict[str, WarehouseSnapshot], dict[str, dict[str, object]]]:
     grouped: dict[str, list[WarehouseSnapshot]] = {}
     for snapshot in snapshots:
         grouped.setdefault(snapshot.name, []).append(snapshot)
 
-    _retire_missing_unknown_attempts(org_id, set(grouped), unknown_attempts)
     unique: dict[str, WarehouseSnapshot] = {}
     observations: dict[str, dict[str, object]] = {}
     for name, matching_snapshots in grouped.items():
-        previous_attempt_id = unknown_attempts.pop(name, None)
         if len(matching_snapshots) != 1:
             logger.warning(
                 "Automated Savings ambiguous warehouse snapshot",
                 extra={
                     "event": "snapshot_ambiguous",
-                    "attempt_id": previous_attempt_id or str(uuid.uuid4()),
+                    "attempt_id": str(uuid.uuid4()),
                     "organization_id": org_id,
                     "warehouse_name": name,
                     "row_count": len(matching_snapshots),
-                    "previous_unknown_attempt_id": previous_attempt_id,
                 },
             )
             continue
@@ -135,7 +110,6 @@ def _correlate_snapshots(
             extra={
                 "event": "snapshot",
                 **observation,
-                "previous_unknown_attempt_id": previous_attempt_id,
             },
         )
     return unique, observations
@@ -190,11 +164,9 @@ def _log_suspend_metrics(
 
 
 def _classify_suspend_result(
-    warehouse_name: str,
     result: SuspendResult,
     *,
     observation: dict[str, object],
-    unknown_attempts: dict[str, str],
 ) -> CycleResult:
     attempt_id = _attempt_id(observation)
     if result.outcome is SuspendOutcome.UNKNOWN_IDEMPOTENT:
@@ -211,7 +183,6 @@ def _classify_suspend_result(
             outcome="unknown_idempotent",
             metadata=metadata,
         )
-        unknown_attempts[warehouse_name] = attempt_id
         return CycleResult.RETRY_BACKOFF
 
     if result.outcome is not SuspendOutcome.ACCEPTED:
@@ -231,7 +202,6 @@ def _suspend_once(
     *,
     suspend: SuspendWarehouse,
     observation: dict[str, object],
-    unknown_attempts: dict[str, str],
 ) -> CycleResult:
     attempt_id = _attempt_id(observation)
     logger.info(
@@ -251,10 +221,8 @@ def _suspend_once(
         _log_suspend_metrics(attempt_id, outcome="error", metadata=metadata)
         raise
     return _classify_suspend_result(
-        warehouse_name,
         result,
         observation=observation,
-        unknown_attempts=unknown_attempts,
     )
 
 
@@ -331,7 +299,6 @@ def run_cycle(
     config: WorkerConfig,
     now: datetime,
     suspend: SuspendWarehouse,
-    unknown_attempts: dict[str, str],
 ) -> CycleResult:
     """Evaluate one immutable warehouse snapshot and issue direct suspends.
 
@@ -343,7 +310,6 @@ def run_cycle(
         org_id,
         parse_warehouses(rows, now=now),
         now=now,
-        unknown_attempts=unknown_attempts,
     )
 
     enrollments = store.list_enrollments(org_id)
@@ -383,7 +349,6 @@ def run_cycle(
             enrollment.warehouse_name,
             suspend=suspend,
             observation=observation,
-            unknown_attempts=unknown_attempts,
         )
         if result is CycleResult.RETRY_BACKOFF:
             return result

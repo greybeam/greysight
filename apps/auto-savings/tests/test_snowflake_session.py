@@ -13,15 +13,17 @@ from auto_savings.snowflake_session import (
 )
 
 
-def test_default_connect_passes_socket_timeouts_to_connector(monkeypatch):
-    # D2 regression: the DEFAULT (non-injected) connect path must forward the
-    # socket/network timeouts to the real snowflake.connector.connect, or the
-    # wedge-escape never applies in production.
+def test_default_connect_forwards_socket_timeouts_and_bounds_login_timeout(monkeypatch):
+    # The DEFAULT (non-injected) connect path must forward the socket/network
+    # timeouts to the real snowflake.connector.connect (D2), and a hung initial
+    # connect must not outlive the poll watchdog: login_timeout (defaulted to the
+    # 120s query timeout by connector_kwargs) is overridden down to
+    # socket_timeout_seconds, which config validation keeps < poll_timeout (#2b).
     import snowflake.connector as sf
 
     class Cfg:
         def connector_kwargs(self):
-            return {"account": "ab12345", "user": "svc"}
+            return {"account": "ab12345", "user": "svc", "login_timeout": 120}
 
     captured = {}
 
@@ -38,30 +40,6 @@ def test_default_connect_passes_socket_timeouts_to_connector(monkeypatch):
     assert captured["network_timeout"] == 15
     assert captured["client_session_keep_alive"] is True
     assert captured["account"] == "ab12345"
-
-
-def test_default_connect_bounds_login_timeout_below_poll_watchdog(monkeypatch):
-    # #2b: a hung initial connect must not outlive the poll watchdog. login_timeout
-    # (defaulted to the 120s query timeout by connector_kwargs) is overridden down
-    # to socket_timeout_seconds, which config validation keeps < poll_timeout.
-    import snowflake.connector as sf
-
-    class Cfg:
-        def connector_kwargs(self):
-            return {"account": "ab12345", "user": "svc", "login_timeout": 120}
-
-    captured = {}
-
-    def fake_connect(**kwargs):
-        captured.update(kwargs)
-        return Mock()
-
-    monkeypatch.setattr(sf, "connect", fake_connect)
-
-    session = TenantSession(config=Cfg(), socket_timeout_seconds=15)
-    session.ensure_connected()
-
-    assert "login_timeout" in captured
     assert captured["login_timeout"] <= 15  # <= socket_timeout_seconds (< poll_timeout)
 
 
@@ -131,29 +109,6 @@ def test_suspend_90064_is_unknown_without_claiming_success(caplog):
     assert record.connector_message == "observed race"
 
 
-def test_accepted_suspend_result_rejects_connector_metadata():
-    metadata = ConnectorErrorMetadata(
-        error_type="ProgrammingError",
-        errno=90064,
-        sqlstate="57014",
-        message="observed race",
-    )
-
-    with pytest.raises(
-        ValueError,
-        match="accepted suspend results cannot include connector metadata",
-    ):
-        SuspendResult(SuspendOutcome.ACCEPTED, metadata)
-
-
-def test_unknown_suspend_result_requires_connector_metadata():
-    with pytest.raises(
-        ValueError,
-        match="unknown suspend results require connector metadata",
-    ):
-        SuspendResult(SuspendOutcome.UNKNOWN_IDEMPOTENT)
-
-
 def test_suspend_connection_failure_propagates_as_ambiguous():
     cursor = Mock()
     cursor.execute.side_effect = snowflake.connector.errors.OperationalError("lost")
@@ -169,8 +124,13 @@ def test_suspend_connection_failure_propagates_as_ambiguous():
         session.suspend_warehouse("WH1")
 
 
-def test_suspend_ignores_cursor_close_failure_after_accepted_command():
+@pytest.mark.parametrize("execute_fails", [False, True])
+def test_suspend_cursor_close_failure_never_masks_the_command_result(execute_fails):
+    # A failing cursor.close() must never change the outcome: an accepted command
+    # stays accepted, and an execute failure is preserved as the raised error.
     cursor = Mock()
+    if execute_fails:
+        cursor.execute.side_effect = ValueError("execute failed")
     cursor.close.side_effect = RuntimeError("close failed")
     connection = Mock()
     connection.cursor.return_value = cursor
@@ -180,29 +140,16 @@ def test_suspend_ignores_cursor_close_failure_after_accepted_command():
         connect=lambda _config: connection,
     )
 
-    outcome = session.suspend_warehouse("WH1")
-
-    assert outcome == SuspendResult(
-        outcome=SuspendOutcome.ACCEPTED,
-        connector_error=None,
-    )
-    cursor.execute.assert_called_once()
-
-
-def test_suspend_preserves_execute_failure_when_cursor_close_also_fails():
-    cursor = Mock()
-    cursor.execute.side_effect = ValueError("execute failed")
-    cursor.close.side_effect = RuntimeError("close failed")
-    connection = Mock()
-    connection.cursor.return_value = cursor
-    session = TenantSession(
-        config=object(),
-        socket_timeout_seconds=15,
-        connect=lambda _config: connection,
-    )
-
-    with pytest.raises(ValueError, match="execute failed"):
-        session.suspend_warehouse("WH1")
+    if execute_fails:
+        with pytest.raises(ValueError, match="execute failed"):
+            session.suspend_warehouse("WH1")
+    else:
+        outcome = session.suspend_warehouse("WH1")
+        assert outcome == SuspendResult(
+            outcome=SuspendOutcome.ACCEPTED,
+            connector_error=None,
+        )
+        cursor.execute.assert_called_once()
 
 
 def test_close_hard_closes_old_connection_and_next_op_reconnects():
@@ -276,7 +223,7 @@ def test_connection_fingerprint_changes_when_identity_rotates():
     )
 
 
-def test_connection_fingerprint_changes_when_path_key_contents_rotate(tmp_path):
+def test_connection_fingerprint_tracks_path_key_contents_and_handles_unreadable(tmp_path):
     key_path = tmp_path / "tenant-key.pem"
     key_path.write_text("KEY-A")
 
@@ -293,32 +240,20 @@ def test_connection_fingerprint_changes_when_path_key_contents_rotate(tmp_path):
         private_key_passphrase = None
         query_timeout_seconds = 120
 
+    # Rotating the key file contents rotates the fingerprint.
     before = connection_fingerprint(Cfg())
     key_path.write_text("KEY-B")
-
     assert connection_fingerprint(Cfg()) != before
 
+    # An unreadable/missing key path yields a stable fingerprint that still
+    # differs by path (so a rotated-but-missing key is not silently reused).
+    class MissingCfg(Cfg):
+        private_key_path = tmp_path / "missing.pem"
 
-def test_connection_fingerprint_is_stable_for_unreadable_key_path(tmp_path):
-    missing_path = tmp_path / "missing.pem"
+    missing_fingerprint = connection_fingerprint(MissingCfg())
+    assert missing_fingerprint == connection_fingerprint(MissingCfg())
 
-    class Cfg:
-        account = "acct1"
-        account_locator = None
-        user = "svc"
-        role = "ROLE_A"
-        warehouse = "WH"
-        database = "DB"
-        schema = "SCHEMA"
-        private_key_pem = None
-        private_key_path = missing_path
-        private_key_passphrase = None
-        query_timeout_seconds = 120
-
-    fingerprint = connection_fingerprint(Cfg())
-    assert fingerprint == connection_fingerprint(Cfg())
-
-    class OtherCfg(Cfg):
+    class OtherMissingCfg(Cfg):
         private_key_path = tmp_path / "other-missing.pem"
 
-    assert connection_fingerprint(OtherCfg()) != fingerprint
+    assert connection_fingerprint(OtherMissingCfg()) != missing_fingerprint

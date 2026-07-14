@@ -36,6 +36,14 @@ export function normalizeRoleName(
   return roleName?.trim() ? roleName : null;
 }
 
+// Builds the GRANT MANAGE WAREHOUSES statement for a (possibly missing) role,
+// falling back to the placeholder when no real role is available. The single
+// source of truth shared by the opt-in gate and the shell's grant-missing banner.
+export function buildGrantSql(roleName: string | null | undefined): string {
+  const role = normalizeRoleName(roleName) ?? UNKNOWN_ROLE_PLACEHOLDER;
+  return `GRANT MANAGE WAREHOUSES ON ACCOUNT TO ROLE ${quoteIdent(role)};`;
+}
+
 const REPO_URL =
   "https://github.com/greybeam/greysight/blob/main/docs/automated-savings-how-it-works.md";
 
@@ -50,7 +58,7 @@ export function OptInGate({ orgId, roleName, onAgreed }: OptInGateProps) {
   );
   const isAdmin = activeOrg?.role === "owner" || activeOrg?.role === "admin";
 
-  const grantSql = `GRANT MANAGE WAREHOUSES ON ACCOUNT TO ROLE ${quoteIdent(normalizeRoleName(roleName) ?? UNKNOWN_ROLE_PLACEHOLDER)};`;
+  const grantSql = buildGrantSql(roleName);
 
   async function handleCopy() {
     await navigator.clipboard?.writeText(grantSql);

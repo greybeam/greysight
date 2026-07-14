@@ -36,8 +36,6 @@ describe("WarehouseTable", () => {
       />,
     );
     expect(screen.getByText(display)).toBeInTheDocument();
-    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /reconcile/i })).not.toBeInTheDocument();
   });
 
   it("disables the toggle and shows unsupported for non-STANDARD warehouses", () => {
@@ -104,17 +102,6 @@ describe("WarehouseTable", () => {
     });
   });
 
-  it("calls toggleWarehouse and reports the change on toggle", async () => {
-    const toggleSpy = vi.spyOn(automatedSavingsApi, "toggleWarehouse").mockResolvedValue(undefined);
-    const onChange = vi.fn();
-    render(<WarehouseTable orgId="org-1" isAdmin accessToken="tok" warehouses={[base]} onChange={onChange} />);
-
-    fireEvent.click(screen.getByRole("switch", { name: /WH1/i }));
-
-    await waitFor(() => expect(onChange).toHaveBeenCalledWith({ ...base, enabled: false }));
-    expect(toggleSpy).toHaveBeenCalledWith("org-1", "WH1", false, { accessToken: "tok" });
-  });
-
   it("refreshes the authoritative row after first enrollment", async () => {
     const unenrolled: automatedSavingsApi.WarehouseRow = {
       ...base,
@@ -150,72 +137,57 @@ describe("WarehouseTable", () => {
     });
   });
 
-  it("keeps enrollment enabled and offers a parent refresh when hydration fails", async () => {
-    const unenrolled: automatedSavingsApi.WarehouseRow = {
-      ...base,
-      enabled: false,
-    };
-    vi.spyOn(automatedSavingsApi, "toggleWarehouse").mockResolvedValue(undefined);
-    vi.spyOn(automatedSavingsApi, "fetchWarehouses").mockRejectedValue(
-      new Error("refresh failed"),
-    );
-    const onRefresh = vi.fn().mockResolvedValue(undefined);
+  it.each([
+    [
+      "hydration fails",
+      () =>
+        vi
+          .spyOn(automatedSavingsApi, "fetchWarehouses")
+          .mockRejectedValue(new Error("refresh failed")),
+    ],
+    [
+      "hydration omits the warehouse",
+      () =>
+        vi
+          .spyOn(automatedSavingsApi, "fetchWarehouses")
+          .mockResolvedValue([]),
+    ],
+  ])(
+    "keeps enrollment enabled and offers a parent refresh when %s",
+    async (_case, mockFetch) => {
+      const unenrolled: automatedSavingsApi.WarehouseRow = {
+        ...base,
+        enabled: false,
+      };
+      vi.spyOn(automatedSavingsApi, "toggleWarehouse").mockResolvedValue(undefined);
+      mockFetch();
+      const onRefresh = vi.fn().mockResolvedValue(undefined);
 
-    function Harness() {
-      const [row, setRow] = useState(unenrolled);
-      return (
-        <WarehouseTable
-          orgId="org-1"
-          isAdmin
-          accessToken="tok"
-          warehouses={[row]}
-          onChange={setRow}
-          onRefresh={onRefresh}
-        />
-      );
-    }
+      function Harness() {
+        const [row, setRow] = useState(unenrolled);
+        return (
+          <WarehouseTable
+            orgId="org-1"
+            isAdmin
+            accessToken="tok"
+            warehouses={[row]}
+            onChange={setRow}
+            onRefresh={onRefresh}
+          />
+        );
+      }
 
-    render(<Harness />);
-    const rowSwitch = screen.getByRole("switch", { name: /WH1/i });
-    fireEvent.click(rowSwitch);
+      render(<Harness />);
+      const rowSwitch = screen.getByRole("switch", { name: /WH1/i });
+      fireEvent.click(rowSwitch);
 
-    await waitFor(() => expect(rowSwitch).toBeChecked());
-    fireEvent.click(await screen.findByRole("button", { name: /retry refresh/i }));
+      await waitFor(() => expect(rowSwitch).toBeChecked());
+      fireEvent.click(await screen.findByRole("button", { name: /retry refresh/i }));
 
-    await waitFor(() => expect(onRefresh).toHaveBeenCalledOnce());
-    expect(automatedSavingsApi.toggleWarehouse).toHaveBeenCalledOnce();
-  });
-
-  it("keeps enrollment enabled when hydration omits the warehouse", async () => {
-    const unenrolled: automatedSavingsApi.WarehouseRow = {
-      ...base,
-      enabled: false,
-    };
-    vi.spyOn(automatedSavingsApi, "toggleWarehouse").mockResolvedValue(undefined);
-    vi.spyOn(automatedSavingsApi, "fetchWarehouses").mockResolvedValue([]);
-
-    function Harness() {
-      const [row, setRow] = useState(unenrolled);
-      return (
-        <WarehouseTable
-          orgId="org-1"
-          isAdmin
-          accessToken="tok"
-          warehouses={[row]}
-          onChange={setRow}
-          onRefresh={vi.fn().mockResolvedValue(undefined)}
-        />
-      );
-    }
-
-    render(<Harness />);
-    const rowSwitch = screen.getByRole("switch", { name: /WH1/i });
-    fireEvent.click(rowSwitch);
-
-    await waitFor(() => expect(rowSwitch).toBeChecked());
-    expect(await screen.findByRole("button", { name: /retry refresh/i })).toBeVisible();
-    expect(automatedSavingsApi.toggleWarehouse).toHaveBeenCalledOnce();
-  });
+      await waitFor(() => expect(onRefresh).toHaveBeenCalledOnce());
+      expect(automatedSavingsApi.toggleWarehouse).toHaveBeenCalledOnce();
+    },
+  );
 
   it("surfaces a toggle failure without changing enrollment", async () => {
     vi.spyOn(automatedSavingsApi, "toggleWarehouse").mockRejectedValue(

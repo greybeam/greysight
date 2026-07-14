@@ -45,20 +45,6 @@ class SuspendResult:
     outcome: SuspendOutcome
     connector_error: ConnectorErrorMetadata | None = None
 
-    def __post_init__(self) -> None:
-        if (
-            self.outcome is SuspendOutcome.ACCEPTED
-            and self.connector_error is not None
-        ):
-            raise ValueError(
-                "accepted suspend results cannot include connector metadata"
-            )
-        if (
-            self.outcome is SuspendOutcome.UNKNOWN_IDEMPOTENT
-            and self.connector_error is None
-        ):
-            raise ValueError("unknown suspend results require connector metadata")
-
 
 def _sanitize_connector_message(value: object) -> str | None:
     if value is None:

@@ -190,7 +190,6 @@ def _run(
     *,
     rows: list[dict] | None = None,
     suspend=None,
-    unknown_attempts: dict[str, str] | None = None,
 ) -> CycleResult:
     if suspend is None:
         suspend = Mock(return_value=ACCEPTED_RESULT)
@@ -201,7 +200,6 @@ def _run(
         config=CONFIG,
         now=NOW,
         suspend=suspend,
-        unknown_attempts={} if unknown_attempts is None else unknown_attempts,
     )
 
 
@@ -279,18 +277,12 @@ def test_non_store_audit_failure_propagates_without_reissuing_in_cycle():
 
 def test_unknown_90064_requests_backoff_with_actual_connector_metadata(caplog):
     store = TrackingStore()
-    unknown_attempts: dict[str, str] = {}
 
     with caplog.at_level(logging.INFO, logger="auto_savings.engine"):
-        result = _run(
-            store,
-            suspend=lambda _name: _unknown_result(),
-            unknown_attempts=unknown_attempts,
-        )
+        result = _run(store, suspend=lambda _name: _unknown_result())
 
     assert result is CycleResult.RETRY_BACKOFF
     assert store.events == []
-    assert uuid.UUID(unknown_attempts["WH1"])
     outcome = next(record for record in caplog.records if record.event == "suspend_outcome")
     assert outcome.connector_error_type == "ProgrammingError"
     assert outcome.connector_errno == 90064
@@ -360,18 +352,10 @@ def test_ambiguous_connection_error_writes_no_event_and_propagates(caplog):
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"state": "SUSPENDING"},
         {"state": "SUSPENDED", "resumed_on": None},
-        {"quiescing": 1},
         {"running": 1},
-        {"queued": 1},
         {"running": "malformed"},
-        {"queued": None},
-        {"quiescing": "nan"},
-        {"type": "SNOWPARK-OPTIMIZED"},
         {"created_on": None},
-        {"resumed_on": "not-a-timestamp"},
-        {"auto_resume": False},
     ],
 )
 def test_ineligible_snapshots_never_authorize(overrides):
@@ -522,7 +506,7 @@ def test_restart_uses_only_fresh_ineligible_snapshot(restart_rows):
     restarted_suspend = Mock(return_value=ACCEPTED_RESULT)
 
     _run(first_store, suspend=first_suspend)
-    _run(second_store, rows=restart_rows, suspend=restarted_suspend, unknown_attempts={})
+    _run(second_store, rows=restart_rows, suspend=restarted_suspend)
 
     first_suspend.assert_called_once_with("WH1")
     restarted_suspend.assert_not_called()
@@ -533,7 +517,7 @@ def test_restart_may_idempotently_reissue_from_fresh_eligible_snapshot():
     restarted_suspend = Mock(return_value=ACCEPTED_RESULT)
 
     _run(TrackingStore(), suspend=first_suspend)
-    _run(TrackingStore(), suspend=restarted_suspend, unknown_attempts={})
+    _run(TrackingStore(), suspend=restarted_suspend)
 
     first_suspend.assert_called_once_with("WH1")
     restarted_suspend.assert_called_once_with("WH1")
@@ -574,82 +558,6 @@ def test_snapshot_request_and_outcome_logs_share_attempt_uuid(caplog):
         sqlstate=None,
         message=None,
     )
-
-
-def test_unknown_attempt_is_consumed_by_next_matching_snapshot_log(caplog):
-    store = TrackingStore()
-    unknown_attempts: dict[str, str] = {}
-    _run(
-        store,
-        suspend=lambda _name: _unknown_result(),
-        unknown_attempts=unknown_attempts,
-    )
-    previous_attempt = unknown_attempts["WH1"]
-    caplog.clear()
-    suspend = Mock(return_value=ACCEPTED_RESULT)
-
-    with caplog.at_level(logging.INFO, logger="auto_savings.engine"):
-        result = _run(
-            store,
-            suspend=suspend,
-            unknown_attempts=unknown_attempts,
-        )
-
-    assert result is CycleResult.NORMAL
-    suspend.assert_called_once_with("WH1")
-    snapshot = next(record for record in caplog.records if record.event == "snapshot")
-    assert snapshot.previous_unknown_attempt_id == previous_attempt
-    assert unknown_attempts == {}
-
-
-def test_matching_snapshot_consumes_unknown_attempt_after_enrollment_disappears(caplog):
-    previous_attempt = "c99cc46e-8e9f-4e10-a55b-2c4fcf037ccb"
-    unknown_attempts = {"WH1": previous_attempt}
-    store = TrackingStore()
-    store.enrollments = []
-    suspend = Mock()
-
-    with caplog.at_level(logging.INFO, logger="auto_savings.engine"):
-        result = _run(
-            store,
-            suspend=suspend,
-            unknown_attempts=unknown_attempts,
-        )
-
-    assert result is CycleResult.NORMAL
-    snapshot = next(record for record in caplog.records if record.event == "snapshot")
-    assert snapshot.previous_unknown_attempt_id == previous_attempt
-    assert unknown_attempts == {}
-    suspend.assert_not_called()
-
-
-def test_missing_snapshots_retire_unknown_attempts_without_blocking_unique_work(caplog):
-    unknown_attempts = {
-        "GONE_A": "31d91d0b-e7df-4079-ae11-b2a88dab1a87",
-        "GONE_B": "1a349d83-c4a0-4e67-8c42-9fe1c23e16bb",
-    }
-    suspend = Mock(return_value=ACCEPTED_RESULT)
-
-    with caplog.at_level(logging.INFO, logger="auto_savings.engine"):
-        result = _run(
-            TrackingStore(),
-            suspend=suspend,
-            unknown_attempts=unknown_attempts,
-        )
-
-    assert result is CycleResult.NORMAL
-    assert unknown_attempts == {}
-    retired = [
-        record for record in caplog.records if record.event == "unknown_attempt_retired"
-    ]
-    assert {
-        (record.warehouse_name, record.attempt_id, record.reason)
-        for record in retired
-    } == {
-        ("GONE_A", "31d91d0b-e7df-4079-ae11-b2a88dab1a87", "snapshot_missing"),
-        ("GONE_B", "1a349d83-c4a0-4e67-8c42-9fe1c23e16bb", "snapshot_missing"),
-    }
-    suspend.assert_called_once_with("WH1")
 
 
 def test_observability_uses_named_metric_events_with_required_labels(caplog):

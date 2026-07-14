@@ -73,10 +73,3 @@ def test_replica_index_must_be_within_num_replicas():
             num_replicas=3,
             replica_index=-1,
         )
-    # Sanity: a valid index does not raise.
-    WorkerConfig(
-        supabase_url="u",
-        supabase_service_role_key="k",
-        num_replicas=3,
-        replica_index=2,
-    )

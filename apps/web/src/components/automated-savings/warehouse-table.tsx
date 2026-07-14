@@ -37,15 +37,21 @@ type DisplayStatus = {
   color: "emerald" | "amber" | "rose" | "slate";
 };
 
+// A warehouse is unsupported when it isn't a STANDARD warehouse, the API marks
+// it unsupported, or its operational status is already "unsupported".
+function isUnsupported(warehouse: WarehouseRow): boolean {
+  return (
+    warehouse.type !== "STANDARD" ||
+    !warehouse.supported ||
+    warehouse.status === "unsupported"
+  );
+}
+
 // A single, derived answer to "is automated savings actually running on this
 // warehouse right now?" — collapsing the old separate AUTO_RESUME-health and
 // operational-status columns. First matching condition wins.
 function deriveDisplayStatus(warehouse: WarehouseRow): DisplayStatus {
-  if (
-    warehouse.type !== "STANDARD" ||
-    !warehouse.supported ||
-    warehouse.status === "unsupported"
-  ) {
+  if (isUnsupported(warehouse)) {
     return { label: "Unsupported", color: "slate" };
   }
   if (warehouse.status === "transitioning") {
@@ -139,10 +145,7 @@ function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange, on
   const [actionError, setActionError] = useState<string | null>(null);
   const [refreshFailed, setRefreshFailed] = useState(false);
 
-  const unsupported =
-    warehouse.type !== "STANDARD" ||
-    !warehouse.supported ||
-    warehouse.status === "unsupported";
+  const unsupported = isUnsupported(warehouse);
   const disabledReason = deriveToggleDisabledReason(
     warehouse,
     isAdmin,

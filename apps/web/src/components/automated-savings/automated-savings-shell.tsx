@@ -14,16 +14,12 @@ import {
 import { AppHeader } from "../dashboard/app-header";
 import { Switch } from "../ui/switch";
 import {
+  buildGrantSql,
   normalizeRoleName,
   OptInGate,
-  quoteIdent,
   UNKNOWN_ROLE_PLACEHOLDER,
 } from "./opt-in-gate";
 import { WarehouseTable } from "./warehouse-table";
-
-export function AutomatedSavingsShell() {
-  return <AutomatedSavingsContent />;
-}
 
 type LoadState = "idle" | "loading" | "ready" | "error";
 
@@ -69,7 +65,7 @@ function BlockingOptInModal({ children }: { children: React.ReactNode }) {
   );
 }
 
-function AutomatedSavingsContent() {
+export function AutomatedSavingsShell() {
   const account = useAccountChrome();
   const orgId = account?.activeOrganizationId ?? null;
   const accessToken = account?.accessToken ?? null;
@@ -224,19 +220,32 @@ function AutomatedSavingsContent() {
     );
   }
 
-  const grantSql = status
-    ? `GRANT MANAGE WAREHOUSES ON ACCOUNT TO ROLE ${quoteIdent(normalizeRoleName(status.roleName) ?? UNKNOWN_ROLE_PLACEHOLDER)};`
-    : null;
+  const grantSql = status ? buildGrantSql(status.roleName) : null;
 
   return (
     <SavingsChrome>
-      <div className="mb-6 flex flex-wrap items-center gap-3">
-        <h1 className="font-display text-2xl font-semibold text-slate-50">
-          Automated Savings
-        </h1>
-        <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-300">
-          Experimental
-        </span>
+      <div className="mb-6">
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="font-display text-2xl font-semibold text-slate-50">
+            Automated Savings
+          </h1>
+          <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-300">
+            Experimental
+          </span>
+        </div>
+        <p className="mt-2 text-sm text-slate-400">
+          This experimental feature reduces idle warehouse time by safely
+          suspending enrolled warehouses when they are not in use. {" "}
+          <a
+            className="text-slate-300 underline decoration-slate-600 underline-offset-2 hover:text-slate-100"
+            href="https://github.com/greybeam/greysight/blob/main/docs/automated-savings-how-it-works.md"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Learn more {" "}
+          </a>
+           about how Automated Savings works.
+        </p>
       </div>
 
       {!orgId ? (

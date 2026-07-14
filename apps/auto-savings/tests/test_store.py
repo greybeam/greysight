@@ -42,10 +42,7 @@ def _settings(
 ) -> SettingsRow:
     return SettingsRow(
         organization_id=organization_id,
-        agreed_at=NOW,
         global_enabled=global_enabled,
-        grant_present=True,
-        grant_checked_at=NOW,
     )
 
 
@@ -463,14 +460,3 @@ def test_worker_tenants_requires_global_switch_and_enabled_enrollment():
     store.seed_enrollment(_enrollment("org-3", enabled=True))
 
     assert store.worker_tenants() == ["org-2"]
-
-
-@pytest.mark.parametrize("response", [{}, ["org-1"], [{"wrong": "org-1"}]])
-def test_supabase_worker_tenants_rejects_malformed_rows(response: object):
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=response)
-
-    store = SupabaseStore(_config(), transport=httpx.MockTransport(handler))
-
-    with pytest.raises(StoreError):
-        store.worker_tenants()

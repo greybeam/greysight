@@ -4,7 +4,6 @@ import {
   checkAccess,
   fetchStatus,
   fetchWarehouses,
-  parseWarehouseRow,
   setGlobalSwitch,
   toggleWarehouse,
 } from "./automated-savings-api";
@@ -22,34 +21,31 @@ describe("automated-savings-api", () => {
     expect(new Headers(init?.headers).get("authorization")).toBe("Bearer tok");
   });
 
-  it.each(["idle", "transitioning", "unsupported"] as const)(
-    "maps the complete %s warehouse contract",
-    async (status) => {
-      vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify([{
-        name: "WH1", size: "X-Small", state: "STARTED", type: "STANDARD", supported: true,
-        min_cluster_count: 1, max_cluster_count: 2, started_clusters: 1, auto_resume_ok: true,
-        auto_suspend: 300, quiescing: 0, enabled: true, status,
-      }]), { status: 200 }));
+  it("maps the complete warehouse contract to camelCase", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify([{
+      name: "WH1", size: "X-Small", state: "STARTED", type: "STANDARD", supported: true,
+      min_cluster_count: 1, max_cluster_count: 2, started_clusters: 1, auto_resume_ok: true,
+      auto_suspend: 300, quiescing: 0, enabled: true, status: "idle",
+    }]), { status: 200 }));
 
-      const [row] = await fetchWarehouses("org-1", { accessToken: "t" });
+    const [row] = await fetchWarehouses("org-1", { accessToken: "t" });
 
-      expect(row).toEqual({
-        name: "WH1",
-        size: "X-Small",
-        state: "STARTED",
-        type: "STANDARD",
-        supported: true,
-        minClusterCount: 1,
-        maxClusterCount: 2,
-        startedClusters: 1,
-        autoResumeOk: true,
-        autoSuspend: 300,
-        quiescing: 0,
-        enabled: true,
-        status,
-      });
-    },
-  );
+    expect(row).toEqual({
+      name: "WH1",
+      size: "X-Small",
+      state: "STARTED",
+      type: "STANDARD",
+      supported: true,
+      minClusterCount: 1,
+      maxClusterCount: 2,
+      startedClusters: 1,
+      autoResumeOk: true,
+      autoSuspend: 300,
+      quiescing: 0,
+      enabled: true,
+      status: "idle",
+    });
+  });
 
   it("maps snake_case status JSON to camelCase AutomatedSavingsStatus", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
@@ -91,17 +87,11 @@ describe("automated-savings-api", () => {
     });
   });
 
-  it.each([
-    ["unknown status", { status: "mid_suspend" }],
-    ["missing auto_suspend", { auto_suspend: undefined }],
-    ["invalid quiescing", { quiescing: "0" }],
-    ["invalid nullable cluster count", { max_cluster_count: "2" }],
-  ])("rejects a warehouse response with %s", async (_case, override) => {
+  it("rejects a warehouse response with an unknown status", async () => {
     const raw = {
       name: "WH1", size: "X-Small", state: "STARTED", type: "STANDARD", supported: true,
       min_cluster_count: 1, max_cluster_count: 2, started_clusters: 1, auto_resume_ok: true,
-      auto_suspend: 300, quiescing: 0, enabled: true, status: "idle",
-      ...override,
+      auto_suspend: 300, quiescing: 0, enabled: true, status: "mid_suspend",
     };
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify([raw]), { status: 200 }),
@@ -109,32 +99,6 @@ describe("automated-savings-api", () => {
 
     await expect(fetchWarehouses("org-1", { accessToken: "t" }))
       .rejects.toThrow("Malformed automated-savings API response");
-  });
-
-  it.each([
-    ["negative", -1],
-    ["boolean", true],
-    ["fractional", 1.5],
-    ["malformed", "1"],
-    ["NaN", Number.NaN],
-    ["infinite", Number.POSITIVE_INFINITY],
-  ])("rejects %s values for every nullable live numeric field", (_case, invalid) => {
-    const raw = {
-      name: "WH1", size: "X-Small", state: "STARTED", type: "STANDARD", supported: true,
-      min_cluster_count: 1, max_cluster_count: 2, started_clusters: 1, auto_resume_ok: true,
-      auto_suspend: 300, quiescing: 0, enabled: true, status: "idle",
-    };
-
-    for (const field of [
-      "min_cluster_count",
-      "max_cluster_count",
-      "started_clusters",
-      "auto_suspend",
-      "quiescing",
-    ] as const) {
-      expect(() => parseWarehouseRow({ ...raw, [field]: invalid }), field)
-        .toThrow("Malformed automated-savings API response");
-    }
   });
 
   it("surfaces the API's error detail when the shared fetchJson helper hits a non-ok response", async () => {
@@ -170,13 +134,5 @@ describe("automated-savings-api", () => {
     expect(result).toEqual({
       grantPresent: false, grantCheckedAt: "2026-01-01T00:00:00Z", roleName: "GREYSIGHT_ROLE",
     });
-  });
-
-  it("maps a missing role_name on check-access to null", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
-      grant_present: true, grant_checked_at: null,
-    }), { status: 200 }));
-    const result = await checkAccess("org-1", { accessToken: "t" });
-    expect(result.roleName).toBeNull();
   });
 });

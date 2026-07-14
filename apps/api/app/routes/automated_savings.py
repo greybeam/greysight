@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -63,34 +62,35 @@ class WarehouseResponse(BaseModel):
     status: WarehouseStatus
 
 
-@dataclass(frozen=True)
-class CapturedWarehouseIdentity:
-    warehouse_created_on: str | None
+def _resolve_config(organization_id: str, settings: Settings):
+    """Resolve the org's live Snowflake config via the connection fetcher.
 
-
-def capture_warehouse_identity(
-    *, organization_id: str, warehouse_name: str, settings: Settings
-) -> CapturedWarehouseIdentity:
-    """Fetch the live warehouse identity used to detect name reuse."""
+    Imports are local so tests can monkeypatch the resolver seam, and to avoid
+    import cycles. Callers own their own error handling for a missing config.
+    """
     from app.services.org_connection_resolver import resolve_snowflake_config
     from app.services.snowflake_runtime import get_connection_fetcher
-    from app.services import warehouse_directory
 
-    config = resolve_snowflake_config(
+    return resolve_snowflake_config(
         organization_id,
         settings,
         fetch_connection=get_connection_fetcher(settings),
     )
+
+
+def capture_warehouse_identity(
+    *, organization_id: str, warehouse_name: str, settings: Settings
+) -> str | None:
+    """Fetch the live warehouse identity used to detect name reuse."""
+    from app.services import warehouse_directory
+
+    config = _resolve_config(organization_id, settings)
     live = warehouse_directory.list_live_warehouses(config)
     for row in live:
         if row.get("name") == warehouse_name:
             created_on = row.get("created_on")
-            return CapturedWarehouseIdentity(
-                warehouse_created_on=(
-                    str(created_on) if created_on is not None else None
-                ),
-            )
-    return CapturedWarehouseIdentity(warehouse_created_on=None)
+            return str(created_on) if created_on is not None else None
+    return None
 
 
 def _has_valid_warehouse_identity(value: str | None) -> bool:
@@ -109,23 +109,25 @@ def _resolve_role_name(organization_id: str, settings: Settings) -> str | None:
     Never raises: status must render even when Snowflake isn't configured or
     the resolution fails for any other reason.
     """
-    from app.services.org_connection_resolver import (
-        OrgConnectionNotConfiguredError,
-        resolve_snowflake_config,
-    )
-    from app.services.snowflake_runtime import get_connection_fetcher
+    from app.services.org_connection_resolver import OrgConnectionNotConfiguredError
 
     try:
-        config = resolve_snowflake_config(
-            organization_id,
-            settings,
-            fetch_connection=get_connection_fetcher(settings),
-        )
+        config = _resolve_config(organization_id, settings)
     except OrgConnectionNotConfiguredError:
         return None
     except Exception:  # noqa: BLE001 — status must not fail on resolution errors
         return None
     return config.role
+
+
+def _status_response(settings_row, *, role_name: str | None = None) -> StatusResponse:
+    return StatusResponse(
+        agreed=settings_row.agreed_at is not None,
+        global_enabled=settings_row.global_enabled,
+        grant_present=settings_row.grant_present,
+        grant_checked_at=settings_row.grant_checked_at,
+        role_name=role_name,
+    )
 
 
 def _require_store():
@@ -163,13 +165,7 @@ def get_status(
             role_name=role_name,
         )
     settings_row = store.get_settings(organization_id)
-    return StatusResponse(
-        agreed=settings_row.agreed_at is not None,
-        global_enabled=settings_row.global_enabled,
-        grant_present=settings_row.grant_present,
-        grant_checked_at=settings_row.grant_checked_at,
-        role_name=role_name,
-    )
+    return _status_response(settings_row, role_name=role_name)
 
 
 @router.post("/{organization_id}/agree", response_model=StatusResponse)
@@ -187,12 +183,7 @@ def agree(
             status_code=502, detail="Could not record agreement."
         ) from None
     settings_row = store.get_settings(organization_id)
-    return StatusResponse(
-        agreed=settings_row.agreed_at is not None,
-        global_enabled=settings_row.global_enabled,
-        grant_present=settings_row.grant_present,
-        grant_checked_at=settings_row.grant_checked_at,
-    )
+    return _status_response(settings_row)
 
 
 @router.post("/{organization_id}/global-switch", response_model=StatusResponse)
@@ -211,12 +202,7 @@ def set_global_switch(
             status_code=502, detail="Could not update the global switch."
         ) from None
     settings_row = store.get_settings(organization_id)
-    return StatusResponse(
-        agreed=settings_row.agreed_at is not None,
-        global_enabled=settings_row.global_enabled,
-        grant_present=settings_row.grant_present,
-        grant_checked_at=settings_row.grant_checked_at,
-    )
+    return _status_response(settings_row)
 
 
 @router.get("/{organization_id}/warehouses", response_model=list[WarehouseResponse])
@@ -226,20 +212,12 @@ def list_warehouses(
 ) -> list[WarehouseResponse]:
     require_org_membership(auth_context, organization_id)
 
-    from app.services.org_connection_resolver import (
-        OrgConnectionNotConfiguredError,
-        resolve_snowflake_config,
-    )
-    from app.services.snowflake_runtime import get_connection_fetcher
+    from app.services.org_connection_resolver import OrgConnectionNotConfiguredError
     from app.services import warehouse_directory
 
     settings = Settings()
     try:
-        config = resolve_snowflake_config(
-            organization_id,
-            settings,
-            fetch_connection=get_connection_fetcher(settings),
-        )
+        config = _resolve_config(organization_id, settings)
     except OrgConnectionNotConfiguredError:
         raise HTTPException(
             status_code=409,
@@ -290,7 +268,7 @@ def toggle_warehouse(
 
     settings = Settings()
     try:
-        captured = capture_warehouse_identity(
+        warehouse_created_on = capture_warehouse_identity(
             organization_id=organization_id,
             warehouse_name=warehouse_name,
             settings=settings,
@@ -305,7 +283,7 @@ def toggle_warehouse(
             detail="Could not read the warehouse's identity.",
         ) from None
 
-    if not _has_valid_warehouse_identity(captured.warehouse_created_on):
+    if not _has_valid_warehouse_identity(warehouse_created_on):
         raise HTTPException(
             status_code=422,
             detail="This warehouse does not have a valid identity.",
@@ -317,7 +295,7 @@ def toggle_warehouse(
             organization_id,
             warehouse_name,
             enabled=True,
-            warehouse_created_on=captured.warehouse_created_on,
+            warehouse_created_on=warehouse_created_on,
         )
     except AutomatedSavingsStoreError as exc:
         _log_store_failure("upsert_warehouse_enrollment", exc)
@@ -334,20 +312,12 @@ def check_access(
 ) -> CheckAccessResponse:
     require_org_membership(auth_context, organization_id)
 
-    from app.services.org_connection_resolver import (
-        OrgConnectionNotConfiguredError,
-        resolve_snowflake_config,
-    )
-    from app.services.snowflake_runtime import get_connection_fetcher
+    from app.services.org_connection_resolver import OrgConnectionNotConfiguredError
     from app.services import warehouse_directory
 
     settings = Settings()
     try:
-        config = resolve_snowflake_config(
-            organization_id,
-            settings,
-            fetch_connection=get_connection_fetcher(settings),
-        )
+        config = _resolve_config(organization_id, settings)
     except OrgConnectionNotConfiguredError:
         raise HTTPException(
             status_code=409,
