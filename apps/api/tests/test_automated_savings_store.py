@@ -1,6 +1,7 @@
 import json
 
 import httpx
+import pytest
 
 from app.services.automated_savings_store import (
     AutomatedSavingsStoreError,
@@ -16,20 +17,21 @@ def _store(handler) -> SupabaseAutomatedSavingsStore:
     )
 
 
-def test_set_managed_default_writes_managed_auto_suspend() -> None:
+def _drifted_store(value: int) -> tuple[SupabaseAutomatedSavingsStore, list[httpx.Request]]:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, json=[{
+                "organization_id": "org-1", "warehouse_name": "WH1", "enabled": True,
+                "managed_auto_suspend": 300, "stored_default_auto_suspend": 300,
+                "warehouse_created_on": None, "cooldown_ts": None,
+                "drift_state": "drifted", "drifted_value": value,
+            }])
         return httpx.Response(204)
 
-    store = _store(handler)
-    store.set_managed_default("org-1", "WH1", 900)
-
-    assert len(requests) == 1
-    payload = json.loads(requests[0].content)
-    assert payload["managed_auto_suspend"] == 900
-    assert "automated_savings_warehouses" in str(requests[0].url)
+    return _store(handler), requests
 
 
 def test_unenroll_only_clears_enabled_never_writes_intent() -> None:
@@ -55,30 +57,7 @@ def test_unenroll_only_clears_enabled_never_writes_intent() -> None:
 
 
 def test_reconcile_accept_adopts_drifted_value_and_clears_drift() -> None:
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        if request.method == "GET":
-            return httpx.Response(
-                200,
-                json=[
-                    {
-                        "organization_id": "org-1",
-                        "warehouse_name": "WH1",
-                        "enabled": True,
-                        "managed_auto_suspend": 300,
-                        "stored_default_auto_suspend": 300,
-                        "warehouse_created_on": None,
-                        "cooldown_ts": None,
-                        "drift_state": "drifted",
-                        "drifted_value": 900,
-                    }
-                ],
-            )
-        return httpx.Response(204)
-
-    store = _store(handler)
+    store, requests = _drifted_store(900)
     store.reconcile("org-1", "WH1", accept=True)
 
     writes = [r for r in requests if r.method == "POST"]
@@ -91,30 +70,7 @@ def test_reconcile_accept_adopts_drifted_value_and_clears_drift() -> None:
 
 
 def test_reconcile_accept_ignores_drifted_value_below_floor() -> None:
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        if request.method == "GET":
-            return httpx.Response(
-                200,
-                json=[
-                    {
-                        "organization_id": "org-1",
-                        "warehouse_name": "WH1",
-                        "enabled": True,
-                        "managed_auto_suspend": 300,
-                        "stored_default_auto_suspend": 300,
-                        "warehouse_created_on": None,
-                        "cooldown_ts": None,
-                        "drift_state": "drifted",
-                        "drifted_value": 30,
-                    }
-                ],
-            )
-        return httpx.Response(204)
-
-    store = _store(handler)
+    store, requests = _drifted_store(30)
     store.reconcile("org-1", "WH1", accept=True)
 
     writes = [r for r in requests if r.method == "POST"]
@@ -129,43 +85,50 @@ def test_reconcile_reject_enqueues_restore_intent_and_clears_drift() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         if request.method == "GET":
-            return httpx.Response(
-                200,
-                json=[
-                    {
-                        "organization_id": "org-1",
-                        "warehouse_name": "WH1",
-                        "enabled": True,
-                        "managed_auto_suspend": 300,
-                        "stored_default_auto_suspend": 300,
-                        "warehouse_created_on": None,
-                        "cooldown_ts": None,
-                        "drift_state": "drifted",
-                        "drifted_value": 900,
-                    }
-                ],
-            )
-        return httpx.Response(204)
+            return httpx.Response(200, json=[{
+                "organization_id": "org-1", "warehouse_name": "WH1",
+                "enabled": True, "managed_auto_suspend": 300,
+                "stored_default_auto_suspend": 300, "warehouse_created_on": None,
+                "cooldown_ts": None, "drift_state": "drifted",
+                "drifted_value": 900,
+            }])
+        return httpx.Response(200, json=True)
 
     store = _store(handler)
     store.reconcile("org-1", "WH1", accept=False)
 
     writes = [r for r in requests if r.method == "POST"]
-    intent_writes = [r for r in writes if "automated_savings_restore_intents" in str(r.url)]
-    warehouse_writes = [r for r in writes if "automated_savings_warehouses" in str(r.url)]
+    assert len(writes) == 1
+    assert "rpc/automated_savings_enqueue_reapply" in str(writes[0].url)
+    assert json.loads(writes[0].content) == {
+        "p_organization_id": "org-1",
+        "p_warehouse_name": "WH1",
+        "p_restore_to": 300,
+        "p_expected_from": 900,
+    }
 
-    assert len(intent_writes) == 1
-    intent_payload = json.loads(intent_writes[0].content)
-    assert intent_payload["restore_to"] == 300  # the managed_auto_suspend, not drifted_value
-    # kind='reapply' so the worker overwrites the drifted live value instead of
-    # re-flagging drift and never applying the ALTER (the accept=False bug fix).
-    assert intent_payload["kind"] == "reapply"
 
-    assert len(warehouse_writes) == 1
-    warehouse_payload = json.loads(warehouse_writes[0].content)
-    assert warehouse_payload["drift_state"] == "ok"
-    assert warehouse_payload["drifted_value"] is None
-    assert "managed_auto_suspend" not in warehouse_payload
+def test_reconcile_reject_reports_atomic_enqueue_conflict() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=[{
+                "organization_id": "org-1", "warehouse_name": "WH1",
+                "enabled": True, "managed_auto_suspend": 300,
+                "stored_default_auto_suspend": 300, "warehouse_created_on": None,
+                "cooldown_ts": None, "drift_state": "drifted",
+                "drifted_value": 900,
+            }])
+        requests.append(request)
+        return httpx.Response(200, json=False)
+
+    store = _store(handler)
+
+    with pytest.raises(AutomatedSavingsStoreError):
+        store.reconcile("org-1", "WH1", accept=False)
+
+    assert len(requests) == 1
 
 
 def test_enroll_calls_upsert_rpc_with_captured_defaults() -> None:
@@ -211,7 +174,7 @@ def test_upsert_enrollment_raises_on_non_success_status() -> None:
         return httpx.Response(500)
 
     store = _store(handler)
-    try:
+    with pytest.raises(AutomatedSavingsStoreError):
         store.upsert_enrollment(
             "org-1",
             "WH1",
@@ -220,7 +183,3 @@ def test_upsert_enrollment_raises_on_non_success_status() -> None:
             managed_default=300,
             warehouse_created_on=None,
         )
-    except AutomatedSavingsStoreError:
-        pass
-    else:
-        raise AssertionError("expected AutomatedSavingsStoreError")

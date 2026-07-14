@@ -95,9 +95,9 @@ async def run_tenant_once(
     """One guarded poll → cycle tick for a single tenant.
 
     On success runs the engine cycle and returns whether any restore-intent
-    remains outstanding (so the caller can fast-poll). On ANY failure (including
-    a timeout) the warm session is force-closed and the error re-raised so the
-    caller backs off.
+    remains outstanding (so the caller can fast-poll). If a failed tick started,
+    the warm session is force-closed; a still-queued tick is cancelled. The
+    original error is re-raised so the caller backs off.
     """
     lock = _lock_for(org_id)
     async with lock:
@@ -118,18 +118,21 @@ async def run_tenant_once(
                 apply_alter=session.alter_auto_suspend,
             )
 
-        # Keep our own reference to the executor future. wait_for() cancels
-        # whatever it is awaiting on timeout, but a running pool thread cannot be
-        # cancelled from Python — so we shield the future from that cancellation
-        # and drain it ourselves below, guaranteeing the abandoned thread has
-        # terminated before this session can be reused by the next tick.
-        future = loop.run_in_executor(executor, _tick)
+        # Retain the underlying concurrent future so a still-queued tick can be
+        # cancelled before the executor ever starts it. The asyncio wrapper alone
+        # cannot tell us whether cancellation reached the executor work item.
+        concurrent_future = executor.submit(_tick)
+        future = asyncio.wrap_future(concurrent_future, loop=loop)
         try:
             return await asyncio.wait_for(
                 asyncio.shield(future),
                 timeout=config.poll_timeout_seconds,
             )
         except BaseException:
+            if concurrent_future.cancel():
+                # The tick never touched the session, so there is nothing to close
+                # or drain, and it cannot run when pool capacity appears later.
+                raise
             # Cleanup a possibly-wedged connection; closing the socket makes the
             # blocked recv on the pool thread raise promptly.
             session.close_hard()
@@ -143,6 +146,10 @@ async def run_tenant_once(
             # is guaranteed to finish promptly. asyncio.wait never re-raises the
             # future's own exception, so we surface the ORIGINAL error below.
             await asyncio.wait({future})
+            if not future.cancelled():
+                # Mark a released worker failure as retrieved. The timeout/error
+                # that brought us here remains the authoritative exception.
+                future.exception()
             raise
 
 

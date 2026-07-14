@@ -45,6 +45,7 @@ class RestoreIntent:
     warehouse_name: str
     restore_to: int
     set_at: datetime
+    expected_from: int | None = None
     baseline_resumed_on: datetime | None = None
     cycle_id: str | None = None
     kind: str = "sentinel"  # 'sentinel' (worker suspend) | 'reapply' (admin re-apply)
@@ -93,6 +94,7 @@ class Store(Protocol):
         warehouse_name: str,
         restore_to: int,
         *,
+        expected_from: int | None = None,
         set_at: datetime | None = None,
         baseline_resumed_on: datetime | None = None,
         cycle_id: str | None = None,
@@ -105,7 +107,25 @@ class Store(Protocol):
         self, organization_id: str, warehouse_name: str, cycle_id: str
     ) -> None: ...
 
-    def delete_intent(self, organization_id: str, warehouse_name: str) -> None: ...
+    def delete_intent(
+        self,
+        organization_id: str,
+        warehouse_name: str,
+        cycle_id: str,
+        kind: str,
+    ) -> bool: ...
+
+    def cleanup_intent_and_enrollment(
+        self,
+        organization_id: str,
+        warehouse_name: str,
+        cycle_id: str,
+        kind: str,
+    ) -> bool: ...
+
+    def cleanup_enrollment_if_no_intent(
+        self, organization_id: str, warehouse_name: str
+    ) -> bool: ...
 
     def set_cooldown(
         self, organization_id: str, warehouse_name: str, cooldown_ts: datetime
@@ -164,6 +184,7 @@ class InMemoryStore:
         warehouse_name: str,
         restore_to: int,
         *,
+        expected_from: int | None = None,
         set_at: datetime | None = None,
         baseline_resumed_on: datetime | None = None,
         cycle_id: str | None = None,
@@ -174,6 +195,7 @@ class InMemoryStore:
             warehouse_name=warehouse_name,
             restore_to=restore_to,
             set_at=_now(set_at),
+            expected_from=expected_from,
             baseline_resumed_on=baseline_resumed_on,
             cycle_id=cycle_id or uuid4().hex,
             kind=kind,
@@ -190,16 +212,45 @@ class InMemoryStore:
     ) -> None:
         key = (organization_id, warehouse_name)
         intent = self._intents.get(key)
-        if (
-            intent is None
-            or intent.cycle_id != cycle_id
-            or intent.kind != "sentinel"
-        ):
+        if intent is None or intent.cycle_id != cycle_id or intent.kind != "sentinel":
             raise StoreError()
         self._intents[key] = replace(intent, sentinel_confirmed=True)
 
-    def delete_intent(self, organization_id: str, warehouse_name: str) -> None:
-        self._intents.pop((organization_id, warehouse_name), None)
+    def delete_intent(
+        self,
+        organization_id: str,
+        warehouse_name: str,
+        cycle_id: str,
+        kind: str,
+    ) -> bool:
+        key = (organization_id, warehouse_name)
+        intent = self._intents.get(key)
+        if intent is None or intent.cycle_id != cycle_id or intent.kind != kind:
+            return False
+        del self._intents[key]
+        return True
+
+    def cleanup_intent_and_enrollment(
+        self,
+        organization_id: str,
+        warehouse_name: str,
+        cycle_id: str,
+        kind: str,
+    ) -> bool:
+        if not self.delete_intent(organization_id, warehouse_name, cycle_id, kind):
+            return False
+        if (organization_id, warehouse_name) not in self._intents:
+            self.clear_enrollment(organization_id, warehouse_name)
+        return True
+
+    def cleanup_enrollment_if_no_intent(
+        self, organization_id: str, warehouse_name: str
+    ) -> bool:
+        key = (organization_id, warehouse_name)
+        if key in self._intents or key not in self._enrollments:
+            return False
+        self.clear_enrollment(organization_id, warehouse_name)
+        return True
 
     def set_cooldown(
         self, organization_id: str, warehouse_name: str, cooldown_ts: datetime
@@ -306,9 +357,7 @@ class SupabaseStore:
         )
 
     def get_settings(self, organization_id: str) -> SettingsRow | None:
-        rows = self._get(
-            "/automated_savings_settings", organization_id=organization_id
-        )
+        rows = self._get("/automated_savings_settings", organization_id=organization_id)
         if not rows:
             return None
         return _parse_settings(rows[0])
@@ -331,6 +380,7 @@ class SupabaseStore:
         warehouse_name: str,
         restore_to: int,
         *,
+        expected_from: int | None = None,
         set_at: datetime | None = None,
         baseline_resumed_on: datetime | None = None,
         cycle_id: str | None = None,
@@ -340,6 +390,7 @@ class SupabaseStore:
             "organization_id": organization_id,
             "warehouse_name": warehouse_name,
             "restore_to": restore_to,
+            "expected_from": expected_from,
             "set_at": _now(set_at).isoformat(),
             "baseline_resumed_on": (
                 baseline_resumed_on.isoformat()
@@ -439,21 +490,101 @@ class SupabaseStore:
         }:
             raise StoreError()
 
-    def delete_intent(self, organization_id: str, warehouse_name: str) -> None:
+    def delete_intent(
+        self,
+        organization_id: str,
+        warehouse_name: str,
+        cycle_id: str,
+        kind: str,
+    ) -> bool:
         try:
             with self._client() as client:
                 response = client.delete(
                     "/automated_savings_restore_intents",
                     params={
+                        "select": "organization_id,warehouse_name,cycle_id,kind",
                         "organization_id": f"eq.{organization_id}",
                         "warehouse_name": f"eq.{warehouse_name}",
+                        "cycle_id": f"eq.{cycle_id}",
+                        "kind": f"eq.{kind}",
+                    },
+                    headers=self._headers(prefer="return=representation"),
+                )
+        except httpx.HTTPError as exc:
+            raise StoreError() from exc
+        if response.status_code != 200:
+            raise StoreError()
+        try:
+            rows = response.json()
+        except ValueError as exc:
+            raise StoreError() from exc
+        if rows == []:
+            return False
+        expected = {
+            "organization_id": organization_id,
+            "warehouse_name": warehouse_name,
+            "cycle_id": cycle_id,
+            "kind": kind,
+        }
+        if not isinstance(rows, list) or rows != [expected]:
+            raise StoreError()
+        return True
+
+    def cleanup_intent_and_enrollment(
+        self,
+        organization_id: str,
+        warehouse_name: str,
+        cycle_id: str,
+        kind: str,
+    ) -> bool:
+        try:
+            with self._client() as client:
+                response = client.post(
+                    "/rpc/automated_savings_cleanup_intent",
+                    json={
+                        "p_organization_id": organization_id,
+                        "p_warehouse_name": warehouse_name,
+                        "p_cycle_id": cycle_id,
+                        "p_kind": kind,
                     },
                     headers=self._headers(),
                 )
         except httpx.HTTPError as exc:
             raise StoreError() from exc
-        if response.status_code not in (200, 204):
+        if response.status_code != 200:
             raise StoreError()
+        try:
+            result = response.json()
+        except ValueError as exc:
+            raise StoreError() from exc
+        if not isinstance(result, bool):
+            raise StoreError()
+        return result
+
+    def cleanup_enrollment_if_no_intent(
+        self, organization_id: str, warehouse_name: str
+    ) -> bool:
+        try:
+            with self._client() as client:
+                response = client.post(
+                    "/rpc/automated_savings_cleanup_enrollment_if_no_intent",
+                    json={
+                        "p_organization_id": organization_id,
+                        "p_warehouse_name": warehouse_name,
+                    },
+                    headers=self._headers(),
+                )
+        except httpx.HTTPError as exc:
+            raise StoreError() from exc
+        if response.status_code != 200:
+            raise StoreError()
+        try:
+            result = response.json()
+        except ValueError as exc:
+            raise StoreError() from exc
+        if not isinstance(result, bool):
+            raise StoreError()
+        return result
 
     def set_cooldown(
         self, organization_id: str, warehouse_name: str, cooldown_ts: datetime
@@ -606,9 +737,8 @@ def _parse_enrollment(row: object) -> EnrollmentRow:
     ``managed_auto_suspend``, ``stored_default_auto_suspend``, and
     ``warehouse_created_on`` are nullable in the DB (an unenrolled or
     partially-provisioned row) — parse them as Optional and never raise on
-    null so one malformed/partial row cannot fail the entire tenant cycle
-    (finding #6). Enforcement of non-null for ENABLED enrollments belongs
-    downstream (reconcile/engine already guard on None where it matters).
+    null so one malformed/partial row cannot fail the entire tenant cycle.
+    Reconcile marks enabled rows missing required mutation fields unsupported.
     """
     if not isinstance(row, dict):
         raise StoreError()
@@ -645,6 +775,11 @@ def _parse_intent(row: object) -> RestoreIntent:
             warehouse_name=str(row["warehouse_name"]),
             restore_to=int(row["restore_to"]),
             set_at=_parse_ts(row["set_at"]),
+            expected_from=(
+                int(row["expected_from"])
+                if row.get("expected_from") is not None
+                else None
+            ),
             baseline_resumed_on=_parse_optional_ts(row.get("baseline_resumed_on")),
             cycle_id=(
                 str(row["cycle_id"]) if row.get("cycle_id") is not None else None

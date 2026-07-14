@@ -1,5 +1,3 @@
-import math
-
 import pytest
 
 from auto_savings.config import WorkerConfig
@@ -20,22 +18,16 @@ def test_from_environment_reads_cadence_and_sharding(monkeypatch):
     assert config.uptime_floor_seconds == 62  # hardcoded guardrail default
 
 
-def test_defaults_are_safe(monkeypatch):
+@pytest.mark.parametrize(("env_value", "expected"), [(None, 1.0), ("0.5", 0.5)])
+def test_from_environment_maps_intent_poll_interval(monkeypatch, env_value, expected):
     monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "svc")
-    config = WorkerConfig.from_environment()
-    assert config.poll_interval_seconds == 3.0
-    assert config.intent_poll_interval_seconds == 1.0
-    assert config.cooldown_seconds == 60
-    assert config.num_replicas == 1
+    if env_value is None:
+        monkeypatch.delenv("AUTO_SAVINGS_INTENT_POLL_INTERVAL_SECONDS", raising=False)
+    else:
+        monkeypatch.setenv("AUTO_SAVINGS_INTENT_POLL_INTERVAL_SECONDS", env_value)
 
-
-def test_intent_poll_interval_env_override(monkeypatch):
-    monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
-    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "svc")
-    monkeypatch.setenv("AUTO_SAVINGS_INTENT_POLL_INTERVAL_SECONDS", "0.5")
-    config = WorkerConfig.from_environment()
-    assert config.intent_poll_interval_seconds == 0.5
+    assert WorkerConfig.from_environment().intent_poll_interval_seconds == expected
 
 
 def test_socket_timeout_must_be_below_poll_timeout():
@@ -90,8 +82,3 @@ def test_replica_index_must_be_within_num_replicas():
         supabase_url="u", supabase_service_role_key="k",
         num_replicas=3, replica_index=2,
     )
-
-
-def test_valid_defaults_pass_finiteness_check():
-    config = WorkerConfig(supabase_url="u", supabase_service_role_key="k")
-    assert math.isfinite(config.poll_interval_seconds)

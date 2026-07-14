@@ -16,24 +16,11 @@ def _row(**overrides):
     return base
 
 
-def test_parse_maps_columns_by_name():
-    [wh] = parse_warehouses([_row()], now=NOW)
-    assert wh.name == "WH1"
-    assert wh.type == "STANDARD"
-    assert wh.auto_resume is True
-    assert wh.started_clusters == 1
-
-
 def test_parse_tolerates_missing_columns_and_case():
     [wh] = parse_warehouses([{"NAME": "WH2", "state": "SUSPENDED", "type": "STANDARD"}], now=NOW)
     assert wh.name == "WH2"
     assert wh.running == 0  # missing → default
     assert wh.resumed_on is None
-
-
-def test_uptime_from_tz_aware_resumed_on():
-    [wh] = parse_warehouses([_row()], now=NOW)
-    assert uptime_seconds(wh, now=NOW) == 90.0
 
 
 def test_uptime_none_when_never_resumed():

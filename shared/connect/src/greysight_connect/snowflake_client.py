@@ -176,7 +176,10 @@ def execute_metadata_query(
 ) -> list[dict[str, Any]]:
     """Run a metadata SHOW statement (e.g. SHOW WAREHOUSES). No warehouse compute,
     no bind params, and — unlike a SELECT — never resumes a warehouse."""
-    connection = (connect or _connect)(config)
+    try:
+        connection = (connect or _connect)(config)
+    except Exception:
+        raise SnowflakeQueryError("Could not query Snowflake.") from None
     try:
         cursor = connection.cursor()
         try:

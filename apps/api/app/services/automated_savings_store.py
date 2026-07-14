@@ -58,9 +58,11 @@ class SupabaseAutomatedSavingsStore:
         base = supabase_url.rstrip("/")
         self._settings_url = f"{base}/rest/v1/automated_savings_settings"
         self._warehouses_url = f"{base}/rest/v1/automated_savings_warehouses"
-        self._intents_url = f"{base}/rest/v1/automated_savings_restore_intents"
         self._upsert_enrollment_url = (
             f"{base}/rest/v1/rpc/automated_savings_upsert_enrollment"
+        )
+        self._enqueue_reapply_url = (
+            f"{base}/rest/v1/rpc/automated_savings_enqueue_reapply"
         )
         self._service_role_key = service_role_key
         self._timeout_seconds = timeout_seconds
@@ -272,19 +274,13 @@ class SupabaseAutomatedSavingsStore:
             return
 
         # "Re-apply old default": the API can't ALTER Snowflake directly, so
-        # enqueue a restore-intent for the worker to apply next tick, and
-        # clear drift so the warehouse isn't left flagged while the intent
-        # drains.
+        # atomically enqueue a restore-intent only if the exact drift observation
+        # still holds and no sentinel/reapply intent already owns the warehouse.
         self._enqueue_restore_intent(
-            organization_id, warehouse_name, row.managed_auto_suspend
-        )
-        self._upsert_warehouse(
-            {
-                "organization_id": organization_id,
-                "warehouse_name": warehouse_name,
-                "drift_state": "ok",
-                "drifted_value": None,
-            }
+            organization_id,
+            warehouse_name,
+            row.managed_auto_suspend,
+            expected_from=row.drifted_value,
         )
 
     def _get_warehouse(
@@ -333,30 +329,36 @@ class SupabaseAutomatedSavingsStore:
             raise _store_error(response)
 
     def _enqueue_restore_intent(
-        self, organization_id: str, warehouse_name: str, restore_to: int | None
+        self,
+        organization_id: str,
+        warehouse_name: str,
+        restore_to: int | None,
+        *,
+        expected_from: int | None,
     ) -> None:
         payload = {
-            "organization_id": organization_id,
-            "warehouse_name": warehouse_name,
-            "restore_to": restore_to,
-            # 'reapply' tells the worker to overwrite the drifted live value with
-            # restore_to instead of treating the mismatch as a fresh customer edit.
-            "kind": "reapply",
+            "p_organization_id": organization_id,
+            "p_warehouse_name": warehouse_name,
+            "p_restore_to": restore_to,
+            "p_expected_from": expected_from,
         }
         try:
             with self._client() as client:
                 response = client.post(
-                    self._intents_url,
-                    params={"on_conflict": "organization_id,warehouse_name"},
+                    self._enqueue_reapply_url,
                     json=payload,
-                    headers=self._headers(
-                        prefer="resolution=merge-duplicates,return=minimal"
-                    ),
+                    headers=self._headers(),
                 )
         except httpx.HTTPError as exc:
             raise AutomatedSavingsStoreError() from exc
-        if response.status_code not in (200, 201, 204):
+        if response.status_code != 200:
             raise _store_error(response)
+        try:
+            created = response.json()
+        except ValueError as exc:
+            raise AutomatedSavingsStoreError() from exc
+        if created is not True:
+            raise AutomatedSavingsStoreError()
 
 
 def _parse_rows(response: httpx.Response) -> list[dict[str, Any]]:

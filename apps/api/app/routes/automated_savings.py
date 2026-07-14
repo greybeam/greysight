@@ -316,12 +316,14 @@ def toggle_warehouse(
                 "automated savings."
             ),
         )
-
-    # stored_default is the immutable capture of the customer's real value (may
-    # be as low as 2s). managed_default — the restore target the worker writes
-    # and the DB constrains to >= 60 — must be floored, or a sub-60 warehouse
-    # (e.g. a dev warehouse at AUTO_SUSPEND=30) fails the CHECK on write (502).
-    managed_default = max(stored_default, MANAGED_DEFAULT_FLOOR_SECONDS)
+    if stored_default < MANAGED_DEFAULT_FLOOR_SECONDS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This warehouse's current AUTO_SUSPEND must be at least "
+                f"{MANAGED_DEFAULT_FLOOR_SECONDS} seconds before enrollment."
+            ),
+        )
 
     store = _require_store()
     try:
@@ -330,7 +332,7 @@ def toggle_warehouse(
             warehouse_name,
             enabled=True,
             stored_default=stored_default,
-            managed_default=managed_default,
+            managed_default=stored_default,
             warehouse_created_on=captured.warehouse_created_on,
         )
     except AutomatedSavingsStoreError:

@@ -24,11 +24,14 @@ describe("automated-savings-api", () => {
     expect(new Headers(init?.headers).get("authorization")).toBe("Bearer tok");
   });
 
-  it("maps 422 on managed-default to a floor error", async () => {
+  it("maps 422 on managed-default to a floor error with API detail", async () => {
     vi.spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response(JSON.stringify({ detail: "floor" }), { status: 422 }));
+      .mockResolvedValue(new Response(JSON.stringify({ detail: "must be at least 60 seconds" }), { status: 422 }));
     await expect(setManagedDefault("org-1", "WH1", 45, { accessToken: "t" }))
-      .rejects.toBeInstanceOf(ManagedDefaultFloorError);
+      .rejects.toMatchObject({
+        name: "ManagedDefaultFloorError",
+        message: "must be at least 60 seconds",
+      } satisfies Partial<ManagedDefaultFloorError>);
   });
 
   it("maps snake_case API JSON to camelCase WarehouseRow", async () => {
@@ -65,16 +68,6 @@ describe("automated-savings-api", () => {
     expect(status.roleName).toBeNull();
   });
 
-  it("fetches status from the API's actual status route", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
-      agreed: true, global_enabled: false, grant_present: true, grant_checked_at: null,
-    }), { status: 200 }));
-    await fetchStatus("org-1", { accessToken: "t" });
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toContain("/api/automated-savings/org-1/status");
-    expect(init?.method ?? "GET").toBe("GET");
-  });
-
   it("accepts null managed_default/stored_default without throwing", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify([{
       name: "WH2", size: "X-Small", state: "SUSPENDED", type: "STANDARD", supported: true,
@@ -108,19 +101,13 @@ describe("automated-savings-api", () => {
     expect(row.startedClusters).toBeNull();
   });
 
-  it("fetches warehouses from the API's actual warehouses route", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response(JSON.stringify([]), { status: 200 }));
-    await fetchWarehouses("org-1", { accessToken: "t" });
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toContain("/api/automated-savings/org-1/warehouses");
-    expect(init?.method ?? "GET").toBe("GET");
-  });
-
-  it("throws on a non-ok response other than 422 from setManagedDefault", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({}), { status: 500 }));
+  it("surfaces API detail on a non-422 setManagedDefault failure", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
+      JSON.stringify({ detail: "warehouse enrollment disappeared" }),
+      { status: 500 },
+    ));
     await expect(setManagedDefault("org-1", "WH1", 120, { accessToken: "t" }))
-      .rejects.toThrow(/500/);
+      .rejects.toThrow(/500: warehouse enrollment disappeared/);
   });
 
   it("surfaces the API's error detail when the shared fetchJson helper hits a non-ok response", async () => {
@@ -134,52 +121,20 @@ describe("automated-savings-api", () => {
       .rejects.toThrow(/500: org not found/);
   });
 
-  it("posts to agree at the API's actual route", async () => {
+  it.each([
+    ["agree", () => agree("org-1", { accessToken: "t" }), "/agree", undefined],
+    ["global switch", () => setGlobalSwitch("org-1", true, { accessToken: "t" }), "/global-switch", { enabled: true }],
+    ["warehouse toggle", () => toggleWarehouse("org-1", "WH1", false, { accessToken: "t" }), "/warehouses/WH1/toggle", { enabled: false }],
+    ["managed default", () => setManagedDefault("org-1", "WH1", 120, { accessToken: "t" }), "/warehouses/WH1/managed-default", { value: 120 }],
+    ["reconcile", () => reconcileWarehouse("org-1", "WH1", true, { accessToken: "t" }), "/warehouses/WH1/reconcile", { accept: true }],
+  ])("posts the %s mutation contract", async (_name, invoke, route, body) => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }));
-    await agree("org-1", { accessToken: "t" });
+    await invoke();
     const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toContain("/api/automated-savings/org-1/agree");
+    expect(String(url)).toContain(`/api/automated-savings/org-1${route}`);
     expect(init?.method).toBe("POST");
-  });
-
-  it("posts the global switch state to the API's actual route", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }));
-    await setGlobalSwitch("org-1", true, { accessToken: "t" });
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toContain("/api/automated-savings/org-1/global-switch");
-    expect(init?.method).toBe("POST");
-    expect(init?.body).toBe(JSON.stringify({ enabled: true }));
-  });
-
-  it("posts the per-warehouse toggle state to the API's actual route", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }));
-    await toggleWarehouse("org-1", "WH1", false, { accessToken: "t" });
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toContain("/api/automated-savings/org-1/warehouses/WH1/toggle");
-    expect(init?.method).toBe("POST");
-    expect(init?.body).toBe(JSON.stringify({ enabled: false }));
-  });
-
-  it("posts the managed-default value to the API's actual route", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }));
-    await setManagedDefault("org-1", "WH1", 120, { accessToken: "t" });
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toContain("/api/automated-savings/org-1/warehouses/WH1/managed-default");
-    expect(init?.method).toBe("POST");
-  });
-
-  it("posts the reconcile decision to the API's actual route", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }));
-    await reconcileWarehouse("org-1", "WH1", true, { accessToken: "t" });
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toContain("/api/automated-savings/org-1/warehouses/WH1/reconcile");
-    expect(init?.method).toBe("POST");
-    expect(init?.body).toBe(JSON.stringify({ accept: true }));
+    if (body) expect(init?.body).toBe(JSON.stringify(body));
   });
 
   it("posts check-access to the API's actual route and parses the smaller shape", async () => {

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRef, useState } from "react";
 
 import { useAccountChrome } from "../../lib/account-context";
@@ -29,12 +30,14 @@ export const UNKNOWN_ROLE_PLACEHOLDER = "<YOUR_SNOWFLAKE_ROLE>";
 // "" instead of null) must never reach the GRANT SQL as an empty-quoted
 // identifier (`TO ROLE ""`) — normalize it to null so callers fall back to
 // UNKNOWN_ROLE_PLACEHOLDER instead.
-export function normalizeRoleName(roleName: string | null | undefined): string | null {
-  const trimmed = roleName?.trim();
-  return trimmed ? trimmed : null;
+export function normalizeRoleName(
+  roleName: string | null | undefined,
+): string | null {
+  return roleName?.trim() ? roleName : null;
 }
 
-const REPO_URL = "https://github.com/greybeam-ai/greysight";
+const REPO_URL =
+  "https://github.com/greybeam/greysight/blob/main/docs/automated-savings-how-it-works.md";
 
 export function OptInGate({ orgId, roleName, onAgreed }: OptInGateProps) {
   const account = useAccountChrome();
@@ -68,21 +71,27 @@ export function OptInGate({ orgId, roleName, onAgreed }: OptInGateProps) {
 
   return (
     <section className="rounded-lg border border-hairline bg-surface p-6 shadow-sm">
-      <h2 className="text-lg font-semibold text-slate-100">Automated Savings</h2>
+      <div className="flex flex-wrap items-center gap-2">
+        <h2
+          className="text-lg font-semibold text-slate-100"
+          id="automated-savings-opt-in-title"
+        >
+          Automated Savings
+        </h2>
+        <span className="rounded-full border border-amber-500/50 px-2 py-0.5 text-[11px] font-medium text-amber-300">
+          Experimental
+        </span>
+      </div>
       <p className="mt-2 text-sm text-slate-400">
-        Automated Savings monitors your Snowflake warehouses and lowers
-        AUTO_SUSPEND during idle windows, then restores your configured
-        default automatically — no manual tuning required.
-      </p>
-      <p className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-medium text-amber-300">
-        Experimental feature. Read more in{" "}
+        Automated Savings polls your Snowflake warehouses to reduce the amount
+        of time they spend idling.{" "}
         <a
-          className="underline hover:text-amber-200"
+          className="text-slate-300 underline decoration-slate-600 underline-offset-2 hover:text-slate-100"
           href={REPO_URL}
           target="_blank"
           rel="noreferrer"
         >
-          this repo
+          Learn more about how Automated Savings works
         </a>
         .
       </p>
@@ -100,7 +109,7 @@ export function OptInGate({ orgId, roleName, onAgreed }: OptInGateProps) {
           >
             {copied ? "Copied!" : "Copy"}
           </button>
-          <pre className="overflow-auto rounded-md border border-hairline bg-canvas p-4 text-xs text-slate-100">
+          <pre className="overflow-x-auto rounded-md border border-hairline bg-canvas py-3 pl-3 pr-20 text-xs text-slate-100">
             <code>{grantSql}</code>
           </pre>
         </div>
@@ -112,18 +121,33 @@ export function OptInGate({ orgId, roleName, onAgreed }: OptInGateProps) {
         </p>
       ) : null}
 
-      <div className="mt-4">
-        <button
-          type="button"
-          disabled={!isAdmin || status === "submitting"}
-          aria-busy={status === "submitting"}
-          onClick={handleAgree}
-          className="rounded-md bg-chart-purple px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          Agree &amp; enable Automated Savings
-        </button>
+      <div className="mt-4 border-t border-hairline pt-4">
+        <p className="text-xs leading-5 text-slate-500">
+          By continuing, you acknowledge that Automated Savings is experimental
+          and authorize Greysight to adjust AUTO_SUSPEND for warehouses you
+          choose to enroll. You can disable the feature at any time.
+        </p>
+
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            disabled={!isAdmin || status === "submitting"}
+            aria-busy={status === "submitting"}
+            onClick={handleAgree}
+            className="rounded-md bg-chart-purple px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Agree &amp; continue
+          </button>
+          <Link
+            className="inline-flex rounded-md border border-hairline px-4 py-2 text-sm font-medium text-slate-300 hover:bg-hairline hover:text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-chart-purple"
+            href="/dashboard"
+          >
+            Back to Greysight home
+          </Link>
+        </div>
+
         {!isAdmin ? (
-          <p className="mt-2 text-xs text-slate-500">
+          <p className="mt-3 text-xs text-slate-500">
             Only owners and admins can enable Automated Savings for this
             organization.
           </p>

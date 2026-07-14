@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -11,8 +17,12 @@ import {
   FETCH_WINDOW_DAYS,
   type DashboardView,
 } from "../../lib/dashboard-contracts";
-import type { AuthSession, SessionChangeCallback } from "../../lib/supabase-client";
+import type {
+  AuthSession,
+  SessionChangeCallback,
+} from "../../lib/supabase-client";
 import DashboardRuntimeShell from "./dashboard-runtime-shell";
+import { WorkspaceRuntimeShell } from "../workspace/workspace-runtime-shell";
 
 vi.mock("../../lib/dashboard-api", () => ({
   fetchDashboardView: vi.fn(),
@@ -83,7 +93,11 @@ describe("DashboardRuntimeShell integration", () => {
       },
     );
 
-    render(<DashboardRuntimeShell authRequired dataSource="snowflake" />);
+    render(
+      <WorkspaceRuntimeShell authRequired dataSource="snowflake">
+        <DashboardRuntimeShell />
+      </WorkspaceRuntimeShell>,
+    );
 
     // Wait for the live membership lookup to resolve and select the org so the
     // authenticated Snowflake runtime is in place (CostDashboard remounts on the
@@ -92,7 +106,10 @@ describe("DashboardRuntimeShell integration", () => {
     // detached pre-remount node can't deadlock the wait.
     await screen.findByText("Sign out", undefined, { timeout: 3000 });
     await waitFor(
-      () => expect(screen.getByRole("button", { name: "Run analysis" })).toBeEnabled(),
+      () =>
+        expect(
+          screen.getByRole("button", { name: "Run analysis" }),
+        ).toBeEnabled(),
       { timeout: 3000 },
     );
     fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
@@ -101,9 +118,8 @@ describe("DashboardRuntimeShell integration", () => {
       timeout: 3000,
     });
 
-    const [{ organizationId, windowDays }] = vi.mocked(
-      startDashboardRun,
-    ).mock.calls[0];
+    const [{ organizationId, windowDays }] =
+      vi.mocked(startDashboardRun).mock.calls[0];
     expect(organizationId).toBe("22222222-2222-4222-8222-222222222222");
     expect(windowDays).toBe(FETCH_WINDOW_DAYS);
     expect(fetchDashboardView).toHaveBeenCalledWith(

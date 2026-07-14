@@ -63,14 +63,6 @@ def resolve_snowflake_config(
         # The fetcher already made a definitive verdict (malformed / duplicate /
         # missing secret) — propagate it as-is (genuinely not configured).
         raise
-    except Exception as exc:
-        # A transient lookup failure (network/timeout/5xx): we could not tell
-        # whether a connection exists. Fail closed (the API still 409s because
-        # this subclasses OrgConnectionNotConfiguredError) but distinguishably,
-        # so the worker can KEEP a warm session across a blip instead of dropping.
-        raise OrgConnectionUnavailableError(
-            "Could not load this organization's Snowflake connection."
-        ) from exc
 
     if row is not None:
         if row.status != "active":
@@ -127,61 +119,112 @@ class SupabaseConnectionFetcher:
         }
 
     def __call__(self, organization_id: str) -> OrgConnectionRow | None:
-        with httpx.Client(
-            timeout=self._timeout_seconds, transport=self._transport
-        ) as client:
-            meta_response = client.get(
-                self._table_url,
-                params={
-                    "organization_id": f"eq.{organization_id}",
-                    "select": "account,account_locator,snowflake_user,role,warehouse,database,schema,status,secret_id",
-                    "limit": "1",
-                },
-                headers=self._headers(),
-            )
-            meta_response.raise_for_status()
-            rows = meta_response.json()
-            if not isinstance(rows, list):
-                raise OrgConnectionNotConfiguredError(
-                    "Malformed Snowflake connection metadata for org."
+        try:
+            with httpx.Client(
+                timeout=self._timeout_seconds, transport=self._transport
+            ) as client:
+                meta_response = client.get(
+                    self._table_url,
+                    params={
+                        "organization_id": f"eq.{organization_id}",
+                        "select": "account,account_locator,snowflake_user,role,warehouse,database,schema,status,secret_id",
+                        "limit": "1",
+                    },
+                    headers=self._headers(),
                 )
-            if not rows:
-                return None
-            if len(rows) > 1:
-                raise OrgConnectionNotConfiguredError(
-                    "Multiple Snowflake connection rows for org."
-                )
-            meta = rows[0]
-            if not meta.get("secret_id"):
-                return None
+                rows = _response_json(meta_response, subject="metadata")
+                meta = _single_metadata_row(rows)
+                if meta is None:
+                    return None
 
-            secret_response = client.post(
-                self._secret_rpc_url,
-                json={"target_organization_id": organization_id},
-                headers=self._headers(),
-            )
-            secret_response.raise_for_status()
-            secret_rows = secret_response.json()
-            if not isinstance(secret_rows, list) or len(secret_rows) != 1:
-                raise OrgConnectionNotConfiguredError(
-                    "Snowflake secret missing for org."
+                secret_response = client.post(
+                    self._secret_rpc_url,
+                    json={"target_organization_id": organization_id},
+                    headers=self._headers(),
                 )
-            secret = secret_rows[0]
-            pem = secret.get("private_key_pem")
-            if not pem:
-                raise OrgConnectionNotConfiguredError(
-                    "Snowflake secret missing for org."
-                )
+                secret_rows = _response_json(secret_response, subject="secret")
+                secret = _single_secret_row(secret_rows)
+        except (OrgConnectionNotConfiguredError, OrgConnectionUnavailableError):
+            raise
+        except httpx.TransportError as exc:
+            raise OrgConnectionUnavailableError(
+                "Could not load this organization's Snowflake connection."
+            ) from exc
 
         return OrgConnectionRow(
-            account=str(meta["account"]),
-            snowflake_user=str(meta["snowflake_user"]),
-            role=str(meta["role"]),
-            warehouse=str(meta["warehouse"]),
+            account=meta["account"],
+            snowflake_user=meta["snowflake_user"],
+            role=meta["role"],
+            warehouse=meta["warehouse"],
             database=meta.get("database"),
             schema=meta.get("schema"),
-            private_key_pem=str(pem),
+            private_key_pem=secret["private_key_pem"],
             passphrase=secret.get("passphrase"),
             status=str(meta.get("status") or "invalid"),
             account_locator=meta.get("account_locator"),
         )
+
+
+def _response_json(response: httpx.Response, *, subject: str) -> object:
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        status = response.status_code
+        if status in (408, 429) or status >= 500:
+            raise OrgConnectionUnavailableError(
+                "Could not load this organization's Snowflake connection."
+            ) from exc
+        raise OrgConnectionNotConfiguredError(
+            f"Could not load Snowflake connection {subject} for org."
+        ) from exc
+
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise OrgConnectionNotConfiguredError(
+            f"Malformed Snowflake connection {subject} for org."
+        ) from exc
+
+
+def _single_metadata_row(rows: object) -> dict[str, str | None] | None:
+    if not isinstance(rows, list):
+        raise OrgConnectionNotConfiguredError(
+            "Malformed Snowflake connection metadata for org."
+        )
+    if not rows:
+        return None
+    if len(rows) > 1:
+        raise OrgConnectionNotConfiguredError(
+            "Multiple Snowflake connection rows for org."
+        )
+    meta = rows[0]
+    required = ("account", "snowflake_user", "role", "warehouse", "secret_id")
+    if not isinstance(meta, dict) or any(
+        not isinstance(meta.get(key), str) or not meta[key].strip() for key in required
+    ):
+        raise OrgConnectionNotConfiguredError(
+            "Malformed Snowflake connection metadata for org."
+        )
+    optional = ("database", "schema", "account_locator")
+    if any(
+        meta.get(key) is not None and not isinstance(meta[key], str) for key in optional
+    ):
+        raise OrgConnectionNotConfiguredError(
+            "Malformed Snowflake connection metadata for org."
+        )
+    return meta
+
+
+def _single_secret_row(rows: object) -> dict[str, str | None]:
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+        raise OrgConnectionNotConfiguredError("Snowflake secret missing for org.")
+    secret = rows[0]
+    pem = secret.get("private_key_pem")
+    passphrase = secret.get("passphrase")
+    if (
+        not isinstance(pem, str)
+        or not pem.strip()
+        or (passphrase is not None and not isinstance(passphrase, str))
+    ):
+        raise OrgConnectionNotConfiguredError("Snowflake secret missing for org.")
+    return secret

@@ -133,18 +133,18 @@ outstanding intent and restores it from whatever state the warehouse is in.
 Fully-dropped warehouses have their stale intent + enrollment cleaned up after
 `orphan_grace_seconds`.
 
-## Audit trail — every mutation is recorded
+## Audit trail — best-effort mutation events
 
-`automated_savings_events` is an **append-only** log (never updated or deleted) of
-every `AUTO_SUSPEND` mutation the worker issues on a customer warehouse. One row per
-successful `ALTER`:
+`automated_savings_events` is **application append-only** while an organization
+exists: application code attempts to insert one row after every successful
+`AUTO_SUSPEND` mutation and never updates or individually deletes events. Deleting
+an organization intentionally cascades to its events as part of tenant-data cleanup:
 
 - **`set_sentinel`** (`reason=decide`, `to_value=1`) — written right after we set the
   sentinel (`engine.py`).
 - **`restore`** (`reason ∈ {suspended, busy, resume_aware, aged_out, reconcile_reapply}`,
-  `to_value=managed default`) — written **before** the intent is deleted
-  (`reconcile.py`), so a failed event write leaves the intent to retry rather than
-  losing the record.
+  `to_value=managed default`) — attempted **before** the intent is deleted
+  (`reconcile.py`), so a failed event write leaves the intent for safe reconciliation.
 
 Each row snapshots what we observed at decision time (`observed_state`, `running`,
 `queued`, `resumed_on`, `from_value`). A `set_sentinel` and its matching `restore`
@@ -154,9 +154,9 @@ savings-analytics surface. Members can read the log (RLS); only the worker write
 
 The log covers **Snowflake mutations only** — our own state transitions (drift flag,
 unsupported-pause, enrollment cleanup) are not events, since they don't touch the
-customer's warehouse. Writes are best-effort: if the ALTER succeeds but the event
-insert fails, the mutation is not lost (state stays consistent), only its audit row —
-an acceptable v1 gap; exactly-once logging is a possible follow-up.
+customer's warehouse. Writes are best-effort: a restore-event failure retains its
+intent so reconciliation can retry safely, while a set-sentinel event failure can
+leave an audit gap. Exactly-once logging is a possible follow-up after v1.
 
 ## Resume-storm bounding (why it can't cost more)
 

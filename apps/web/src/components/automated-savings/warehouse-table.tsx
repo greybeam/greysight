@@ -4,6 +4,7 @@ import { useId, useState } from "react";
 import { Badge } from "@tremor/react";
 
 import {
+  fetchWarehouses,
   reconcileWarehouse,
   setManagedDefault,
   toggleWarehouse,
@@ -32,6 +33,7 @@ type WarehouseTableProps = {
   isAdmin: boolean;
   accessToken?: string | null;
   onChange: (row: WarehouseRow) => void;
+  onRefresh?: () => Promise<void>;
 };
 
 type DisplayStatus = {
@@ -73,7 +75,7 @@ function HeaderWithTooltip({ label, tooltip }: { label: string; tooltip: string 
   );
 }
 
-export function WarehouseTable({ orgId, warehouses, isAdmin, accessToken, onChange }: WarehouseTableProps) {
+export function WarehouseTable({ orgId, warehouses, isAdmin, accessToken, onChange, onRefresh }: WarehouseTableProps) {
   return (
     <table aria-label="Warehouses" className="w-full text-left text-xs text-slate-300">
       <thead className="text-slate-100">
@@ -99,6 +101,7 @@ export function WarehouseTable({ orgId, warehouses, isAdmin, accessToken, onChan
             orgId={orgId}
             warehouse={warehouse}
             onChange={onChange}
+            onRefresh={onRefresh}
           />
         ))}
       </tbody>
@@ -112,9 +115,10 @@ type WarehouseRowViewProps = {
   isAdmin: boolean;
   accessToken?: string | null;
   onChange: (row: WarehouseRow) => void;
+  onRefresh?: () => Promise<void>;
 };
 
-function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange }: WarehouseRowViewProps) {
+function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange, onRefresh }: WarehouseRowViewProps) {
   const inputId = useId();
   // Unenrolled warehouses have a null managed_default — show an empty input
   // rather than coercing to a misleading number.
@@ -124,6 +128,7 @@ function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange }: 
   const [floorWarning, setFloorWarning] = useState(false);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [refreshFailed, setRefreshFailed] = useState(false);
 
   const unsupported = warehouse.type !== "STANDARD";
   const toggleDisabled = !isAdmin || !warehouse.autoResumeOk || unsupported || busy;
@@ -162,11 +167,48 @@ function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange }: 
     const nextEnabled = !warehouse.enabled;
     setBusy(true);
     setActionError(null);
+    setRefreshFailed(false);
     try {
       await toggleWarehouse(orgId, warehouse.name, nextEnabled, { accessToken });
-      onChange({ ...warehouse, enabled: nextEnabled });
     } catch (error) {
       setActionError(toUserMessage(error));
+      setBusy(false);
+      return;
+    }
+
+    onChange({ ...warehouse, enabled: nextEnabled });
+    if (nextEnabled) {
+      try {
+        const rows = await fetchWarehouses(orgId, { accessToken });
+        const authoritative = rows.find((row) => row.name === warehouse.name);
+        if (!authoritative) {
+          throw new Error("The enrolled warehouse could not be refreshed.");
+        }
+        setDraftValue(
+          authoritative.managedDefault === null
+            ? ""
+            : String(authoritative.managedDefault),
+        );
+        onChange(authoritative);
+      } catch {
+        setRefreshFailed(true);
+        setActionError(
+          "Enrollment was saved, but its details could not be refreshed.",
+        );
+      }
+    }
+    setBusy(false);
+  }
+
+  async function handleRefresh() {
+    if (!onRefresh || busy) return;
+    setBusy(true);
+    try {
+      await onRefresh();
+      setRefreshFailed(false);
+      setActionError(null);
+    } catch {
+      setActionError("The warehouse details could not be refreshed.");
     } finally {
       setBusy(false);
     }
@@ -252,6 +294,16 @@ function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange }: 
           <p className="mt-1 max-w-[16rem] text-xs text-rose-300" role="alert">
             {actionError}
           </p>
+        ) : null}
+        {refreshFailed && onRefresh ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void handleRefresh()}
+            className="mt-1 text-xs font-medium text-slate-300 underline disabled:opacity-50"
+          >
+            Retry refresh
+          </button>
         ) : null}
       </td>
     </tr>

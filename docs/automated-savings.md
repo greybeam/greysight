@@ -124,7 +124,7 @@ These settings are inherited from the broader Greysight deployment:
 
 ## Audit Log
 
-Every `AUTO_SUSPEND` mutation the worker applies to a customer warehouse is recorded in the append-only `automated_savings_events` table (one row per successful `ALTER`): `set_sentinel` when the sentinel is set, `restore` when the managed default is put back (with the reason: `suspended` / `busy` / `resume_aware` / `aged_out`). Each row snapshots the observed warehouse state, and a `set_sentinel` shares a `cycle_id` with its matching `restore` so a suspend can be paired with its restore. The log is never updated or deleted; members can read it via RLS, and only the worker (service role) writes it. It is the durable trail for debugging, customer trust, and the future savings-analytics surface.
+The worker attempts to insert an application-append-only `automated_savings_events` row after each successful `AUTO_SUSPEND` mutation: `set_sentinel` when the sentinel is set, and `restore` when the managed default is put back (with the reason: `suspended` / `busy` / `resume_aware` / `aged_out`). A restore-event failure retains the restore intent so reconciliation can retry safely. A set-sentinel event failure can leave an audit gap; this is documented best-effort v1 behavior rather than an exactly-once guarantee. Recorded rows snapshot the observed warehouse state, and a `set_sentinel` shares a `cycle_id` with its matching `restore` so recorded pairs can support future savings analytics. Application code never updates or individually deletes events while the organization exists; members can read them via RLS, and only the worker (service role) writes them. Deleting an organization intentionally cascades to its events as part of tenant-data cleanup.
 
 ## Runbook
 

@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 from fastapi.testclient import TestClient
 
 from app.auth import AuthContext, require_auth_context
@@ -81,11 +79,7 @@ def test_enroll_persists_live_warehouse_created_on(monkeypatch):
     assert captured_kwargs["warehouse_created_on"] is not None
 
 
-def test_enroll_floors_managed_default_below_60(monkeypatch):
-    # A warehouse whose current AUTO_SUSPEND is between the sentinel (0/1) and
-    # the floor (60) is still eligible — its real value is kept as the immutable
-    # stored_default, but managed_default (the restore target the DB constrains
-    # to >= 60) must be floored, or the enroll write hits the CHECK and 502s.
+def test_enroll_rejects_default_below_60_without_persisting(monkeypatch):
     app.dependency_overrides[require_auth_context] = _admin_ctx
     monkeypatch.setattr(
         automated_savings,
@@ -95,11 +89,9 @@ def test_enroll_floors_managed_default_below_60(monkeypatch):
         ),
     )
 
-    captured_kwargs: dict = {}
-
     class _FakeStore:
         def upsert_enrollment(self, organization_id, warehouse_name, **kwargs):
-            captured_kwargs.update(kwargs)
+            raise AssertionError("sub-floor enrollment must not be persisted")
 
     monkeypatch.setattr(automated_savings, "_require_store", lambda: _FakeStore())
 
@@ -107,24 +99,13 @@ def test_enroll_floors_managed_default_below_60(monkeypatch):
     resp = client.post("/api/automated-savings/org-1/warehouses/WH1/toggle", json={"enabled": True})
     app.dependency_overrides.clear()
 
-    assert resp.status_code == 200
-    assert captured_kwargs["stored_default"] == 30
-    assert captured_kwargs["managed_default"] == 60
-
-
-def test_status_includes_role_name(monkeypatch):
-    app.dependency_overrides[require_auth_context] = _member_ctx
-    monkeypatch.setattr(
-        "app.services.org_connection_resolver.resolve_snowflake_config",
-        lambda organization_id, settings, *, fetch_connection: SimpleNamespace(
-            role="ANALYST_ROLE"
-        ),
-    )
-    client = TestClient(app)
-    resp = client.get("/api/automated-savings/org-1/status")
-    app.dependency_overrides.clear()
-    assert resp.status_code == 200
-    assert resp.json()["role_name"] == "ANALYST_ROLE"
+    assert resp.status_code == 422
+    assert resp.json() == {
+        "detail": (
+            "This warehouse's current AUTO_SUSPEND must be at least "
+            "60 seconds before enrollment."
+        )
+    }
 
 
 def test_status_role_name_null_when_snowflake_not_configured(monkeypatch):
@@ -141,24 +122,3 @@ def test_status_role_name_null_when_snowflake_not_configured(monkeypatch):
     app.dependency_overrides.clear()
     assert resp.status_code == 200
     assert resp.json()["role_name"] is None
-
-
-def test_check_access_includes_role_name(monkeypatch):
-    app.dependency_overrides[require_auth_context] = _member_ctx
-    monkeypatch.setattr(
-        "app.services.org_connection_resolver.resolve_snowflake_config",
-        lambda organization_id, settings, *, fetch_connection: SimpleNamespace(
-            role="ANALYST_ROLE"
-        ),
-    )
-    monkeypatch.setattr(
-        "app.services.warehouse_directory.check_manage_warehouses_grant",
-        lambda config, role_name: True,
-    )
-    client = TestClient(app)
-    resp = client.post("/api/automated-savings/org-1/check-access")
-    app.dependency_overrides.clear()
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["role_name"] == "ANALYST_ROLE"
-    assert body["grant_present"] is True

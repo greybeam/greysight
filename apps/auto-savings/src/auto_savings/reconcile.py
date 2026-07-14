@@ -16,6 +16,17 @@ from auto_savings.warehouse_snapshot import WarehouseSnapshot
 ApplyAlter = Callable[[str, int], None]
 
 
+def _delete_current_intent(
+    store: Store,
+    org_id: str,
+    name: str,
+    intent: RestoreIntent,
+) -> bool:
+    if intent.cycle_id is None:
+        raise StoreError()
+    return store.delete_intent(org_id, name, intent.cycle_id, intent.kind)
+
+
 def _restore(
     store: Store,
     org_id: str,
@@ -62,7 +73,7 @@ def _restore(
     )
     if cooldown_seconds is not None:
         store.set_cooldown(org_id, name, now + timedelta(seconds=cooldown_seconds))
-    store.delete_intent(org_id, name)
+    _delete_current_intent(store, org_id, name, intent)
 
 
 def reconcile(
@@ -135,11 +146,31 @@ def _reconcile_one(
     sitting at its managed value with no outstanding intent — the one case
     decide is allowed to act on.
     """
+    # Quarantine partial enabled enrollments before any intent processing. The
+    # intent is retained as operator-visible recovery evidence; without both the
+    # restore target and physical identity, no mutation is safe.
+    if (
+        enrollment is not None
+        and enrollment.enabled
+        and (
+            enrollment.managed_auto_suspend is None
+            or enrollment.warehouse_created_on is None
+        )
+    ):
+        store.mark_unsupported(org_id, name)
+        return True
+
     # Branch 0: absent from snapshot entirely (customer dropped it).
     if snapshot is None:
-        if intent is not None and (now - intent.set_at).total_seconds() > orphan_grace_seconds:
-            store.delete_intent(org_id, name)
-            store.clear_enrollment(org_id, name)
+        if (
+            intent is not None
+            and (now - intent.set_at).total_seconds() > orphan_grace_seconds
+        ):
+            if intent.cycle_id is None:
+                raise StoreError()
+            store.cleanup_intent_and_enrollment(
+                org_id, name, intent.cycle_id, intent.kind
+            )
         return True
 
     # Branch 1: created_on mismatch — name reused by a recreated warehouse.
@@ -150,8 +181,14 @@ def _reconcile_one(
         and snapshot.created_on != enrollment.warehouse_created_on
     ):
         if intent is not None:
-            store.delete_intent(org_id, name)
-        store.clear_enrollment(org_id, name)
+            if intent.cycle_id is None:
+                raise StoreError()
+            if not store.cleanup_intent_and_enrollment(
+                org_id, name, intent.cycle_id, intent.kind
+            ):
+                return True
+        else:
+            store.cleanup_enrollment_if_no_intent(org_id, name)
         return True
 
     live = snapshot.auto_suspend
@@ -210,62 +247,111 @@ def _reconcile_intent(
     restore_to = intent.restore_to
 
     # Admin-requested re-apply of the managed default over a drifted value (via the
-    # API's reconcile(accept=False)). Unlike a worker sentinel, the live value here
-    # is EXPECTED to differ from restore_to (it's the drifted value) and we DO
-    # overwrite it — never treat the mismatch as drift. Idempotent if already applied.
+    # API's reconcile(accept=False)). Unlike a worker sentinel, the captured
+    # expected_from value is allowed to differ from restore_to. A later value is
+    # customer drift and must not be overwritten. Idempotent if already applied.
     if intent.kind == "reapply":
-        if live != restore_to:
-            _restore(store, org_id, name, snapshot, intent, reason="reconcile_reapply",
-                     now=now, cooldown_seconds=None, apply_alter=apply_alter)
+        if live == restore_to:
+            _delete_current_intent(store, org_id, name, intent)
+        elif intent.expected_from is not None and live == intent.expected_from:
+            _restore(
+                store,
+                org_id,
+                name,
+                snapshot,
+                intent,
+                reason="reconcile_reapply",
+                now=now,
+                cooldown_seconds=None,
+                apply_alter=apply_alter,
+            )
         else:
-            store.delete_intent(org_id, name)
+            if _delete_current_intent(store, org_id, name, intent) and live is not None:
+                store.mark_drifted(org_id, name, drifted_value=live)
         return
 
     # Sentinel ownership must be durably confirmed before ANY terminal action.
     # We ALTER AUTO_SUSPEND=1 to arm a sentinel, but the immediately-following SHOW
-    # can be stale and still report the restore target (or a mid-flight value). Until
-    # we have actually observed live == 1, treating that stale read as a completed
-    # restore / customer drift would delete the only ownership intent and strand the
-    # sentinel once SHOW catches up. So while unconfirmed:
-    #   live != 1 -> HOLD (no ALTER, drift, cooldown, or delete); retry next tick.
-    #   live == 1 -> the ALTER is now observable; durably confirm ownership, then
-    #                fall through to the normal decision logic in this same tick.
+    # can be stale and still report expected_from. Until live == 1 is observed,
+    # retry only while the value still matches that durable pre-ALTER observation;
+    # any other value is a customer edit and is handled as drift.
     if not intent.sentinel_confirmed:
-        if live != 1:
+        if live == 1:
+            if intent.cycle_id is None:
+                raise StoreError()
+            store.confirm_sentinel(org_id, name, intent.cycle_id)
+            intent = replace(intent, sentinel_confirmed=True)
+        else:
+            expected_from = (
+                intent.expected_from if intent.expected_from is not None else restore_to
+            )
+            if live == expected_from:
+                aged_out = (now - intent.set_at).total_seconds() > intent_hold_seconds
+                if aged_out:
+                    _restore(
+                        store,
+                        org_id,
+                        name,
+                        snapshot,
+                        intent,
+                        reason="aged_out",
+                        now=now,
+                        cooldown_seconds=cooldown_seconds,
+                        apply_alter=apply_alter,
+                    )
+                else:
+                    apply_alter(name, 1)
+            elif (
+                _delete_current_intent(store, org_id, name, intent) and live is not None
+            ):
+                store.mark_drifted(org_id, name, drifted_value=live)
             return
-        if intent.cycle_id is None:
-            raise StoreError()
-        store.confirm_sentinel(org_id, name, intent.cycle_id)
-        intent = replace(intent, sentinel_confirmed=True)
 
     # Already restored (idempotent terminal): a prior delete_intent failed, or
     # the warehouse resumed to the restored value. No ALTER.
     if live == restore_to:
         # Cooldown before delete (finding #8) — same rationale as ``_restore``.
         store.set_cooldown(org_id, name, now + timedelta(seconds=cooldown_seconds))
-        store.delete_intent(org_id, name)
+        _delete_current_intent(store, org_id, name, intent)
         return
 
     # Customer edited mid-suspend — don't stomp their edit.
     if live != 1:
-        if live is not None:
+        if _delete_current_intent(store, org_id, name, intent) and live is not None:
             store.mark_drifted(org_id, name, drifted_value=live)
-        store.delete_intent(org_id, name)
         return
 
     # live == 1: decide restore vs. hold by live state.
     if snapshot.state == "SUSPENDED":
         # Savings captured — restore then cooldown.
-        _restore(store, org_id, name, snapshot, intent, reason="suspended",
-                 now=now, cooldown_seconds=cooldown_seconds, apply_alter=apply_alter)
+        _restore(
+            store,
+            org_id,
+            name,
+            snapshot,
+            intent,
+            reason="suspended",
+            now=now,
+            cooldown_seconds=cooldown_seconds,
+            apply_alter=apply_alter,
+        )
         return
 
     if snapshot.state == "STARTED" and (snapshot.running > 0 or snapshot.queued > 0):
         # A query landed — restore, then back off with a cooldown. A warehouse
         # that resumed under our sentinel just proved it is bursty; the cooldown
         # bounds how often it can re-enter the AUTO_SUSPEND=1-live window.
-        _restore(store, org_id, name, snapshot, intent, reason="busy",
-                 now=now, cooldown_seconds=cooldown_seconds, apply_alter=apply_alter)
+        _restore(
+            store,
+            org_id,
+            name,
+            snapshot,
+            intent,
+            reason="busy",
+            now=now,
+            cooldown_seconds=cooldown_seconds,
+            apply_alter=apply_alter,
+        )
         return
 
     # STARTED and idle and live == 1: HOLD unless (a) it already completed a
@@ -279,7 +365,15 @@ def _reconcile_intent(
     )
     aged_out = (now - intent.set_at).total_seconds() > intent_hold_seconds
     if resumed_since or aged_out:
-        _restore(store, org_id, name, snapshot, intent,
-                 reason="resume_aware" if resumed_since else "aged_out",
-                 now=now, cooldown_seconds=cooldown_seconds, apply_alter=apply_alter)
+        _restore(
+            store,
+            org_id,
+            name,
+            snapshot,
+            intent,
+            reason="resume_aware" if resumed_since else "aged_out",
+            now=now,
+            cooldown_seconds=cooldown_seconds,
+            apply_alter=apply_alter,
+        )
     return

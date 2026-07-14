@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from auto_savings.decision import should_force_suspend
 from auto_savings.warehouse_snapshot import WarehouseSnapshot, parse_warehouses
 
@@ -41,6 +43,11 @@ def test_each_precondition_individually_blocks():
     assert _decide(_wh(), in_cooldown=True) is False
     assert _decide(_wh(), is_drifted=True) is False
     assert _decide(_wh(), has_outstanding_intent=True) is False
+
+
+def test_uptime_floor_is_inclusive_at_exact_boundary():
+    assert _decide(_wh(resumed_on=NOW - timedelta(seconds=61, microseconds=999999))) is False
+    assert _decide(_wh(resumed_on=NOW - timedelta(seconds=62))) is True
 
 
 def test_maximized_fires_when_all_clusters_idle_at_floor():
@@ -89,17 +96,74 @@ def test_present_but_null_started_clusters_fails_closed_on_enterprise_row():
     ) is False
 
 
-def test_present_multi_cluster_started_clusters_still_protected():
-    # Present started_clusters must still be honored (not overridden by min default),
-    # so a scaled-up Enterprise+ multi-cluster warehouse is not force-suspended.
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("running", None),
+        ("running", "unknown"),
+        ("queued", None),
+        ("queued", "unknown"),
+    ],
+)
+def test_missing_or_malformed_activity_fails_closed(field, value):
     row = {
         "name": "WH1", "state": "STARTED", "type": "STANDARD",
-        "started_clusters": 2, "min_cluster_count": 1, "max_cluster_count": 4,
         "running": 0, "queued": 0, "auto_suspend": 60, "auto_resume": "true",
-        "resumed_on": NOW - timedelta(seconds=90), "created_on": NOW - timedelta(days=5),
+        "resumed_on": NOW - timedelta(seconds=90),
+        "created_on": NOW - timedelta(days=5),
     }
+    if value is None:
+        row.pop(field)
+    else:
+        row[field] = value
+
     [wh] = parse_warehouses([row], now=NOW)
-    assert should_force_suspend(
-        wh, now=NOW, uptime_floor_seconds=62,
-        in_cooldown=False, is_drifted=False, has_outstanding_intent=False,
-    ) is False
+
+    assert _decide(wh) is False
+
+
+@pytest.mark.parametrize("field", ["started_clusters", "min_cluster_count", "max_cluster_count"])
+def test_malformed_present_cluster_field_fails_closed(field):
+    row = {
+        "name": "WH1", "state": "STARTED", "type": "STANDARD",
+        "started_clusters": 1, "min_cluster_count": 1, "max_cluster_count": 4,
+        "running": 0, "queued": 0, "auto_suspend": 60, "auto_resume": "true",
+        "resumed_on": NOW - timedelta(seconds=90),
+        "created_on": NOW - timedelta(days=5),
+    }
+    row[field] = "unknown"
+
+    [wh] = parse_warehouses([row], now=NOW)
+
+    assert _decide(wh) is False
+
+
+@pytest.mark.parametrize(
+    "value",
+    [0.5, "0.5", float("nan"), float("inf"), float("-inf"), True, "false"],
+)
+def test_activity_accepts_only_finite_exact_integers(value):
+    row = {
+        "name": "WH1", "state": "STARTED", "type": "STANDARD",
+        "running": value, "queued": 0, "auto_suspend": 60,
+        "auto_resume": "true", "resumed_on": NOW - timedelta(seconds=90),
+        "created_on": NOW - timedelta(days=5),
+    }
+
+    [snapshot] = parse_warehouses([row], now=NOW)
+
+    assert snapshot.activity_valid is False
+
+
+@pytest.mark.parametrize("value", [0, 0.0, "0", "0.0"])
+def test_activity_accepts_finite_exact_integers(value):
+    row = {
+        "name": "WH1", "state": "STARTED", "type": "STANDARD",
+        "running": value, "queued": 0, "auto_suspend": 60,
+        "auto_resume": "true", "resumed_on": NOW - timedelta(seconds=90),
+        "created_on": NOW - timedelta(days=5),
+    }
+
+    [snapshot] = parse_warehouses([row], now=NOW)
+
+    assert snapshot.activity_valid is True

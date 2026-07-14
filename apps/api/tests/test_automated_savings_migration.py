@@ -9,6 +9,13 @@ SENTINEL_CONFIRMED_MIGRATION = (
 ).read_text()
 
 
+def _intent_safety_migrations() -> str:
+    return "\n".join(
+        path.read_text()
+        for path in MIGRATIONS_DIR.glob("*_automated_savings_intent_safety.sql")
+    )
+
+
 def test_tables_created():
     for table in (
         "automated_savings_settings",
@@ -51,6 +58,49 @@ def test_sentinel_confirmed_additive_migration_adds_non_null_default_false_colum
     ) in SENTINEL_CONFIRMED_MIGRATION
 
 
+def test_intent_safety_additive_migration_adds_expected_from():
+    migration = _intent_safety_migrations()
+    assert migration
+    assert (
+        "alter table automated_savings_restore_intents\n"
+        "    add column if not exists expected_from integer;"
+    ) in migration
+
+
+def test_intent_safety_migration_adds_atomic_reapply_rpc():
+    migration = _intent_safety_migrations()
+    assert "function automated_savings_enqueue_reapply(" in migration
+    assert "for update" in migration
+    assert "drift_state = 'drifted'" in migration
+    assert "w.drifted_value is not distinct from p_expected_from" in migration
+    assert "not exists" in migration
+    assert "grant execute on function automated_savings_enqueue_reapply" in migration
+
+
+def test_intent_safety_migration_adds_atomic_cleanup_and_fk():
+    migration = _intent_safety_migrations()
+    assert "constraint automated_savings_intents_enrollment_fkey" in migration
+    assert "foreign key (organization_id, warehouse_name)" in migration
+    assert "not valid" in migration
+    assert "function automated_savings_cleanup_intent(" in migration
+    assert "cycle_id = p_cycle_id" in migration
+    assert "kind = p_kind" in migration
+    assert "for update" in migration
+    assert "not exists" in migration
+    assert "grant execute on function automated_savings_cleanup_intent" in migration
+
+
+def test_intent_safety_migration_adds_locking_no_intent_cleanup():
+    migration = _intent_safety_migrations()
+    assert "function automated_savings_cleanup_enrollment_if_no_intent(" in migration
+    assert "for update" in migration
+    assert "not exists" in migration
+    assert (
+        "grant execute on function "
+        "automated_savings_cleanup_enrollment_if_no_intent" in migration
+    )
+
+
 def test_restore_intent_has_cycle_id_for_event_pairing():
     # A set_sentinel event and its restore event share the intent's cycle_id.
     assert "cycle_id uuid not null default gen_random_uuid()" in MIGRATION
@@ -62,7 +112,7 @@ def test_restore_intent_kind_discriminates_sentinel_from_reapply():
     assert "kind text not null default 'sentinel' check (kind in ('sentinel', 'reapply'))" in MIGRATION
 
 
-def test_events_audit_table_created_append_only():
+def test_events_audit_table_is_member_read_only():
     assert "create table automated_savings_events" in MIGRATION
     # Constrained action/reason (no free text), and a member-read-only policy —
     # the log is written solely by the worker (service role).
@@ -72,7 +122,9 @@ def test_events_audit_table_created_append_only():
         "create policy automated_savings_events_read on automated_savings_events\n"
         "    for select to authenticated using (is_organization_member(organization_id));"
     ) in MIGRATION
-    # No authenticated write policy on the audit table (append-only, worker-only).
+    # Application code only inserts events while the organization exists. The
+    # organization foreign key intentionally cascades deletion for tenant cleanup.
+    # Authenticated users have no write policy; the worker uses the service role.
     assert "on automated_savings_events\n    for all" not in MIGRATION
 
 

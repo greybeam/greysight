@@ -40,12 +40,17 @@ def _reconcile(store, snaps, enrolls, **kw):
 
 def test_intent_restores_and_cools_down_when_suspended():
     store = InMemoryStore()
-    store.write_intent("org-1", "WH1", restore_to=300)
+    store.write_intent("org-1", "WH1", restore_to=300, cycle_id="c1")
     skip, calls = _reconcile(store, [_wh(auto_suspend=1, state="SUSPENDED")], [_enroll()])
     assert calls == [("WH1", 300)]  # restore target (managed default)
     assert store.list_intents("org-1") == []
     assert store.list_enrollments("org-1")[0].cooldown_ts == NOW + timedelta(seconds=60)  # cooldown_seconds=60
     assert "WH1" in skip
+    [event] = store.list_events("org-1")
+    assert (event.action, event.reason, event.from_value, event.to_value) == (
+        "restore", "suspended", 1, 300
+    )
+    assert event.cycle_id == "c1"
 
 
 def test_reapply_intent_overwrites_drifted_value_without_flagging_drift():
@@ -53,7 +58,9 @@ def test_reapply_intent_overwrites_drifted_value_without_flagging_drift():
     # value (120), restore_to is the managed default (300). The worker MUST ALTER
     # 120 -> 300 and clear the intent — not re-flag drift (the accept=False bug fix).
     store = InMemoryStore()
-    store.write_intent("org-1", "WH1", restore_to=300, kind="reapply")
+    store.write_intent(
+        "org-1", "WH1", restore_to=300, expected_from=120, kind="reapply"
+    )
     drifted = WarehouseSnapshot(name="WH1", state="STARTED", type="STANDARD", size="X-Small",
                                 started_clusters=1, min_cluster_count=1, max_cluster_count=1,
                                 running=0, queued=0, auto_suspend=120, auto_resume=True,
@@ -71,46 +78,13 @@ def test_reapply_intent_overwrites_drifted_value_without_flagging_drift():
 def test_reapply_intent_idempotent_when_already_at_target():
     # Worker already applied it last tick (live == restore_to) → just clear, no ALTER.
     store = InMemoryStore()
-    store.write_intent("org-1", "WH1", restore_to=300, kind="reapply")
+    store.write_intent(
+        "org-1", "WH1", restore_to=300, expected_from=120, kind="reapply"
+    )
     _, calls = _reconcile(store, [_wh(auto_suspend=300, state="STARTED")], [_enroll(managed=300)])
     assert calls == []
     assert store.list_intents("org-1") == []
     assert store.list_events("org-1") == []
-
-
-def test_restore_records_audit_event_with_reason_and_cycle_id():
-    store = InMemoryStore()
-    store.write_intent("org-1", "WH1", restore_to=300, cycle_id="c1")
-    _reconcile(store, [_wh(auto_suspend=1, state="SUSPENDED")], [_enroll()])
-    [event] = store.list_events("org-1")
-    assert event.action == "restore"
-    assert event.reason == "suspended"       # captured savings
-    assert event.from_value == 1 and event.to_value == 300
-    assert event.cycle_id == "c1"            # paired to its set_sentinel
-
-
-def test_hold_restore_reasons_distinguish_resume_aware_from_aged_out():
-    # resumed_on advanced past baseline → 'resume_aware'.
-    store = InMemoryStore()
-    store.write_intent("org-1", "WH1", restore_to=300, set_at=NOW,
-                       baseline_resumed_on=NOW - timedelta(minutes=5))
-    idle_resumed = WarehouseSnapshot(name="WH1", state="STARTED", type="STANDARD", size="X-Small",
-                                     started_clusters=1, min_cluster_count=1, max_cluster_count=1,
-                                     running=0, queued=0, auto_suspend=1, auto_resume=True,
-                                     resumed_on=NOW, created_on=NOW - timedelta(days=1))
-    _reconcile(store, [idle_resumed], [_enroll()], now=NOW)
-    assert store.list_events("org-1")[0].reason == "resume_aware"
-
-    # No resume, just aged past the hold bound → 'aged_out'.
-    store2 = InMemoryStore()
-    store2.write_intent("org-1", "WH1", restore_to=300, set_at=NOW, baseline_resumed_on=None)
-    idle_still = WarehouseSnapshot(name="WH1", state="STARTED", type="STANDARD", size="X-Small",
-                                   started_clusters=1, min_cluster_count=1, max_cluster_count=1,
-                                   running=0, queued=0, auto_suspend=1, auto_resume=True,
-                                   resumed_on=None, created_on=NOW - timedelta(days=1))
-    _reconcile(store2, [idle_still], [_enroll()],
-               now=NOW + timedelta(seconds=30), intent_hold_seconds=15.0)
-    assert store2.list_events("org-1")[0].reason == "aged_out"
 
 
 def test_failed_restore_alter_records_no_audit_event():
@@ -122,46 +96,85 @@ def test_failed_restore_alter_records_no_audit_event():
     def boom(name, val):
         raise RuntimeError("ALTER failed")
 
-    try:
+    with pytest.raises(RuntimeError, match="ALTER failed"):
         reconcile("org-1", [_wh(auto_suspend=1, state="SUSPENDED")], [_enroll()],
                   store.list_intents("org-1"), store, now=NOW, cooldown_seconds=60,
                   intent_hold_seconds=15.0, orphan_grace_seconds=120.0, apply_alter=boom)
-    except RuntimeError:
-        pass
     assert store.list_events("org-1") == []       # no event for a mutation that didn't happen
     assert store.list_intents("org-1") != []      # intent kept
 
 
-def test_unconfirmed_sentinel_holds_when_stale_show_reports_restore_target():
-    # The race: ALTER AUTO_SUSPEND=1 succeeded, but the next SHOW is stale and
-    # still reports the restore target (300). An unconfirmed sentinel must NOT
-    # read that as an idempotently-completed restore — doing so deletes the only
-    # ownership intent and strands the later-visible AUTO_SUSPEND=1. HOLD instead:
-    # no ALTER, no cooldown, no drift, no event, intent retained.
+def test_unconfirmed_sentinel_retries_when_live_still_matches_expected_value():
+    # The initial ALTER may have failed, or SHOW may be stale after it succeeded.
+    # Re-applying the sentinel is safe only while live still equals the value that
+    # was observed before the durable intent was written.
     store = InMemoryStore()
-    store.write_intent("org-1", "WH1", restore_to=300)  # fresh sentinel, unconfirmed
-    stale = _wh(auto_suspend=300, state="STARTED")       # SHOW hasn't caught up to 1
+    store.write_intent(
+        "org-1", "WH1", restore_to=300, expected_from=300
+    )
+    stale = _wh(auto_suspend=300, state="STARTED")
     _, calls = _reconcile(store, [stale], [_enroll()])
-    assert calls == []                                              # no ALTER
-    assert store.list_intents("org-1") != []                       # intent HELD
+    assert calls == [("WH1", 1)]
+    assert store.list_intents("org-1") != []
     assert store.list_enrollments("org-1")[0].cooldown_ts is None  # no cooldown
     assert store.list_enrollments("org-1")[0].drift_state == "ok"  # no drift flagged
-    assert store.list_events("org-1") == []                        # no audit event
 
 
-def test_unconfirmed_sentinel_holds_when_live_looks_like_customer_drift():
-    # A value that is neither 1 nor the restore target (120) would, for a CONFIRMED
-    # sentinel, be customer drift -> mark_drifted + delete. But while unconfirmed we
-    # have not yet proven the ALTER landed; this may be a stale SHOW ahead of
-    # AUTO_SUSPEND=1. HOLD: never flag drift or drop the only ownership intent.
+def test_aged_unconfirmed_sentinel_authoritatively_restores_and_clears():
     store = InMemoryStore()
-    store.write_intent("org-1", "WH1", restore_to=300)
+    store.write_intent(
+        "org-1", "WH1", restore_to=300, expected_from=300,
+        set_at=NOW, cycle_id="cycle-1",
+    )
+    live_expected = _wh(auto_suspend=300, state="STARTED")
+
+    _, fresh_calls = _reconcile(
+        store, [live_expected], [_enroll()], now=NOW,
+        intent_hold_seconds=15.0,
+    )
+    _, aged_calls = _reconcile(
+        store, [live_expected], [_enroll()],
+        now=NOW + timedelta(seconds=16), intent_hold_seconds=15.0,
+    )
+
+    assert fresh_calls == [("WH1", 1)]
+    assert aged_calls == [("WH1", 300)]
+    assert store.list_intents("org-1") == []
+    assert store.list_enrollments("org-1")[0].cooldown_ts == (
+        NOW + timedelta(seconds=76)
+    )
+    assert store.list_events("org-1")[-1].reason == "aged_out"
+
+
+def test_unconfirmed_sentinel_treats_changed_live_value_as_customer_drift():
+    store = InMemoryStore()
+    store.write_intent(
+        "org-1", "WH1", restore_to=300, expected_from=300
+    )
     drifting = _wh(auto_suspend=120, state="STARTED")
     _, calls = _reconcile(store, [drifting], [_enroll()])
     assert calls == []
-    assert store.list_intents("org-1") != []                        # intent HELD
-    assert store.list_enrollments("org-1")[0].drift_state == "ok"    # NOT flagged drift
-    assert store.list_enrollments("org-1")[0].cooldown_ts is None    # no cooldown
+    assert store.list_intents("org-1") == []
+    enrollment = store.list_enrollments("org-1")[0]
+    assert enrollment.drift_state == "drifted"
+    assert enrollment.drifted_value == 120
+
+
+def test_reapply_refuses_to_overwrite_value_changed_after_enqueue():
+    store = InMemoryStore()
+    store.write_intent(
+        "org-1", "WH1", restore_to=300, expected_from=120, kind="reapply"
+    )
+
+    _, calls = _reconcile(
+        store, [_wh(auto_suspend=180, state="STARTED")], [_enroll()]
+    )
+
+    assert calls == []
+    assert store.list_intents("org-1") == []
+    enrollment = store.list_enrollments("org-1")[0]
+    assert enrollment.drift_state == "drifted"
+    assert enrollment.drifted_value == 180
 
 
 def test_live_one_durably_confirms_ownership_before_restore_executes():
@@ -223,6 +236,46 @@ def test_replaced_intent_during_confirmation_prevents_terminal_restore():
     assert store.list_enrollments("org-1")[0].cooldown_ts is None
 
 
+def test_stale_worker_cannot_delete_replacement_intent():
+    class ReplacedBeforeDeleteStore(InMemoryStore):
+        def delete_intent(
+            self,
+            organization_id: str,
+            warehouse_name: str,
+            cycle_id: str,
+            kind: str,
+        ) -> bool:
+            self.write_intent(
+                organization_id,
+                warehouse_name,
+                restore_to=600,
+                expected_from=300,
+                cycle_id="replacement-cycle",
+            )
+            return super().delete_intent(
+                organization_id, warehouse_name, cycle_id, kind
+            )
+
+    store = ReplacedBeforeDeleteStore()
+    store.write_intent(
+        "org-1",
+        "WH1",
+        restore_to=300,
+        expected_from=300,
+        cycle_id="original-cycle",
+    )
+    store.confirm_sentinel("org-1", "WH1", "original-cycle")
+
+    _reconcile(
+        store,
+        [_wh(auto_suspend=300, state="STARTED")],
+        [_enroll()],
+    )
+
+    [remaining] = store.list_intents("org-1")
+    assert remaining.cycle_id == "replacement-cycle"
+
+
 def test_started_busy_restores_with_backoff_cooldown():
     # A query landed under our sentinel → restore, then back off with a cooldown:
     # a warehouse that resumed proved it is bursty, so bound how often it can
@@ -255,6 +308,7 @@ def test_resume_aware_restore_when_resumed_on_advanced():
     assert calls == [("WH1", 300)]
     assert store.list_intents("org-1") == []
     assert store.list_enrollments("org-1")[0].cooldown_ts == NOW + timedelta(seconds=60)
+    assert store.list_events("org-1")[0].reason == "resume_aware"
 
 
 def test_started_idle_holds_when_resumed_on_unchanged_from_baseline():
@@ -287,6 +341,7 @@ def test_started_idle_still_one_holds_intent_until_age_exceeds_bound():
     _, calls2 = _reconcile(store, [idle_started], [_enroll()],
                            now=NOW + timedelta(seconds=30), intent_hold_seconds=15.0)
     assert calls2 == [("WH1", 300)]
+    assert store.list_events("org-1")[0].reason == "aged_out"
 
 
 def test_intent_restore_detects_customer_edit_mid_suspend():
@@ -300,24 +355,6 @@ def test_intent_restore_detects_customer_edit_mid_suspend():
     assert store.list_enrollments("org-1")[0].drift_state == "drifted"
 
 
-def test_failed_alter_leaves_intent_for_retry():
-    store = InMemoryStore()
-    store.write_intent("org-1", "WH1", restore_to=300)
-    for e in [_enroll()]:
-        store.seed_enrollment(e)
-
-    def boom(name, val):
-        raise RuntimeError("ALTER failed")
-
-    try:
-        reconcile("org-1", [_wh(auto_suspend=1, state="SUSPENDED")], [_enroll()],
-                  store.list_intents("org-1"), store, now=NOW, cooldown_seconds=60,
-                  intent_hold_seconds=15.0, orphan_grace_seconds=120.0, apply_alter=boom)
-    except RuntimeError:
-        pass
-    assert store.list_intents("org-1") != []  # NOT deleted — next tick retries
-
-
 def test_dropped_warehouse_with_stale_intent_is_cleaned_up():
     # Warehouse fully dropped: absent from snapshot + intent older than the grace →
     # delete intent + enrollment so the org can leave worker_tenants() (finding #10).
@@ -329,6 +366,62 @@ def test_dropped_warehouse_with_stale_intent_is_cleaned_up():
     assert calls == []                       # nothing to ALTER
     assert store.list_intents("org-1") == []  # intent cleaned
     assert store.list_enrollments("org-1") == []  # enrollment cleared
+
+
+def test_cleanup_keeps_replacement_intent_and_enrollment():
+    class ReplacedBeforeCleanupStore(InMemoryStore):
+        def cleanup_intent_and_enrollment(
+            self, organization_id, warehouse_name, cycle_id, kind
+        ):
+            self.write_intent(
+                organization_id, warehouse_name, restore_to=600,
+                expected_from=300, cycle_id="replacement-cycle",
+            )
+            return super().cleanup_intent_and_enrollment(
+                organization_id, warehouse_name, cycle_id, kind
+            )
+
+    store = ReplacedBeforeCleanupStore()
+    store.write_intent(
+        "org-1", "WH1", restore_to=300, expected_from=300,
+        set_at=NOW, cycle_id="original-cycle",
+    )
+
+    _reconcile(
+        store, [], [_enroll()], now=NOW + timedelta(seconds=200),
+        orphan_grace_seconds=120.0,
+    )
+
+    [remaining] = store.list_intents("org-1")
+    assert remaining.cycle_id == "replacement-cycle"
+    assert store.list_enrollments("org-1") != []
+
+
+@pytest.mark.parametrize("missing_field", ["managed", "created_on"])
+def test_partial_enabled_enrollment_with_intent_is_quarantined(missing_field):
+    store = InMemoryStore()
+    enrollment = EnrollmentRow(
+        organization_id="org-1", warehouse_name="WH1", enabled=True,
+        managed_auto_suspend=None if missing_field == "managed" else 300,
+        stored_default_auto_suspend=300,
+        warehouse_created_on=(
+            None if missing_field == "created_on" else NOW - timedelta(days=1)
+        ),
+        cooldown_ts=None, drift_state="ok", drifted_value=None,
+    )
+    store.write_intent(
+        "org-1", "WH1", restore_to=300, expected_from=300,
+        cycle_id="cycle-1",
+    )
+
+    _, calls = _reconcile(
+        store, [_wh(auto_suspend=1, state="SUSPENDED")], [enrollment]
+    )
+
+    assert calls == []
+    [remaining] = store.list_intents("org-1")
+    assert remaining.cycle_id == "cycle-1"
+    assert store.list_enrollments("org-1")[0].drift_state == "unsupported"
 
 
 def test_dropped_warehouse_within_grace_is_left_alone():
@@ -381,6 +474,42 @@ def test_created_on_mismatch_invalidates_stale_enrollment_and_intent():
     assert calls == []                            # stale intent NOT applied to the new warehouse
     assert store.list_intents("org-1") == []      # stale intent deleted
     assert store.list_enrollments("org-1") == []  # stale enrollment dropped
+    assert "WH1" in skip
+
+
+def test_created_on_mismatch_without_snapshot_intent_keeps_fresh_intent():
+    class FreshIntentBeforeEnrollmentCleanupStore(InMemoryStore):
+        def cleanup_enrollment_if_no_intent(
+            self, organization_id: str, warehouse_name: str
+        ) -> bool:
+            self.write_intent(
+                organization_id,
+                warehouse_name,
+                restore_to=600,
+                expected_from=300,
+                cycle_id="fresh-cycle",
+                kind="reapply",
+            )
+            return super().cleanup_enrollment_if_no_intent(
+                organization_id, warehouse_name
+            )
+
+    store = FreshIntentBeforeEnrollmentCleanupStore()
+    recreated = _wh(auto_suspend=300, state="STARTED")
+    recreated = WarehouseSnapshot(
+        **{**recreated.__dict__, "created_on": NOW}
+    )
+
+    skip, calls = _reconcile(
+        store,
+        [recreated],
+        [_enroll(created=NOW - timedelta(days=30))],
+    )
+
+    assert calls == []
+    [intent] = store.list_intents("org-1")
+    assert intent.cycle_id == "fresh-cycle"
+    assert store.list_enrollments("org-1") != []
     assert "WH1" in skip
 
 

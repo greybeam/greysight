@@ -79,13 +79,6 @@ function asString(value: unknown): string {
   return value;
 }
 
-function asNumber(value: unknown): number {
-  if (typeof value !== "number") {
-    throw new Error("Malformed automated-savings API response");
-  }
-  return value;
-}
-
 function asBoolean(value: unknown): boolean {
   if (typeof value !== "boolean") {
     throw new Error("Malformed automated-savings API response");
@@ -285,12 +278,14 @@ export async function setManagedDefault(
     },
   );
 
-  if (response.status === 422) {
-    throw new ManagedDefaultFloorError();
-  }
-
   if (!response.ok) {
-    throw new Error(`Automated savings API request failed with ${response.status}`);
+    const detail = await readErrorDetail(response);
+    if (response.status === 422) {
+      throw new ManagedDefaultFloorError(detail ?? undefined);
+    }
+    throw new Error(
+      `Automated savings API request failed with ${response.status}${detail ? `: ${detail}` : ""}`,
+    );
   }
 }
 

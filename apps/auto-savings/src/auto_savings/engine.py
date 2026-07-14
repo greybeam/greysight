@@ -100,6 +100,7 @@ def run_cycle(
                 org_id,
                 name,
                 restore_to=enrollment.managed_auto_suspend,
+                expected_from=snapshot.auto_suspend,
                 set_at=now,
                 baseline_resumed_on=snapshot.resumed_on,
                 cycle_id=cycle_id,

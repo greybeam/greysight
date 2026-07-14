@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 
 
@@ -19,6 +20,8 @@ class WarehouseSnapshot:
     auto_resume: bool
     resumed_on: datetime | None
     created_on: datetime | None
+    activity_valid: bool = True
+    cluster_counts_valid: bool = True
 
 
 def _ci_get(row: dict, key: str, default=None):
@@ -46,6 +49,22 @@ def _as_int(value, default: int) -> int:
         return default
 
 
+def _validated_int(value, *, minimum: int) -> tuple[int, bool]:
+    if isinstance(value, bool):
+        return minimum, False
+    try:
+        decimal_value = Decimal(str(value).strip())
+        if not decimal_value.is_finite():
+            return minimum, False
+        integral = decimal_value.to_integral_value()
+        if decimal_value != integral:
+            return minimum, False
+        parsed = int(integral)
+    except (InvalidOperation, OverflowError, TypeError, ValueError):
+        return minimum, False
+    return parsed, parsed >= minimum
+
+
 def _as_bool(value) -> bool:
     if isinstance(value, bool):
         return value
@@ -58,20 +77,37 @@ def _coerce_ts(value) -> datetime | None:
     if value is None or value == "":
         return None
     if isinstance(value, datetime):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+        return (
+            value.replace(tzinfo=timezone.utc)
+            if value.tzinfo is None
+            else value.astimezone(timezone.utc)
+        )
     text = str(value).strip()
     # Snowflake SHOW timestamps look like "2026-07-12 11:58:30.000 -0000"
     # (exact format confirmed by the Task 0 spike). Try fromisoformat first, then fallback formats.
     for candidate in (text, text.replace(" ", "T", 1)):
         try:
             parsed = datetime.fromisoformat(candidate)
-            return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+            return (
+                parsed.replace(tzinfo=timezone.utc)
+                if parsed.tzinfo is None
+                else parsed.astimezone(timezone.utc)
+            )
         except ValueError:
             continue
-    for fmt in ("%Y-%m-%d %H:%M:%S.%f %z", "%Y-%m-%d %H:%M:%S %z", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S.%f %z",
+        "%Y-%m-%d %H:%M:%S %z",
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%Y-%m-%d %H:%M:%S",
+    ):
         try:
             parsed = datetime.strptime(text, fmt)
-            return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+            return (
+                parsed.replace(tzinfo=timezone.utc)
+                if parsed.tzinfo is None
+                else parsed.astimezone(timezone.utc)
+            )
         except ValueError:
             continue
     raise ValueError(f"unparseable SHOW WAREHOUSES timestamp: {value!r}")
@@ -92,19 +128,35 @@ def parse_warehouses(rows: list[dict], *, now: datetime) -> list[WarehouseSnapsh
         # warehouse with a malformed row) must NOT be treated the same as absent —
         # doing so would default started_clusters to min_cluster_count and could pass
         # the safety gate for a scaled-up multi-cluster warehouse (finding #4). In that
-        # case fail closed: parse started_clusters to 0, which never equals
-        # min_cluster_count (>= 1), so the gate blocks suspension.
-        min_cluster_count = _as_int(_ci_get(row, "min_cluster_count"), 1)
+        # case fail closed with cluster_counts_valid=False. Activity fields use the
+        # same validity approach so missing/malformed values cannot look idle.
         cluster_cols_absent = (
             not _ci_present(row, "started_clusters")
             and not _ci_present(row, "min_cluster_count")
             and not _ci_present(row, "max_cluster_count")
         )
-        started_clusters_raw = _ci_get(row, "started_clusters")
         if cluster_cols_absent:
-            started_clusters = min_cluster_count
+            started_clusters = min_cluster_count = max_cluster_count = 1
+            cluster_counts_valid = True
         else:
-            started_clusters = _as_int(started_clusters_raw, 0)
+            started_clusters, started_valid = _validated_int(
+                _ci_get(row, "started_clusters"), minimum=0
+            )
+            min_cluster_count, min_valid = _validated_int(
+                _ci_get(row, "min_cluster_count"), minimum=1
+            )
+            max_cluster_count, max_valid = _validated_int(
+                _ci_get(row, "max_cluster_count"), minimum=1
+            )
+            cluster_counts_valid = (
+                started_valid
+                and min_valid
+                and max_valid
+                and min_cluster_count <= max_cluster_count
+                and started_clusters <= max_cluster_count
+            )
+        running, running_valid = _validated_int(_ci_get(row, "running"), minimum=0)
+        queued, queued_valid = _validated_int(_ci_get(row, "queued"), minimum=0)
         snapshots.append(
             WarehouseSnapshot(
                 name=str(_ci_get(row, "name", "")),
@@ -113,13 +165,17 @@ def parse_warehouses(rows: list[dict], *, now: datetime) -> list[WarehouseSnapsh
                 size=_ci_get(row, "size"),
                 started_clusters=started_clusters,
                 min_cluster_count=min_cluster_count,
-                max_cluster_count=_as_int(_ci_get(row, "max_cluster_count"), 1),
-                running=_as_int(_ci_get(row, "running"), 0),
-                queued=_as_int(_ci_get(row, "queued"), 0),
-                auto_suspend=None if auto_suspend_raw in (None, "") else _as_int(auto_suspend_raw, 0),
+                max_cluster_count=max_cluster_count,
+                running=running,
+                queued=queued,
+                auto_suspend=None
+                if auto_suspend_raw in (None, "")
+                else _as_int(auto_suspend_raw, 0),
                 auto_resume=_as_bool(_ci_get(row, "auto_resume", False)),
                 resumed_on=_coerce_ts(_ci_get(row, "resumed_on")),
                 created_on=_coerce_ts(_ci_get(row, "created_on")),
+                activity_valid=running_valid and queued_valid,
+                cluster_counts_valid=cluster_counts_valid,
             )
         )
     return snapshots

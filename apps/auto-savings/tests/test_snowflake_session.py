@@ -1,5 +1,7 @@
 from unittest.mock import Mock
 
+import pytest
+
 from auto_savings.snowflake_session import (
     TenantSession,
     connection_fingerprint,
@@ -88,6 +90,38 @@ def test_alter_quotes_identifier():
     assert "SET AUTO_SUSPEND = 1" in sql
 
 
+def test_alter_ignores_cursor_close_failure_after_success():
+    cursor = Mock()
+    cursor.close.side_effect = RuntimeError("close failed")
+    connection = Mock()
+    connection.cursor.return_value = cursor
+    session = TenantSession(
+        config=object(),
+        socket_timeout_seconds=15,
+        connect=lambda _config: connection,
+    )
+
+    session.alter_auto_suspend("WH1", 1)
+
+    cursor.execute.assert_called_once()
+
+
+def test_alter_preserves_execute_failure_when_cursor_close_also_fails():
+    cursor = Mock()
+    cursor.execute.side_effect = ValueError("execute failed")
+    cursor.close.side_effect = RuntimeError("close failed")
+    connection = Mock()
+    connection.cursor.return_value = cursor
+    session = TenantSession(
+        config=object(),
+        socket_timeout_seconds=15,
+        connect=lambda _config: connection,
+    )
+
+    with pytest.raises(ValueError, match="execute failed"):
+        session.alter_auto_suspend("WH1", 1)
+
+
 def test_close_hard_closes_old_connection_and_next_op_reconnects():
     # D-lifecycle regression: after close_hard(), the OLD connection's .close()
     # must have been called, and a subsequent operation must establish a NEW
@@ -133,15 +167,75 @@ def test_backoff_saturates_huge_attempt_without_hanging():
 
 def test_connection_fingerprint_changes_when_identity_rotates():
     class Cfg:
-        def __init__(self, account, user, pem):
+        def __init__(self, account, user, pem, *, role="ROLE_A", passphrase="PASS_A"):
             self.account = account
             self.account_locator = None
             self.user = user
+            self.role = role
+            self.warehouse = "WH"
+            self.database = "DB"
+            self.schema = "SCHEMA"
             self.private_key_pem = pem
             self.private_key_path = None
+            self.private_key_passphrase = passphrase
+            self.query_timeout_seconds = 120
 
     base = connection_fingerprint(Cfg("acct1", "svc", "PEM-A"))
     assert base == connection_fingerprint(Cfg("acct1", "svc", "PEM-A"))  # stable
     assert base != connection_fingerprint(Cfg("acct2", "svc", "PEM-A"))  # account
     assert base != connection_fingerprint(Cfg("acct1", "other", "PEM-A"))  # user
     assert base != connection_fingerprint(Cfg("acct1", "svc", "PEM-B"))  # key
+    assert base != connection_fingerprint(
+        Cfg("acct1", "svc", "PEM-A", role="ROLE_B")
+    )
+    assert base != connection_fingerprint(
+        Cfg("acct1", "svc", "PEM-A", passphrase="PASS_B")
+    )
+
+
+def test_connection_fingerprint_changes_when_path_key_contents_rotate(tmp_path):
+    key_path = tmp_path / "tenant-key.pem"
+    key_path.write_text("KEY-A")
+
+    class Cfg:
+        account = "acct1"
+        account_locator = None
+        user = "svc"
+        role = "ROLE_A"
+        warehouse = "WH"
+        database = "DB"
+        schema = "SCHEMA"
+        private_key_pem = None
+        private_key_path = key_path
+        private_key_passphrase = None
+        query_timeout_seconds = 120
+
+    before = connection_fingerprint(Cfg())
+    key_path.write_text("KEY-B")
+
+    assert connection_fingerprint(Cfg()) != before
+
+
+def test_connection_fingerprint_is_stable_for_unreadable_key_path(tmp_path):
+    missing_path = tmp_path / "missing.pem"
+
+    class Cfg:
+        account = "acct1"
+        account_locator = None
+        user = "svc"
+        role = "ROLE_A"
+        warehouse = "WH"
+        database = "DB"
+        schema = "SCHEMA"
+        private_key_pem = None
+        private_key_path = missing_path
+        private_key_passphrase = None
+        query_timeout_seconds = 120
+
+    fingerprint = connection_fingerprint(Cfg())
+    assert fingerprint == connection_fingerprint(Cfg())
+
+    class OtherCfg(Cfg):
+        private_key_path = tmp_path / "other-missing.pem"
+
+    assert connection_fingerprint(OtherCfg()) != fingerprint

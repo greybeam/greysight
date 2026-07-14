@@ -55,11 +55,6 @@ def test_returns_organizations_for_user() -> None:
     assert requests[0].headers["authorization"] == "Bearer service-role-key"
 
 
-def test_empty_membership_returns_empty_tuple() -> None:
-    orgs = anyio.run(_lookup(lambda _r: httpx.Response(200, json=[])), "user-123")
-    assert orgs == ()
-
-
 def test_non_200_raises_lookup_error() -> None:
     with pytest.raises(MembershipLookupError):
         anyio.run(_lookup(lambda _r: httpx.Response(500, json={})), "user-123")

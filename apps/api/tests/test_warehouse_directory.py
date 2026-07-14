@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from app.services import warehouse_directory
 
 
@@ -24,32 +26,19 @@ def _standard_live(name="WH1", state="STARTED"):
              "started_clusters": 1, "size": "X-Small"}]
 
 
-def test_status_in_cooldown_while_cooldown_is_in_the_future():
+@pytest.mark.parametrize(("offset_seconds", "expected"), [(30, "in_cooldown"), (-60, "idle")])
+def test_cooldown_status_expires(offset_seconds, expected):
     now = datetime(2026, 7, 13, 21, 47, 0, tzinfo=timezone.utc)
-    enrollment = _enrollment("WH1", cooldown_ts=(now + timedelta(seconds=30)).isoformat())
+    enrollment = _enrollment("WH1", cooldown_ts=(now + timedelta(seconds=offset_seconds)).isoformat())
     [view] = warehouse_directory.join_warehouse_view(_standard_live(), [enrollment], now=now)
-    assert view.status == "in_cooldown"
+    assert view.status == expected
 
 
-def test_status_reverts_to_idle_once_cooldown_has_expired():
-    # The worker writes cooldown_ts on restore and never nulls it; the status must
-    # expire it by comparing against now, not treat any non-null value as active.
-    now = datetime(2026, 7, 13, 21, 49, 0, tzinfo=timezone.utc)
-    enrollment = _enrollment("WH1", cooldown_ts=(now - timedelta(seconds=60)).isoformat())
-    [view] = warehouse_directory.join_warehouse_view(_standard_live(), [enrollment], now=now)
-    assert view.status == "idle"
-
-
-def test_grant_present_detected(monkeypatch):
+@pytest.mark.parametrize(("privilege", "expected"), [("manage warehouses", True), ("USAGE", False)])
+def test_manage_warehouses_grant_detection(monkeypatch, privilege, expected):
     monkeypatch.setattr(warehouse_directory, "execute_metadata_query",
-                        lambda sql, config=None: [{"privilege": "manage warehouses"}])  # case-insensitive
-    assert warehouse_directory.check_manage_warehouses_grant(config=object(), role_name="RL") is True
-
-
-def test_grant_absent(monkeypatch):
-    monkeypatch.setattr(warehouse_directory, "execute_metadata_query",
-                        lambda sql, config=None: [{"privilege": "USAGE"}])
-    assert warehouse_directory.check_manage_warehouses_grant(config=object(), role_name="RL") is False
+                        lambda sql, config=None: [{"privilege": privilege}])
+    assert warehouse_directory.check_manage_warehouses_grant(config=object(), role_name="RL") is expected
 
 
 def test_grant_role_identifier_is_escaped(monkeypatch):

@@ -11,6 +11,7 @@ fails before the watchdog trips (see WorkerConfig.__post_init__).
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 try:
@@ -86,8 +87,19 @@ class TenantSession:
         try:
             quoted = _quote_identifier(name)
             cursor.execute(f"ALTER WAREHOUSE {quoted} SET AUTO_SUSPEND = {value}")
-        finally:
-            cursor.close()
+        except BaseException:
+            try:
+                cursor.close()
+            except Exception:
+                pass
+            raise
+        else:
+            try:
+                cursor.close()
+            except Exception:
+                # The ALTER succeeded. Cleanup failure must not trigger a retry or
+                # cause the successful mutation to be recorded as failed.
+                pass
 
     def close_hard(self) -> None:
         connection = self._connection
@@ -121,7 +133,7 @@ def next_backoff(
 
 
 def connection_fingerprint(config: Any) -> str:
-    """Stable hash of the identity-bearing fields of a Snowflake connection.
+    """Stable hash of all fields that define a Snowflake connection session.
 
     Used to detect when an org rotates its account, user, or private key: the
     fingerprint changes, so a warm session bound to the OLD identity can be
@@ -131,7 +143,27 @@ def connection_fingerprint(config: Any) -> str:
         str(getattr(config, "account", None) or ""),
         str(getattr(config, "account_locator", None) or ""),
         str(getattr(config, "user", None) or ""),
+        str(getattr(config, "role", None) or ""),
+        str(getattr(config, "warehouse", None) or ""),
+        str(getattr(config, "database", None) or ""),
+        str(getattr(config, "schema", None) or ""),
         str(getattr(config, "private_key_pem", None) or ""),
         str(getattr(config, "private_key_path", None) or ""),
+        _private_key_path_digest(config),
+        str(getattr(config, "private_key_passphrase", None) or ""),
+        str(getattr(config, "query_timeout_seconds", None) or ""),
     )
     return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()
+
+
+def _private_key_path_digest(config: Any) -> str:
+    key_path = getattr(config, "private_key_path", None)
+    if not key_path:
+        return ""
+    try:
+        key_bytes = Path(key_path).read_bytes()
+    except (OSError, TypeError, ValueError):
+        # The path itself remains in the fingerprint. This deterministic marker
+        # keeps routine revalidation stable if the file is temporarily unreadable.
+        return "unreadable"
+    return hashlib.sha256(key_bytes).hexdigest()

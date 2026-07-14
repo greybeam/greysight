@@ -1,7 +1,14 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AccountChromeProvider } from "../../lib/account-context";
+import { AutomatedSavingsShell } from "./automated-savings-shell";
 
 const fetchStatusMock = vi.fn();
 const fetchWarehousesMock = vi.fn();
@@ -11,9 +18,9 @@ const agreeMock = vi.fn();
 const toggleWarehouseMock = vi.fn();
 
 vi.mock("../../lib/automated-savings-api", async () => {
-  const actual = await vi.importActual<typeof import("../../lib/automated-savings-api")>(
-    "../../lib/automated-savings-api",
-  );
+  const actual = await vi.importActual<
+    typeof import("../../lib/automated-savings-api")
+  >("../../lib/automated-savings-api");
   return {
     ...actual,
     fetchStatus: (...args: unknown[]) => fetchStatusMock(...args),
@@ -25,8 +32,8 @@ vi.mock("../../lib/automated-savings-api", async () => {
   };
 });
 
-vi.mock("../org/org-shell", () => ({
-  default: ({ children }: { children: React.ReactNode }) => (
+function renderShell() {
+  return render(
     <AccountChromeProvider
       value={{
         email: "u@acme.com",
@@ -41,18 +48,28 @@ vi.mock("../org/org-shell", () => ({
         accessToken: "tok",
       }}
     >
-      {children}
-    </AccountChromeProvider>
-  ),
-}));
-
-import { AutomatedSavingsShell } from "./automated-savings-shell";
+      <AutomatedSavingsShell />
+    </AccountChromeProvider>,
+  );
+}
 
 const baseRow = {
-  name: "WH1", size: "X-Small", state: "STARTED", type: "STANDARD", supported: true,
-  minClusterCount: 1, maxClusterCount: 1, startedClusters: 1, autoResumeOk: true,
-  managedDefault: 300, storedDefault: 300, enabled: true, driftState: "ok" as const,
-  driftedValue: null, cooldownTs: null, status: "idle" as const,
+  name: "WH1",
+  size: "X-Small",
+  state: "STARTED",
+  type: "STANDARD",
+  supported: true,
+  minClusterCount: 1,
+  maxClusterCount: 1,
+  startedClusters: 1,
+  autoResumeOk: true,
+  managedDefault: 300,
+  storedDefault: 300,
+  enabled: true,
+  driftState: "ok" as const,
+  driftedValue: null,
+  cooldownTs: null,
+  status: "idle" as const,
 };
 
 describe("AutomatedSavingsShell", () => {
@@ -61,7 +78,7 @@ describe("AutomatedSavingsShell", () => {
     vi.clearAllMocks();
   });
 
-  it("shows the opt-in gate when not agreed", async () => {
+  it("shows the opt-in gate without fetching warehouses when not agreed", async () => {
     fetchStatusMock.mockResolvedValue({
       agreed: false,
       globalEnabled: false,
@@ -70,13 +87,15 @@ describe("AutomatedSavingsShell", () => {
       roleName: null,
     });
 
-    render(<AutomatedSavingsShell authRequired={false} />);
+    renderShell();
 
-    expect(await screen.findByText(/GRANT MANAGE WAREHOUSES/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/GRANT MANAGE WAREHOUSES/),
+    ).toBeInTheDocument();
     expect(fetchWarehousesMock).not.toHaveBeenCalled();
   });
 
-  it("falls back to the placeholder role in the opt-in gate GRANT SQL when status has no role", async () => {
+  it("falls back to the placeholder role in the opt-in GRANT SQL", async () => {
     fetchStatusMock.mockResolvedValue({
       agreed: false,
       globalEnabled: false,
@@ -85,10 +104,12 @@ describe("AutomatedSavingsShell", () => {
       roleName: null,
     });
 
-    render(<AutomatedSavingsShell authRequired={false} />);
+    renderShell();
 
     expect(
-      await screen.findByText(/GRANT MANAGE WAREHOUSES ON ACCOUNT TO ROLE "<YOUR_SNOWFLAKE_ROLE>";/),
+      await screen.findByText(
+        /GRANT MANAGE WAREHOUSES ON ACCOUNT TO ROLE "<YOUR_SNOWFLAKE_ROLE>";/,
+      ),
     ).toBeInTheDocument();
   });
 
@@ -107,15 +128,19 @@ describe("AutomatedSavingsShell", () => {
       roleName: "GREYSIGHT_ROLE",
     });
 
-    render(<AutomatedSavingsShell authRequired={false} />);
+    renderShell();
 
-    fireEvent.click(await screen.findByRole("button", { name: /check access/i }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /check access/i }),
+    );
 
     await waitFor(() =>
       expect(screen.getByText(/grant missing/i)).toBeInTheDocument(),
     );
     expect(
-      screen.getByText(/GRANT MANAGE WAREHOUSES ON ACCOUNT TO ROLE "GREYSIGHT_ROLE";/),
+      screen.getByText(
+        /GRANT MANAGE WAREHOUSES ON ACCOUNT TO ROLE "GREYSIGHT_ROLE";/,
+      ),
     ).toBeInTheDocument();
   });
 
@@ -130,13 +155,17 @@ describe("AutomatedSavingsShell", () => {
     });
     fetchWarehousesMock.mockResolvedValue([baseRow]);
 
-    render(<AutomatedSavingsShell authRequired={false} />);
+    renderShell();
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn.t load/i);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /couldn.t load/i,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: /retry/i }));
 
-    expect(await screen.findByRole("table", { name: /warehouses/i })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("table", { name: /warehouses/i }),
+    ).toBeInTheDocument();
   });
 
   it("reflects status.globalEnabled and flips it via the global switch", async () => {
@@ -153,7 +182,7 @@ describe("AutomatedSavingsShell", () => {
     fetchWarehousesMock.mockResolvedValue([{ ...baseRow, enabled: true }]);
     setGlobalSwitchMock.mockResolvedValue(undefined);
 
-    render(<AutomatedSavingsShell authRequired={false} />);
+    renderShell();
 
     const globalSwitch = await screen.findByRole("switch", {
       name: /automated savings enabled for all warehouses/i,
@@ -169,7 +198,9 @@ describe("AutomatedSavingsShell", () => {
     fireEvent.click(globalSwitch);
 
     await waitFor(() => expect(globalSwitch).toBeChecked());
-    expect(setGlobalSwitchMock).toHaveBeenCalledWith("org-1", true, { accessToken: "tok" });
+    expect(setGlobalSwitchMock).toHaveBeenCalledWith("org-1", true, {
+      accessToken: "tok",
+    });
 
     // Flipping the master switch persists only global_enabled — it must not
     // touch the per-row enabled state (no bulk local toggle of warehouses).
@@ -178,7 +209,7 @@ describe("AutomatedSavingsShell", () => {
     expect(toggleWarehouseMock).not.toHaveBeenCalled();
   });
 
-  it("reloads status after agreeing from the opt-in gate", async () => {
+  it("reloads status and warehouses after agreeing from the opt-in gate", async () => {
     fetchStatusMock
       .mockResolvedValueOnce({
         agreed: false,
@@ -189,7 +220,7 @@ describe("AutomatedSavingsShell", () => {
       })
       .mockResolvedValueOnce({
         agreed: true,
-        globalEnabled: true,
+        globalEnabled: false,
         grantPresent: true,
         grantCheckedAt: null,
         roleName: null,
@@ -197,11 +228,15 @@ describe("AutomatedSavingsShell", () => {
     fetchWarehousesMock.mockResolvedValue([baseRow]);
     agreeMock.mockResolvedValue(undefined);
 
-    render(<AutomatedSavingsShell authRequired={false} />);
+    renderShell();
 
     fireEvent.click(await screen.findByRole("button", { name: /agree/i }));
 
-    expect(await screen.findByRole("table", { name: /warehouses/i })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("switch", { name: "WH1" }),
+    ).toBeInTheDocument();
+    expect(fetchStatusMock).toHaveBeenCalledTimes(2);
+    expect(fetchWarehousesMock).toHaveBeenCalledTimes(1);
   });
 
   it("updates a single warehouse row after toggling it in the table", async () => {
@@ -215,7 +250,7 @@ describe("AutomatedSavingsShell", () => {
     fetchWarehousesMock.mockResolvedValue([baseRow]);
     toggleWarehouseMock.mockResolvedValue(undefined);
 
-    render(<AutomatedSavingsShell authRequired={false} />);
+    renderShell();
 
     const rowSwitch = await screen.findByRole("switch", { name: "WH1" });
     expect(rowSwitch).toBeChecked();

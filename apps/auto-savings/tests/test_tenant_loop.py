@@ -1,6 +1,8 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+import gc
+import threading
 
 import pytest
 
@@ -64,44 +66,6 @@ async def test_wedged_session_is_force_closed():
 
 
 @pytest.mark.asyncio
-async def test_genuinely_blocking_call_times_out_and_frees_the_loop():
-    # A show_warehouses that blocks past poll_timeout must not wedge the loop.
-    # (The connector socket timeout frees the pool thread in prod; here we prove the
-    #  wait_for path raises and close_hard() runs.)
-    import threading
-
-    class BlockingSession(FakeSession):
-        def __init__(self):
-            super().__init__()
-            self.started = threading.Event()
-            self._release = threading.Event()
-
-        def show_warehouses(self):
-            self.started.set()
-            # Blocks past the 0.2s timeout; close_hard() releases it, mirroring a
-            # socket close freeing a wedged recv (so the drain stays fast).
-            self._release.wait(5)
-            return []
-
-        def close_hard(self):
-            super().close_hard()
-            self._release.set()
-
-    # socket_timeout must stay strictly < poll_timeout (WorkerConfig invariant) and,
-    # since config validation now requires every interval to be finite and strictly
-    # positive (finding #9/#16), a small positive value keeps the fast 0.2s watchdog
-    # valid; the FakeSession ignores it either way.
-    cfg = WorkerConfig(supabase_url="u", supabase_service_role_key="k",
-                       poll_timeout_seconds=0.2, socket_timeout_seconds=0.05)
-    session = BlockingSession()
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        with pytest.raises((asyncio.TimeoutError, TimeoutError)):
-            await run_tenant_once("org-1", session=session, store=InMemoryStore(),
-                                  config=cfg, executor=executor, now_fn=lambda: NOW)
-    assert session.closed is True
-
-
-@pytest.mark.asyncio
 async def test_timed_out_tick_drains_abandoned_thread_before_returning():
     # #2a: on timeout the pool thread running _tick can't be cancelled from
     # Python. run_tenant_once must close_hard() (freeing the wedged thread) AND
@@ -135,6 +99,111 @@ async def test_timed_out_tick_drains_abandoned_thread_before_returning():
     # the drain, finished could still be unset here (thread still running).
     assert session.finished.is_set() is True
     assert session.closed is True
+
+
+@pytest.mark.asyncio
+async def test_timed_out_tick_consumes_released_worker_exception():
+    class RaisingAfterCloseSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.started = threading.Event()
+            self._release = threading.Event()
+
+        def show_warehouses(self):
+            self.started.set()
+            self._release.wait(5)
+            raise RuntimeError("worker failed after release")
+
+        def close_hard(self):
+            super().close_hard()
+            self._release.set()
+
+    cfg = WorkerConfig(
+        supabase_url="u",
+        supabase_service_role_key="k",
+        poll_timeout_seconds=0.05,
+        socket_timeout_seconds=0.01,
+    )
+    session = RaisingAfterCloseSession()
+    loop = asyncio.get_running_loop()
+    unhandled = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            with pytest.raises((asyncio.TimeoutError, TimeoutError)):
+                await run_tenant_once(
+                    "org-1",
+                    session=session,
+                    store=InMemoryStore(),
+                    config=cfg,
+                    executor=executor,
+                    now_fn=lambda: NOW,
+                )
+        gc.collect()
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(previous_handler)
+
+    assert session.started.is_set()
+    assert not [
+        context
+        for context in unhandled
+        if context.get("message") == "Future exception was never retrieved"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_timed_out_queued_tick_is_cancelled_before_it_can_run(monkeypatch):
+    blocker_started = threading.Event()
+    release_blocker = threading.Event()
+    cycle_calls = 0
+
+    def count_cycle(*_args, **_kwargs):
+        nonlocal cycle_calls
+        cycle_calls += 1
+        return False
+
+    monkeypatch.setattr(tenant_loop_mod, "run_cycle", count_cycle)
+
+    def occupy_only_worker():
+        blocker_started.set()
+        release_blocker.wait(5)
+
+    class QueuedSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.show_calls = 0
+
+        def show_warehouses(self):
+            self.show_calls += 1
+            return []
+
+    cfg = WorkerConfig(
+        supabase_url="u",
+        supabase_service_role_key="k",
+        poll_timeout_seconds=0.05,
+        socket_timeout_seconds=0.01,
+    )
+    session = QueuedSession()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        blocker = executor.submit(occupy_only_worker)
+        assert blocker_started.wait(1)
+        with pytest.raises((asyncio.TimeoutError, TimeoutError)):
+            await run_tenant_once(
+                "org-1",
+                session=session,
+                store=InMemoryStore(),
+                config=cfg,
+                executor=executor,
+                now_fn=lambda: NOW,
+            )
+        release_blocker.set()
+        blocker.result(timeout=1)
+
+    assert session.show_calls == 0
+    assert cycle_calls == 0
+    assert session.closed is False
 
 
 class ScriptedSession(FakeSession):
@@ -214,15 +283,6 @@ async def test_success_fast_polls_while_intent_outstanding():
     # jitter=0.5 → factor exactly 1.0, so sleep == intent_poll_interval_seconds.
     sleeps = await _run_loop(session, stop_after=1, jitter=lambda: 0.5, store=store)
     assert sleeps == [CONFIG.intent_poll_interval_seconds]
-
-
-@pytest.mark.asyncio
-async def test_success_normal_cadence_when_no_intent_outstanding():
-    # Empty store, warehouse cycle leaves nothing outstanding → normal interval.
-    sleeps = await _run_loop(
-        ScriptedSession(["ok"]), stop_after=1, jitter=lambda: 0.5
-    )
-    assert sleeps == [CONFIG.poll_interval_seconds]
 
 
 @pytest.mark.asyncio

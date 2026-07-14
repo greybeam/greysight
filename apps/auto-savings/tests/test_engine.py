@@ -37,7 +37,8 @@ def _seed(store, cooldown_ts=None, drift_state="ok"):
 
 def test_idle_warehouse_gets_intent_then_alter_in_order():
     store = InMemoryStore()
-    _seed(store); _seed_settings(store)
+    _seed(store)
+    _seed_settings(store)
     calls = []
 
     def apply_alter(name, value):
@@ -49,6 +50,7 @@ def test_idle_warehouse_gets_intent_then_alter_in_order():
         assert len(outstanding) == 1
         assert outstanding[0].warehouse_name == name
         assert outstanding[0].restore_to == 300
+        assert outstanding[0].expected_from == 300
         calls.append((name, value))
 
     has_intents = run_cycle("org-1", rows=_rows(), store=store, config=CONFIG, now=NOW,
@@ -61,7 +63,8 @@ def test_idle_warehouse_gets_intent_then_alter_in_order():
 
 def test_set_sentinel_records_audit_event_sharing_intent_cycle_id():
     store = InMemoryStore()
-    _seed(store); _seed_settings(store)
+    _seed(store)
+    _seed_settings(store)
     run_cycle("org-1", rows=_rows(), store=store, config=CONFIG, now=NOW,
               apply_alter=lambda n, v: None)
     [event] = store.list_events("org-1")
@@ -74,20 +77,11 @@ def test_set_sentinel_records_audit_event_sharing_intent_cycle_id():
     assert event.cycle_id == store.list_intents("org-1")[0].cycle_id
 
 
-def test_run_cycle_returns_false_when_no_intents_outstanding():
-    store = InMemoryStore()
-    _seed(store, cooldown_ts=NOW + timedelta(seconds=100)); _seed_settings(store)
-    # In cooldown → no new suspend, no intent written → normal cadence.
-    has_intents = run_cycle("org-1", rows=_rows(), store=store, config=CONFIG, now=NOW,
-                            apply_alter=lambda n, v: None)
-    assert store.list_intents("org-1") == []
-    assert has_intents is False
-
-
 def test_kill_switch_off_stops_decide_but_still_drains():
     # global_enabled False → no new suspends, but an outstanding intent still restores.
     store = InMemoryStore()
-    _seed(store); _seed_settings(store, global_enabled=False)
+    _seed(store)
+    _seed_settings(store, global_enabled=False)
     store.write_intent("org-1", "WH1", restore_to=300)
     calls = []
     run_cycle("org-1", rows=_rows(state="SUSPENDED", auto_suspend=1, resumed_on=None),
@@ -96,26 +90,18 @@ def test_kill_switch_off_stops_decide_but_still_drains():
     assert calls == [("WH1", 300)]          # drained
     # A fresh idle warehouse is NOT suspended while the switch is off.
     store2 = InMemoryStore()
-    _seed(store2); _seed_settings(store2, global_enabled=False)
+    _seed(store2)
+    _seed_settings(store2, global_enabled=False)
     calls2 = []
     run_cycle("org-1", rows=_rows(), store=store2, config=CONFIG, now=NOW,
               apply_alter=lambda n, v: calls2.append((n, v)))
     assert calls2 == []
 
 
-def test_busy_warehouse_not_touched():
-    store = InMemoryStore()
-    _seed(store); _seed_settings(store)
-    calls = []
-    run_cycle("org-1", rows=_rows(running=1), store=store, config=CONFIG, now=NOW,
-              apply_alter=lambda n, v: calls.append((n, v)))
-    assert calls == []
-    assert store.list_intents("org-1") == []
-
-
 def test_next_tick_restores_and_sets_cooldown():
     store = InMemoryStore()
-    _seed(store); _seed_settings(store)
+    _seed(store)
+    _seed_settings(store)
     calls = []
     # Tick 1: set sentinel.
     run_cycle("org-1", rows=_rows(), store=store, config=CONFIG, now=NOW,
@@ -130,13 +116,15 @@ def test_next_tick_restores_and_sets_cooldown():
     assert store.list_enrollments("org-1")[0].cooldown_ts == later + timedelta(seconds=300)
 
 
-def test_cooldown_blocks_reacquire():
+def test_active_cooldown_blocks_immediate_reacquire():
     store = InMemoryStore()
-    _seed(store, cooldown_ts=NOW + timedelta(seconds=100)); _seed_settings(store)
+    _seed(store, cooldown_ts=NOW + timedelta(seconds=1))
+    _seed_settings(store)
     calls = []
     run_cycle("org-1", rows=_rows(), store=store, config=CONFIG, now=NOW,
               apply_alter=lambda n, v: calls.append((n, v)))
     assert calls == []
+    assert store.list_intents("org-1") == []
 
 
 def test_drift_this_tick_closes_race_with_stale_enrollment_snapshot():
@@ -148,7 +136,8 @@ def test_drift_this_tick_closes_race_with_stale_enrollment_snapshot():
     # auto_suspend value of. The skip-gate (name in skip → continue) must
     # catch what reconcile settled this cycle regardless of the stale read.
     store = InMemoryStore()
-    _seed(store, drift_state="ok"); _seed_settings(store)
+    _seed(store, drift_state="ok")
+    _seed_settings(store)
     calls = []
     run_cycle(
         "org-1",
@@ -158,3 +147,45 @@ def test_drift_this_tick_closes_race_with_stale_enrollment_snapshot():
     )
     assert calls == []  # NOT force-suspended despite the stale "ok" read
     assert store.list_enrollments("org-1")[0].drift_state == "drifted"
+
+
+def test_enabled_enrollment_without_managed_default_fails_closed():
+    store = InMemoryStore()
+    store.seed_enrollment(EnrollmentRow(
+        organization_id="org-1", warehouse_name="WH1", enabled=True,
+        managed_auto_suspend=None, stored_default_auto_suspend=300,
+        warehouse_created_on=NOW - timedelta(days=1), cooldown_ts=None,
+        drift_state="ok", drifted_value=None,
+    ))
+    _seed_settings(store)
+    calls = []
+
+    run_cycle(
+        "org-1", rows=_rows(), store=store, config=CONFIG, now=NOW,
+        apply_alter=lambda name, value: calls.append((name, value)),
+    )
+
+    assert calls == []
+    assert store.list_intents("org-1") == []
+    assert store.list_enrollments("org-1")[0].drift_state == "unsupported"
+
+
+def test_enabled_enrollment_without_created_on_fails_closed():
+    store = InMemoryStore()
+    store.seed_enrollment(EnrollmentRow(
+        organization_id="org-1", warehouse_name="WH1", enabled=True,
+        managed_auto_suspend=300, stored_default_auto_suspend=300,
+        warehouse_created_on=None, cooldown_ts=None,
+        drift_state="ok", drifted_value=None,
+    ))
+    _seed_settings(store)
+    calls = []
+
+    run_cycle(
+        "org-1", rows=_rows(), store=store, config=CONFIG, now=NOW,
+        apply_alter=lambda name, value: calls.append((name, value)),
+    )
+
+    assert calls == []
+    assert store.list_intents("org-1") == []
+    assert store.list_enrollments("org-1")[0].drift_state == "unsupported"

@@ -1,7 +1,10 @@
 from unittest.mock import Mock, patch
 
+import pytest
+
 from greysight_connect.snowflake_client import (
     SnowflakeConnectionConfig,
+    SnowflakeQueryError,
     execute_metadata_query,
 )
 
@@ -16,7 +19,7 @@ def _config() -> SnowflakeConnectionConfig:
 
 def test_execute_metadata_query_returns_lowercased_dicts():
     cursor = Mock()
-    cursor.description = [("name",), ("state",), ("auto_suspend",)]
+    cursor.description = [("NAME",), ("STATE",), ("AUTO_SUSPEND",)]
     cursor.fetchall.return_value = [("WH1", "STARTED", 300)]
     connection = Mock()
     connection.cursor.return_value = cursor
@@ -29,3 +32,14 @@ def test_execute_metadata_query_returns_lowercased_dicts():
     assert cursor.execute.call_args[0][0] == "SHOW WAREHOUSES"
     # No bind params passed for metadata statements.
     assert len(cursor.execute.call_args[0]) == 1
+
+
+def test_execute_metadata_query_normalizes_connection_failure():
+    def boom(_config):
+        raise RuntimeError("secret connector detail")
+
+    with pytest.raises(SnowflakeQueryError) as exc_info:
+        execute_metadata_query("SHOW WAREHOUSES", config=_config(), connect=boom)
+
+    assert str(exc_info.value) == "Could not query Snowflake."
+    assert "secret connector detail" not in str(exc_info.value)

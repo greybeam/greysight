@@ -1,24 +1,27 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../components/dashboard/dashboard-runtime-shell", () => ({
-  default: ({
+vi.mock("../../components/workspace/workspace-runtime-shell", () => ({
+  WorkspaceRuntimeShell: ({
     authRequired,
+    children,
     dataSource,
   }: {
     authRequired: boolean;
-    dataSource?: string;
+    children: React.ReactNode;
+    dataSource: string;
   }) => (
     <div>
       <div data-testid="auth-required">{String(authRequired)}</div>
       <div data-testid="data-source">{dataSource}</div>
+      {children}
     </div>
   ),
 }));
 
-import DashboardPage from "./page";
+import WorkspaceLayout from "./layout";
 
-describe("DashboardPage auth mode", () => {
+describe("WorkspaceLayout auth mode", () => {
   const originalAuthRequired = process.env.AUTH_REQUIRED;
   const originalPublicAuthRequired = process.env.NEXT_PUBLIC_AUTH_REQUIRED;
   const originalDataSource = process.env.DATA_SOURCE;
@@ -47,7 +50,7 @@ describe("DashboardPage auth mode", () => {
     delete process.env.AUTH_REQUIRED;
     process.env.NEXT_PUBLIC_AUTH_REQUIRED = "true";
 
-    render(<DashboardPage />);
+    render(<WorkspaceLayout>content</WorkspaceLayout>);
 
     expect(screen.getByTestId("auth-required")).toHaveTextContent("true");
   });
@@ -55,7 +58,7 @@ describe("DashboardPage auth mode", () => {
   it("passes Snowflake data source to the runtime shell", () => {
     process.env.DATA_SOURCE = "snowflake";
 
-    render(<DashboardPage />);
+    render(<WorkspaceLayout>content</WorkspaceLayout>);
 
     expect(screen.getByTestId("data-source")).toHaveTextContent("snowflake");
   });

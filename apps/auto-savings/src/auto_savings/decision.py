@@ -18,6 +18,8 @@ def should_force_suspend(
         return False
     if snapshot.state != "STARTED":
         return False
+    if not snapshot.activity_valid or not snapshot.cluster_counts_valid:
+        return False
     if snapshot.started_clusters != snapshot.min_cluster_count:
         return False
     uptime = uptime_seconds(snapshot, now=now)

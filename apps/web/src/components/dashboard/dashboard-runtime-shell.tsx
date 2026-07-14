@@ -1,33 +1,24 @@
 "use client";
 
-import { useState } from "react";
-
-import OrgShell, { type SelectedOrganization } from "../org/org-shell";
+import { useWorkspaceRuntime } from "../workspace/workspace-runtime-shell";
 import CostDashboard, {
   type CostDashboardRuntime,
   type DashboardModeLabel,
 } from "./cost-dashboard";
-
-type DashboardDataSource = "demo" | "snowflake";
-
-type DashboardRuntimeShellProps = {
-  authRequired: boolean;
-  dataSource?: DashboardDataSource;
-};
 
 const LOCAL_SNOWFLAKE_ORGANIZATION = {
   id: "00000000-0000-4000-8000-000000000001",
   name: "Local Snowflake",
 };
 
-export default function DashboardRuntimeShell({
-  authRequired,
-  dataSource = "demo",
-}: DashboardRuntimeShellProps) {
-  const [accessToken, setAccessToken] = useState<string | null>(null);
-  const [organization, setOrganization] = useState<SelectedOrganization | null>(
-    null,
-  );
+export default function DashboardRuntimeShell() {
+  const workspace = useWorkspaceRuntime();
+
+  if (!workspace) {
+    throw new Error("DashboardRuntimeShell requires WorkspaceRuntimeShell");
+  }
+
+  const { accessToken, authRequired, dataSource, organization } = workspace;
   const localSnowflakeRuntime: CostDashboardRuntime | null =
     !authRequired && dataSource === "snowflake"
       ? {
@@ -51,21 +42,11 @@ export default function DashboardRuntimeShell({
     : dataSource === "snowflake"
       ? "Local Snowflake"
       : "Demo";
-  const bypassModeLabel =
-    dataSource === "snowflake" ? "Local Snowflake mode" : "Demo mode";
-
   return (
-    <OrgShell
-      authRequired={authRequired}
-      bypassModeLabel={bypassModeLabel}
-      onAccessTokenChange={setAccessToken}
-      onOrganizationChange={setOrganization}
-    >
-      <CostDashboard
-        demoMode={!authRequired && dataSource !== "snowflake"}
-        modeLabel={modeLabel}
-        runtime={runtime}
-      />
-    </OrgShell>
+    <CostDashboard
+      demoMode={!authRequired && dataSource !== "snowflake"}
+      modeLabel={modeLabel}
+      runtime={runtime}
+    />
   );
 }
