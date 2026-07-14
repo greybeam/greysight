@@ -23,6 +23,13 @@ const KEY_PAIR_DOCS =
 const ACCOUNT_LOCATOR_SQL =
   "SELECT CURRENT_ORGANIZATION_NAME() || '-' || CURRENT_ACCOUNT_NAME();";
 
+const GREYSIGHT_OUTBOUND_IPS = [
+  "162.220.232.250",
+  "152.55.176.240",
+  "162.220.232.252",
+] as const;
+const GREYSIGHT_OUTBOUND_IPS_TEXT = GREYSIGHT_OUTBOUND_IPS.join("\n");
+
 const SQL_KEYWORDS = new Set([
   "SET", "USE", "ROLE", "CREATE", "USER", "ALTER", "WAREHOUSE", "GRANT", "IF",
   "NOT", "EXISTS", "IDENTIFIER", "TYPE", "SERVICE", "COMMENT", "DATABASE",
@@ -100,14 +107,17 @@ export default function ConnectWizard({
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [accountCopied, setAccountCopied] = useState(false);
+  const [ipsCopied, setIpsCopied] = useState(false);
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const accountCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ipsCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const accountTooltipId = useId();
 
   useEffect(() => {
     return () => {
       if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
       if (accountCopyTimeoutRef.current) clearTimeout(accountCopyTimeoutRef.current);
+      if (ipsCopyTimeoutRef.current) clearTimeout(ipsCopyTimeoutRef.current);
     };
   }, []);
 
@@ -127,6 +137,13 @@ export default function ConnectWizard({
     setAccountCopied(true);
     if (accountCopyTimeoutRef.current) clearTimeout(accountCopyTimeoutRef.current);
     accountCopyTimeoutRef.current = setTimeout(() => setAccountCopied(false), 2000);
+  }
+
+  async function handleCopyOutboundIps() {
+    await navigator.clipboard?.writeText(GREYSIGHT_OUTBOUND_IPS_TEXT);
+    setIpsCopied(true);
+    if (ipsCopyTimeoutRef.current) clearTimeout(ipsCopyTimeoutRef.current);
+    ipsCopyTimeoutRef.current = setTimeout(() => setIpsCopied(false), 2000);
   }
 
   async function handleSubmit(event: React.FormEvent) {
@@ -249,6 +266,33 @@ export default function ConnectWizard({
               <code>{highlightSql(SNOWFLAKE_SETUP_SQL)}</code>
             </pre>
           </div>
+          <section className="rounded-md border border-hairline bg-canvas p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-sm font-semibold text-slate-200">
+                  Network allowlist
+                </h2>
+                <p className="mt-1 text-xs leading-5 text-slate-400">
+                  If your Snowflake account restricts inbound traffic, allow
+                  Greysight’s outbound IPs before testing the connection.
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-label="Copy outbound IPs"
+                onClick={handleCopyOutboundIps}
+                className="shrink-0 rounded-md border border-hairline bg-surface px-2 py-1 text-xs font-medium text-slate-200 hover:bg-hairline"
+              >
+                {ipsCopied ? "Copied!" : "Copy"}
+              </button>
+              <span className="sr-only" role="status" aria-live="polite">
+                {ipsCopied ? "Outbound IPs copied" : ""}
+              </span>
+            </div>
+            <pre className="mt-3 overflow-x-auto rounded-md border border-hairline bg-surface p-3 text-xs text-slate-100">
+              <code>{GREYSIGHT_OUTBOUND_IPS_TEXT}</code>
+            </pre>
+          </section>
         </aside>
       </div>
     </section>
