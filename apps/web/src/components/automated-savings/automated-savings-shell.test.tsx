@@ -179,7 +179,7 @@ describe("AutomatedSavingsShell", () => {
     renderShell();
 
     const globalSwitch = await screen.findByRole("switch", {
-      name: /automated savings enabled for all warehouses/i,
+      name: /enabled for all warehouses/i,
     });
     expect(globalSwitch).not.toBeChecked();
 
@@ -215,13 +215,13 @@ describe("AutomatedSavingsShell", () => {
     setGlobalSwitchMock.mockRejectedValue(new Error("network failure"));
     renderShell();
     const globalSwitch = await screen.findByRole("switch", {
-      name: /automated savings enabled for all warehouses/i,
+      name: /enabled for all warehouses/i,
     });
 
     fireEvent.click(globalSwitch);
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      /couldn.t update automated savings/i,
+      /couldn.t update auto savings/i,
     );
     expect(globalSwitch).not.toBeChecked();
     expect(globalSwitch).not.toBeDisabled();
@@ -242,7 +242,7 @@ describe("AutomatedSavingsShell", () => {
     );
     renderShell();
     const globalSwitch = await screen.findByRole("switch", {
-      name: /automated savings enabled for all warehouses/i,
+      name: /enabled for all warehouses/i,
     });
 
     fireEvent.click(globalSwitch);

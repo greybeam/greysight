@@ -55,7 +55,7 @@ function isUnsupported(warehouse: WarehouseRow): boolean {
   );
 }
 
-// A single, derived answer to "is automated savings actually running on this
+// A single, derived answer to "is Auto Savings actually running on this
 // warehouse right now?" — collapsing the old separate AUTO_RESUME-health and
 // operational-status columns. First matching condition wins.
 function deriveDisplayStatus(warehouse: WarehouseRow): DisplayStatus {
@@ -91,9 +91,15 @@ function deriveToggleDisabledReason(
 
 // A column header with an instant, styled explanatory tooltip (see ui/Tooltip).
 // The dotted underline signals the header is hoverable for more detail.
-function HeaderWithTooltip({ label, tooltip }: { label: string; tooltip: string }) {
+function HeaderWithTooltip({
+  label,
+  tooltip,
+}: {
+  label: string;
+  tooltip: string;
+}) {
   return (
-    <TableHeaderCell className="whitespace-nowrap px-4 py-3.5 font-semibold">
+    <TableHeaderCell className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-100">
       <Tooltip
         className="underline decoration-dotted decoration-slate-500 underline-offset-4"
         content={tooltip}
@@ -104,21 +110,32 @@ function HeaderWithTooltip({ label, tooltip }: { label: string; tooltip: string 
   );
 }
 
-export function WarehouseTable({ orgId, warehouses, isAdmin, accessToken, onChange, onRefresh }: WarehouseTableProps) {
+export function WarehouseTable({
+  orgId,
+  warehouses,
+  isAdmin,
+  accessToken,
+  onChange,
+  onRefresh,
+}: WarehouseTableProps) {
   return (
-    <Table aria-label="Warehouses" className="w-full text-left text-xs text-slate-300">
-      <TableHead className="text-slate-100">
+    <Table aria-label="Warehouses" className="w-full text-left">
+      <TableHead>
         <TableRow>
-          <TableHeaderCell className="whitespace-nowrap px-4 py-3.5 font-semibold">Name</TableHeaderCell>
+          <TableHeaderCell className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-100">
+            Name
+          </TableHeaderCell>
           <HeaderWithTooltip
             label="Auto Suspend"
             tooltip="The current Snowflake AUTO_SUSPEND setting. Greysight requests safe Snowflake suspension after the billing floor."
           />
           <HeaderWithTooltip
             label="Status"
-            tooltip="Whether auto savings is actively running on this warehouse."
+            tooltip="Whether Auto Savings is actively running on this warehouse."
           />
-          <TableHeaderCell className="whitespace-nowrap px-4 py-3.5 font-semibold">Enabled</TableHeaderCell>
+          <TableHeaderCell className="whitespace-nowrap px-4 py-3.5 text-xs font-semibold text-slate-100">
+            Enabled
+          </TableHeaderCell>
         </TableRow>
       </TableHead>
       <TableBody className="divide-y divide-hairline align-top">
@@ -147,7 +164,14 @@ type WarehouseRowViewProps = {
   onRefresh?: () => Promise<void>;
 };
 
-function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange, onRefresh }: WarehouseRowViewProps) {
+function WarehouseRowView({
+  orgId,
+  warehouse,
+  isAdmin,
+  accessToken,
+  onChange,
+  onRefresh,
+}: WarehouseRowViewProps) {
   const disabledReasonId = useId();
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -212,14 +236,16 @@ function WarehouseRowView({ orgId, warehouse, isAdmin, accessToken, onChange, on
 
   return (
     <TableRow>
-      <TableCell className="px-4 py-2 font-semibold text-slate-100">{warehouse.name}</TableCell>
-      <TableCell className="px-4 py-2">
+      <TableCell className="px-4 py-2 text-xs font-semibold text-slate-100">
+        {warehouse.name}
+      </TableCell>
+      <TableCell className="px-4 py-2 text-xs text-slate-300">
         {warehouse.autoSuspend === null ? "—" : `${warehouse.autoSuspend}s`}
       </TableCell>
-      <TableCell className="px-4 py-2">
+      <TableCell className="px-4 py-2 text-xs text-slate-300">
         <Badge color={displayStatus.color}>{displayStatus.label}</Badge>
       </TableCell>
-      <TableCell className="px-4 py-2">
+      <TableCell className="px-4 py-2 text-xs text-slate-300">
         <span className="group relative inline-flex">
           <Switch
             aria-label={warehouse.name}

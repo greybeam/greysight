@@ -85,14 +85,14 @@ export function OptInGate({ orgId, roleName, onAgreed }: OptInGateProps) {
           className="text-lg font-semibold text-slate-100"
           id="automated-savings-opt-in-title"
         >
-          Automated Savings
+          Auto Savings
         </h2>
         <span className="rounded-full border border-amber-500/50 px-2 py-0.5 text-[11px] font-medium text-amber-300">
           Experimental
         </span>
       </div>
       <p className="mt-2 text-sm text-slate-400">
-        Automated Savings polls your Snowflake warehouses and requests safe
+        Auto Savings polls your Snowflake warehouses and requests safe
         suspension after the billing floor when enrolled warehouses are idle.{" "}
         <a
           className="text-slate-300 underline decoration-slate-600 underline-offset-2 hover:text-slate-100"
@@ -100,7 +100,7 @@ export function OptInGate({ orgId, roleName, onAgreed }: OptInGateProps) {
           target="_blank"
           rel="noreferrer"
         >
-          Learn more about how Automated Savings works
+          Learn more about how Auto Savings works
         </a>
         .
       </p>

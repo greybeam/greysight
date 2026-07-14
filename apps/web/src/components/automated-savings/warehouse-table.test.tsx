@@ -191,7 +191,7 @@ describe("WarehouseTable", () => {
 
   it("surfaces a toggle failure without changing enrollment", async () => {
     vi.spyOn(automatedSavingsApi, "toggleWarehouse").mockRejectedValue(
-      new Error("Automated savings API request failed with 502: Snowflake unavailable"),
+      new Error("Auto Savings API request failed with 502: Snowflake unavailable"),
     );
     const onChange = vi.fn();
     render(<WarehouseTable orgId="org-1" isAdmin accessToken="tok" warehouses={[base]} onChange={onChange} />);

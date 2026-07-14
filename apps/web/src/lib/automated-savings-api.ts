@@ -125,7 +125,7 @@ async function fetchJson(
     // a failed call reports WHY instead of just the status code.
     const detail = await readErrorDetail(response);
     throw new Error(
-      `Automated savings API request failed with ${response.status}${detail ? `: ${detail}` : ""}`,
+      `Auto Savings API request failed with ${response.status}${detail ? `: ${detail}` : ""}`,
     );
   }
 
