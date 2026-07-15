@@ -7,7 +7,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+import adbc_driver_manager
+import adbc_driver_manager.dbapi as adbc_dbapi
 import adbc_driver_snowflake
+import adbc_driver_snowflake.dbapi
 from cryptography.hazmat.primitives import serialization
 
 from greysight_connect.snowflake_account import validate_account_identifier
@@ -19,6 +22,11 @@ _LOGIN_FAILURE_REFERENCE = re.compile(
     re.IGNORECASE,
 )
 _SQLSTATE_PATTERN = re.compile(r"[A-Z0-9]{5}")
+
+_TIMEOUT_SAFE_MESSAGE = (
+    "Snowflake connection timed out. Verify that the account is reachable "
+    "and try again."
+)
 
 
 class SnowflakeConfigurationError(RuntimeError):
@@ -51,18 +59,23 @@ class SnowflakeObjectUnavailableError(SnowflakeQueryError):
     """
 
 
-class _SnowflakeConnectorProxy:
-    def connect(self, **kwargs: Any) -> Any:
-        import snowflake.connector as connector
-
-        return connector.connect(**kwargs)
+_NAMED_BIND = re.compile(r"%\(([A-Za-z_][A-Za-z0-9_]*)\)s")
 
 
-class _SnowflakeProxy:
-    connector = _SnowflakeConnectorProxy()
+def _adbc_bindings(
+    sql: str, bind_params: dict[str, Any]
+) -> tuple[str, tuple[Any, ...]]:
+    ordered: list[Any] = []
 
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        try:
+            ordered.append(bind_params[name])
+        except KeyError:
+            raise ValueError(f"Missing Snowflake bind param: {name}") from None
+        return "?"
 
-snowflake = _SnowflakeProxy()
+    return _NAMED_BIND.sub(replace, sql), tuple(ordered)
 
 
 @dataclass(frozen=True)
@@ -106,37 +119,6 @@ class SnowflakeConnectionConfig:
             account_locator=os.environ.get("SNOWFLAKE_ACCOUNT_LOCATOR"),
         )
 
-    def connector_kwargs(self) -> dict[str, Any]:
-        database = self.database or "SNOWFLAKE"
-        schema = self.schema or "ACCOUNT_USAGE"
-        required_values = {
-            "SNOWFLAKE_ACCOUNT": self.account,
-            "SNOWFLAKE_USER": self.user,
-            "SNOWFLAKE_ROLE": self.role,
-            "SNOWFLAKE_WAREHOUSE": self.warehouse,
-            "SNOWFLAKE_PRIVATE_KEY": self.private_key_pem or self.private_key_path,
-        }
-        missing = [name for name, value in required_values.items() if not value]
-        if missing:
-            raise SnowflakeConfigurationError(
-                "Snowflake connection is not configured. Missing: " + ", ".join(missing)
-            )
-
-        validate_account_identifier(self.account)
-
-        return {
-            "account": self.account,
-            "user": self.user,
-            "role": self.role,
-            "warehouse": self.warehouse,
-            "database": database,
-            "schema": schema,
-            "private_key": self._load_private_key_der(),
-            "login_timeout": self.query_timeout_seconds,
-            "network_timeout": self.query_timeout_seconds,
-            "session_parameters": {"QUERY_TAG": "greysight"},
-        }
-
     def adbc_db_kwargs(
         self,
         *,
@@ -163,8 +145,10 @@ class SnowflakeConnectionConfig:
             "username": self.user,
             adbc_driver_snowflake.DatabaseOptions.ROLE.value: self.role,
             adbc_driver_snowflake.DatabaseOptions.WAREHOUSE.value: self.warehouse,
-            adbc_driver_snowflake.DatabaseOptions.DATABASE.value: self.database or "SNOWFLAKE",
-            adbc_driver_snowflake.DatabaseOptions.SCHEMA.value: self.schema or "ACCOUNT_USAGE",
+            adbc_driver_snowflake.DatabaseOptions.DATABASE.value: self.database
+            or "SNOWFLAKE",
+            adbc_driver_snowflake.DatabaseOptions.SCHEMA.value: self.schema
+            or "ACCOUNT_USAGE",
             adbc_driver_snowflake.DatabaseOptions.AUTH_TYPE.value: "auth_jwt",
             adbc_driver_snowflake.DatabaseOptions.JWT_PRIVATE_KEY_VALUE.value: self._load_private_key_pem(),
             adbc_driver_snowflake.DatabaseOptions.LOGIN_TIMEOUT.value: duration,
@@ -172,9 +156,13 @@ class SnowflakeConnectionConfig:
             adbc_driver_snowflake.DatabaseOptions.CLIENT_TIMEOUT.value: duration,
         }
         if self.private_key_passphrase:
-            options[adbc_driver_snowflake.DatabaseOptions.JWT_PRIVATE_KEY_PASSWORD.value] = self.private_key_passphrase
+            options[
+                adbc_driver_snowflake.DatabaseOptions.JWT_PRIVATE_KEY_PASSWORD.value
+            ] = self.private_key_passphrase
         if keep_session_alive:
-            options[adbc_driver_snowflake.DatabaseOptions.KEEP_SESSION_ALIVE.value] = "true"
+            options[adbc_driver_snowflake.DatabaseOptions.KEEP_SESSION_ALIVE.value] = (
+                "true"
+            )
         return options
 
     def _load_private_key_pem(self) -> str:
@@ -216,9 +204,13 @@ def execute_source_query(
         ) from None
     except Exception:
         raise SnowflakeQueryError("Could not query Snowflake.") from None
+    adbc_sql, values = _adbc_bindings(sql, bind_params)
     try:
-        with connection.cursor() as cursor:
-            cursor.execute(sql, bind_params)
+        with snowflake_cursor(connection) as cursor:
+            if values:
+                cursor.execute(adbc_sql, values)
+            else:
+                cursor.execute(adbc_sql)
             columns = [_column_name(column) for column in cursor.description or ()]
             return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
     except Exception as exc:
@@ -227,7 +219,9 @@ def execute_source_query(
                 "Snowflake object is unavailable for this account."
             ) from None
         known_message = _known_base_user_safe_message(exc)
-        message = _user_safe_message(exc) if known_message else "Could not query Snowflake."
+        message = (
+            _user_safe_message(exc) if known_message else "Could not query Snowflake."
+        )
         raise SnowflakeQueryError(
             message,
             user_safe_message=message if known_message else None,
@@ -258,14 +252,18 @@ def execute_metadata_query(
             user_safe_message=message if known_message else None,
         ) from None
     try:
-        cursor = connection.cursor()
+        cursor = snowflake_cursor(connection)
         try:
             cursor.execute(sql)
             columns = [_column_name(column) for column in cursor.description or ()]
             return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
         except Exception as exc:
             known_message = _known_base_user_safe_message(exc)
-            message = _user_safe_message(exc) if known_message else "Could not query Snowflake."
+            message = (
+                _user_safe_message(exc)
+                if known_message
+                else "Could not query Snowflake."
+            )
             raise SnowflakeQueryError(
                 message,
                 user_safe_message=message if known_message else None,
@@ -282,7 +280,7 @@ def validate_snowflake_connection(
     """Validate access and return the account locator (current_account())."""
     connection = _connect(config)
     try:
-        with connection.cursor() as cursor:
+        with snowflake_cursor(connection) as cursor:
             for phase, view_name, sql in _validation_queries():
                 try:
                     cursor.execute(sql)
@@ -305,10 +303,18 @@ def validate_snowflake_connection(
         connection.close()
 
 
+def snowflake_cursor(connection: Any) -> Any:
+    return connection.cursor(
+        adbc_stmt_kwargs={
+            adbc_driver_snowflake.StatementOptions.QUERY_TAG.value: "greysight"
+        }
+    )
+
+
 def _connect(config: SnowflakeConnectionConfig | None) -> Any:
     effective_config = config or SnowflakeConnectionConfig.from_environment()
     try:
-        kwargs = effective_config.connector_kwargs()
+        options = effective_config.adbc_db_kwargs()
     except SnowflakeConfigurationError as exc:
         _log_validation_failure(
             exc,
@@ -317,7 +323,10 @@ def _connect(config: SnowflakeConnectionConfig | None) -> Any:
         )
         raise
     try:
-        return snowflake.connector.connect(**kwargs)
+        return adbc_driver_snowflake.dbapi.connect(
+            db_kwargs=options,
+            autocommit=True,
+        )
     except SnowflakeConfigurationError:
         raise
     except Exception as exc:
@@ -384,9 +393,22 @@ def _validation_queries() -> tuple[tuple[str, str, str], ...]:
 _OBJECT_UNAVAILABLE_ERRNOS = frozenset({2003, 3001})
 
 
+def _vendor_code(exc: Exception) -> int | None:
+    if not isinstance(exc, adbc_dbapi.Error):
+        return None
+    value = exc.vendor_code
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _is_timeout(exc: Exception) -> bool:
+    return (
+        isinstance(exc, adbc_dbapi.Error)
+        and exc.status_code == adbc_driver_manager.AdbcStatusCode.TIMEOUT
+    )
+
+
 def _is_object_unavailable(exc: Exception) -> bool:
-    errno = getattr(exc, "errno", None)
-    if errno in _OBJECT_UNAVAILABLE_ERRNOS:
+    if _vendor_code(exc) in _OBJECT_UNAVAILABLE_ERRNOS:
         return True
     message = str(exc).lower()
     return (
@@ -403,7 +425,12 @@ def _user_safe_message(exc: Exception) -> str:
 
 
 def _base_user_safe_message(exc: Exception) -> str:
-    return _known_base_user_safe_message(exc) or (
+    known = _known_base_user_safe_message(exc)
+    if known is not None:
+        return known
+    if _is_timeout(exc):
+        return _TIMEOUT_SAFE_MESSAGE
+    return (
         "Could not validate Snowflake connection. Ask your Snowflake "
         "administrator to check LOGIN_HISTORY for this user and try again."
     )
@@ -412,10 +439,7 @@ def _base_user_safe_message(exc: Exception) -> str:
 def _known_base_user_safe_message(exc: Exception) -> str | None:
     message = str(exc).lower()
     if isinstance(exc, TimeoutError) or "timed out" in message or "timeout" in message:
-        safe_message = (
-            "Snowflake connection timed out. Verify that the account is reachable "
-            "and try again."
-        )
+        safe_message = _TIMEOUT_SAFE_MESSAGE
     elif (
         "not allowed to access snowflake" in message
         or "incoming_request_blocked" in message
@@ -460,9 +484,7 @@ def _validation_probe_user_message(exc: Exception, view_name: str) -> str:
 def _validation_error(
     exc: Exception, *, phase: str, user_message: str | None = None
 ) -> SnowflakeValidationError:
-    metadata = _safe_failure_metadata(
-        exc, include_login_reference=phase == "connect"
-    )
+    metadata = _safe_failure_metadata(exc, include_login_reference=phase == "connect")
     _log_validation_failure(exc, phase=phase, metadata=metadata)
     known_message = _known_base_user_safe_message(exc)
     safe_message = (user_message or known_message or _base_user_safe_message(exc)) + (
@@ -491,12 +513,7 @@ def _log_validation_failure(
 def _safe_failure_metadata(
     exc: Exception, *, include_login_reference: bool = False
 ) -> _SafeFailureMetadata:
-    raw_errno = getattr(exc, "errno", None)
-    errno = (
-        raw_errno
-        if isinstance(raw_errno, int) and not isinstance(raw_errno, bool)
-        else None
-    )
+    errno = _vendor_code(exc)
 
     raw_sqlstate = getattr(exc, "sqlstate", None)
     sqlstate = (
@@ -506,7 +523,9 @@ def _safe_failure_metadata(
         else None
     )
 
-    match = _LOGIN_FAILURE_REFERENCE.search(str(exc)) if include_login_reference else None
+    match = (
+        _LOGIN_FAILURE_REFERENCE.search(str(exc)) if include_login_reference else None
+    )
     reference = match.group(1).lower() if match else None
     return _SafeFailureMetadata(errno=errno, sqlstate=sqlstate, reference=reference)
 

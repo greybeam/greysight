@@ -8,12 +8,20 @@ from greysight_connect.snowflake_client import (
     execute_metadata_query,
 )
 
+_ADBC_CONNECT = "greysight_connect.snowflake_client.adbc_driver_snowflake.dbapi.connect"
+
 
 def _config() -> SnowflakeConnectionConfig:
     return SnowflakeConnectionConfig(
-        account="ab12345", user="svc", role="GREYSIGHT_RL", warehouse="WH",
-        database="SNOWFLAKE", schema="ACCOUNT_USAGE",
-        private_key_path=None, private_key_pem="pem", private_key_passphrase=None,
+        account="ab12345",
+        user="svc",
+        role="GREYSIGHT_RL",
+        warehouse="WH",
+        database="SNOWFLAKE",
+        schema="ACCOUNT_USAGE",
+        private_key_path=None,
+        private_key_pem="pem",
+        private_key_passphrase=None,
     )
 
 
@@ -24,8 +32,10 @@ def test_execute_metadata_query_returns_lowercased_dicts():
     connection = Mock()
     connection.cursor.return_value = cursor
 
-    with patch("greysight_connect.snowflake_client.snowflake.connector.connect", return_value=connection), \
-         patch.object(SnowflakeConnectionConfig, "_load_private_key_der", return_value=b"key"):
+    with (
+        patch(_ADBC_CONNECT, return_value=connection),
+        patch.object(SnowflakeConnectionConfig, "adbc_db_kwargs", return_value={}),
+    ):
         rows = execute_metadata_query("SHOW WAREHOUSES", config=_config())
 
     assert rows == [{"name": "WH1", "state": "STARTED", "auto_suspend": 300}]
