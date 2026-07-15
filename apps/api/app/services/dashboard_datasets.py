@@ -267,13 +267,15 @@ def _group_from_outcomes(
         if not outcomes[dataset_key].available or outcomes[dataset_key].rows is None
     ]
     if unavailable_outcomes:
-        user_safe_message = next(
-            (
-                outcome.user_safe_message
-                for outcome in unavailable_outcomes
-                if outcome.user_safe_message
-            ),
-            None,
+        safe_messages = [
+            outcome.user_safe_message
+            for outcome in unavailable_outcomes
+            if outcome.user_safe_message
+        ]
+        user_safe_message = (
+            safe_messages[0]
+            if len(safe_messages) == len(unavailable_outcomes)
+            else None
         )
         return empty, SourceAvailability(
             available=False,

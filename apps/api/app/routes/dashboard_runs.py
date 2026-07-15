@@ -353,15 +353,15 @@ class InMemoryDashboardRunRepository:
             dict[str, list[dict[str, Any]]],
             DashboardDatasetMetadata,
             StoredSourceBounds,
-            dict[str, str] | None,
+            dict[str, dict[str, Any]] | None,
             bool,
         ]
         | None
     ):
         """Atomic view snapshot: datasets, metadata, bounds AND the base
-        source-status map are all read under a SINGLE lock acquisition so a
+        source-state map are all read under a SINGLE lock acquisition so a
         concurrent worker write can never split a "ready" status from a stale
-        empty dataset. ``source_statuses`` is None for non-snowflake runs.
+        empty dataset. ``source_states`` is None for non-snowflake runs.
 
         The final tuple element ``metadata_authoritative`` is True iff the
         returned metadata came from stored (finalized) metadata rather than
@@ -392,9 +392,12 @@ class InMemoryDashboardRunRepository:
                 for dataset_key, stored_dataset in datasets.items()
             }
             states = self._source_states.get(run_id, {})
-            source_statuses = (
+            source_states = (
                 {
-                    key: states.get(key, {}).get("status", "idle")
+                    key: {
+                        **states.get(key, {}),
+                        "status": states.get(key, {}).get("status", "idle"),
+                    }
                     for key in BASE_RUN_SOURCE_KEYS
                 }
                 if run.source == "snowflake"
@@ -408,7 +411,7 @@ class InMemoryDashboardRunRepository:
                 if metadata is not None
                 else _metadata_for_dataset_rows(dataset_rows),
                 source_bounds,
-                source_statuses,
+                source_states,
                 metadata_authoritative,
             )
 
@@ -1074,9 +1077,14 @@ def read_dashboard_run_view(
         datasets,
         metadata,
         source_bounds,
-        source_statuses,
+        source_states,
         metadata_authoritative,
     ) = view_inputs
+    source_statuses = (
+        {key: str(state.get("status", "idle")) for key, state in source_states.items()}
+        if source_states is not None
+        else None
+    )
     # Normalize every base source key to [] when absent so the view builder
     # never receives missing keys for a still-streaming run. (build_dashboard_view
     # already defaults absent keys via _dataset_rows, but normalizing keeps the
@@ -1147,7 +1155,10 @@ def read_dashboard_run_view(
             update={
                 "section_statuses": section_statuses,
                 "section_errors": _section_errors_for(
-                    section_statuses, metadata, data_mode=None
+                    section_statuses,
+                    metadata,
+                    data_mode=None,
+                    source_states=source_states,
                 ),
             }
         )
@@ -1235,6 +1246,7 @@ def _section_errors_for(
     metadata: Any,
     *,
     data_mode: str | None,
+    source_states: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, DashboardSectionError | None]:
     overview_group = (
         "organization_usage" if data_mode in {"billed", "demo"} else "account_usage"
@@ -1249,6 +1261,12 @@ def _section_errors_for(
     }
     for section, group in groups.items():
         if section_statuses.get(section) != "unavailable":
+            continue
+        source_error = _provisional_section_error(
+            section, source_states, data_mode=data_mode
+        )
+        if source_error is not None:
+            errors[section] = source_error
             continue
         user_safe_message = _source_availability_field(
             metadata, group, "user_safe_message"
@@ -1266,6 +1284,39 @@ def _section_errors_for(
             reportable=not bool(user_safe_message),
         )
     return errors
+
+
+def _provisional_section_error(
+    section: str,
+    source_states: dict[str, dict[str, Any]] | None,
+    *,
+    data_mode: str | None,
+) -> DashboardSectionError | None:
+    if source_states is None:
+        return None
+    if section == "overview":
+        source_keys = (
+            (OVERVIEW_BILLED_SOURCE,)
+            if data_mode in {"billed", "demo"}
+            else (OVERVIEW_ESTIMATED_SOURCE,)
+            if data_mode == "estimated"
+            else (OVERVIEW_BILLED_SOURCE, OVERVIEW_ESTIMATED_SOURCE)
+        )
+    else:
+        source_keys = SECTION_SOURCE_DEPENDENCIES[section]
+    failed_states = [
+        source_states[key]
+        for key in source_keys
+        if source_states.get(key, {}).get("status") in {"unavailable", "failed"}
+    ]
+    safe_messages = [
+        state.get("error")
+        for state in failed_states
+        if isinstance(state.get("error"), str) and state["error"]
+    ]
+    if failed_states and len(safe_messages) == len(failed_states):
+        return DashboardSectionError(message=safe_messages[0], reportable=False)
+    return None
 
 
 def _group_is_available(metadata: Any, group_field: str) -> bool:
@@ -1491,7 +1542,7 @@ def read_dashboard_source(
         datasets,
         metadata,
         source_bounds,
-        _source_statuses,
+        _source_states,
         _metadata_authoritative,
     ) = view_inputs
     meta = dashboard_run_repository.get_source_meta(run_id, source_id) or {}
@@ -1865,7 +1916,7 @@ def _run_dashboard_worker(
             repo.set_dataset(run_id, outcome.key, outcome.rows)
             repo.complete_source(run_id, outcome.key)
         else:
-            repo.fail_source(run_id, outcome.key, error="unavailable")
+            repo.fail_source(run_id, outcome.key, error=outcome.user_safe_message)
 
     try:
         data = build_snowflake_dashboard_data(
