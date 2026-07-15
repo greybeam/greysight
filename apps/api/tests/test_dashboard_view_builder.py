@@ -2213,7 +2213,7 @@ def test_warehouse_bars_idle_pct_none_when_no_compute() -> None:
     assert bars[0].idle_pct is None
 
 
-def test_warehouse_bars_idle_pct_none_when_attribution_unavailable() -> None:
+def test_warehouse_bars_isolate_unavailable_attribution_by_warehouse() -> None:
     datasets = _demo_datasets()
     source_start, source_end = _source_bounds(datasets)
     datasets["warehouse_spend_daily"] = [
@@ -2222,8 +2222,22 @@ def test_warehouse_bars_idle_pct_none_when_attribution_unavailable() -> None:
             "warehouse_name": "ADAPTIVE_WH",
             "credits_used": 10.0,
             "credits_used_compute": 10.0,
+            "credits_attributed_queries": 4.0,
+        },
+        {
+            "usage_date": "2026-06-08",
+            "warehouse_name": "ADAPTIVE_WH",
+            "credits_used": 5.0,
+            "credits_used_compute": 5.0,
             "credits_attributed_queries": None,
-        }
+        },
+        {
+            "usage_date": "2026-06-08",
+            "warehouse_name": "STANDARD_WH",
+            "credits_used": 8.0,
+            "credits_used_compute": 8.0,
+            "credits_attributed_queries": 2.0,
+        },
     ]
     datasets["query_compute_by_user_daily"] = []
 
@@ -2237,8 +2251,10 @@ def test_warehouse_bars_idle_pct_none_when_attribution_unavailable() -> None:
         end_date=date(2026, 6, 8),
     )
 
-    assert [bar.name for bar in view.warehouse_spend.warehouse_bars] == ["ADAPTIVE_WH"]
-    assert view.warehouse_spend.warehouse_bars[0].idle_pct is None
+    bars = view.warehouse_spend.warehouse_bars
+    assert [bar.name for bar in bars] == ["ADAPTIVE_WH", "STANDARD_WH"]
+    assert bars[0].idle_pct is None
+    assert bars[1].idle_pct == pytest.approx(0.75)
 
 
 def test_warehouse_bars_reject_missing_attribution_field() -> None:

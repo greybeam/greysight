@@ -741,8 +741,9 @@ function CostDashboardContent({
         } else {
           setAiDetail({
             status: "error",
-            message: "Could not load dashboard data.",
-            reportable: true,
+            message:
+              result.userSafeMessage ?? "Could not load dashboard data.",
+            reportable: result.userSafeMessage === null,
           });
         }
       } catch (error) {

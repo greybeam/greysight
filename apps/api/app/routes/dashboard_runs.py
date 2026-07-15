@@ -1318,7 +1318,11 @@ def trigger_dashboard_source(
         dashboard_run_repository.fail_source(run_id, source_id)
         raise
     except SnowflakeQueryError as exc:
-        dashboard_run_repository.fail_source(run_id, source_id)
+        dashboard_run_repository.fail_source(
+            run_id,
+            source_id,
+            error=exc.user_safe_message,
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=(
@@ -1406,9 +1410,13 @@ def read_dashboard_source(
         raise HTTPException(status_code=404, detail="Dashboard run not found")
     _require_dashboard_run_membership(auth_context, run.organization_id)
 
-    state = dashboard_run_repository.get_source_state(run_id, source_id) or "idle"
-    if state != "completed":
-        return {"status": state}
+    source = dashboard_run_repository.get_source(run_id, source_id)
+    if source.status != "completed":
+        response: dict[str, Any] = {"status": source.status}
+        user_safe_message = source.meta.get("error")
+        if isinstance(user_safe_message, str):
+            response["user_safe_message"] = user_safe_message
+        return response
 
     view_inputs = dashboard_run_repository.get_view_inputs(run_id)
     if view_inputs is None:
