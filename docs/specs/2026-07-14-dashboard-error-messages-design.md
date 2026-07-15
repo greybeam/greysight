@@ -15,30 +15,24 @@ Savings and its background worker are explicitly out of scope.
 
 ## Error Contract
 
-The backend classifies Snowflake failures into a small fixed set of safe codes:
+The backend reuses the Snowflake client's existing safe-message classifier.
+Known failures such as network-policy, authentication, timeout, role, and
+warehouse problems carry curated `user_safe_message` copy through dashboard
+source execution. Unknown failures carry no user-safe message and fall back to
+neutral dashboard copy.
 
-- `network_policy`
-- `authentication`
-- `timeout`
-- `role`
-- `warehouse`
-- `unknown`
-
-The API pairs the code with curated user-safe copy. Raw connector messages,
-stack traces, account identifiers, credential material, and other Snowflake
-exception details never cross the API boundary.
-
-The classification is preserved through dashboard source execution so that a
-failed run and a failed deferred source do not collapse into an unhelpful
-generic `502`. Existing authentication, organization membership checks, and
-HTTP status behavior remain unchanged. Successful response shapes remain
-unchanged; failed dashboard requests gain the structured safe error detail.
+Raw connector messages, stack traces, account identifiers, credential material,
+and other Snowflake exception details never cross the API boundary. Existing
+authentication, organization membership checks, HTTP statuses, and successful
+response shapes remain unchanged. Known deferred-source failures include a
+curated `detail.user_safe_message`; generic error bodies remain unchanged.
 
 ## Frontend Behavior
 
-The dashboard API client reads the structured safe error response for failed
-requests. The dashboard presents the corresponding actionable message for a
-known code.
+The dashboard prefers a run's existing `user_safe_message` over its generic
+`error` field. The API client reads only `detail.user_safe_message` from a
+failed deferred-source response; plain strings, malformed or missing detail,
+and browser-level failures remain unknown.
 
 Unknown failures, malformed error responses, browser network failures, and
 other unclassified errors use a catch-all message and include a **Report this
@@ -53,16 +47,16 @@ uses the existing empty-state surface.
 
 ## Security
 
-Error codes are an allowlisted enum, not connector text interpreted by the
-browser. Server-side logging retains only the existing sanitized diagnostic
-metadata. The frontend never renders raw response bodies.
+The backend is the sole owner of Snowflake exception classification and curated
+copy. Server-side logging retains only the existing sanitized diagnostic
+metadata. The frontend never renders an unselected raw response body.
 
 ## Verification
 
 Testing stays focused on regressions that typechecking cannot catch:
 
-1. An API test proves a representative Snowflake connection failure is returned
-   as the correct safe category without leaking its raw message.
+1. A shared/API test proves a representative Snowflake connection failure is
+   returned as curated safe copy without leaking its raw message.
 2. A dashboard test proves an unclassified failure shows the catch-all state and
    GitHub reporting path.
 
