@@ -931,9 +931,7 @@ def _reset_cached_snapshot_registry() -> None:
 
 def _cached_datasets_match_current_contract(cached: CachedDashboardRun) -> bool:
     try:
-        base_datasets = {
-            key: cached.datasets[key] for key in REQUIRED_DATASET_KEYS
-        }
+        base_datasets = {key: cached.datasets[key] for key in REQUIRED_DATASET_KEYS}
         DashboardRunCreateRequest(
             window_days=cached.window_days,
             datasets=base_datasets,

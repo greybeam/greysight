@@ -2237,9 +2237,7 @@ def test_warehouse_bars_idle_pct_none_when_attribution_unavailable() -> None:
         end_date=date(2026, 6, 8),
     )
 
-    assert [bar.name for bar in view.warehouse_spend.warehouse_bars] == [
-        "ADAPTIVE_WH"
-    ]
+    assert [bar.name for bar in view.warehouse_spend.warehouse_bars] == ["ADAPTIVE_WH"]
     assert view.warehouse_spend.warehouse_bars[0].idle_pct is None
 
 
