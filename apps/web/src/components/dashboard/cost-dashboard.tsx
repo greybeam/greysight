@@ -97,10 +97,24 @@ function sectionFailureMessage(
   view: DashboardView | null,
   section: "overview" | "warehouse" | "storage",
 ) {
-  const userSafeMessage = view?.run.user_safe_message ?? null;
+  // When a run completes with one source group unavailable, `run.user_safe_message`
+  // is null and the classified safe message lives on the relevant metadata group.
+  // Overview draws from organization usage in billed/demo modes, account usage
+  // otherwise; warehouse/storage always draw from account usage.
+  const group =
+    section === "overview" &&
+    (view?.metadata?.data_mode === "billed" ||
+      view?.metadata?.data_mode === "demo")
+      ? view?.metadata?.organization_usage
+      : view?.metadata?.account_usage;
+  const groupSafeMessage = group?.user_safe_message ?? null;
+  const runSafeMessage = view?.run.user_safe_message ?? null;
+  const userSafeMessage = groupSafeMessage ?? runSafeMessage;
+  const message =
+    userSafeMessage ?? group?.detail ?? `Could not load ${section} data.`;
   return (
     <DashboardFailureMessage
-      message={userSafeMessage ?? `Could not load ${section} data.`}
+      message={message}
       reportable={!userSafeMessage}
     />
   );

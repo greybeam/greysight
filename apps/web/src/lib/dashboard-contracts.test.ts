@@ -31,8 +31,16 @@ describe("parseDashboardDatasets", () => {
       estimated_credit_price_usd: 2.25,
       storage_price_usd_per_tb_month: 25,
       unsupported_reason: null,
-      organization_usage: { available: true, detail: null },
-      account_usage: { available: true, detail: null },
+      organization_usage: {
+        available: true,
+        detail: null,
+        user_safe_message: null,
+      },
+      account_usage: {
+        available: true,
+        detail: null,
+        user_safe_message: null,
+      },
     });
     expect(parsed.datasets.account_spend_daily).toHaveLength(100);
     expect(parsed.datasets.service_spend_daily.length).toBeGreaterThan(0);

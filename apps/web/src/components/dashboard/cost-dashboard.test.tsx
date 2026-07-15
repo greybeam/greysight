@@ -727,6 +727,81 @@ describe("CostDashboard", () => {
     expect(screen.queryByTestId("storage-spend-skeleton-chart")).toBeNull();
   });
 
+  it("surfaces the classified group message on a completed run with an unavailable source group", async () => {
+    // The run completed (no run-level user_safe_message); the classified safe
+    // message lives on the collapsed metadata group (account_usage), which the
+    // storage section must surface without a "Report this issue" link.
+    const completedRun: DashboardRun = {
+      ...demoDashboardView.run,
+      id: "run-group-message",
+      source: "snowflake",
+      status: "completed",
+      user_safe_message: null,
+    };
+    const completedView: DashboardView = {
+      ...demoDashboardView,
+      run: completedRun,
+      metadata: {
+        data_mode: "estimated",
+        account_locator: null,
+        currency: "USD",
+        billing_through_date: null,
+        account_usage_through_date: null,
+        estimated_credit_price_usd: 3,
+        storage_price_usd_per_tb_month: 20,
+        unsupported_reason: null,
+        organization_usage: {
+          available: true,
+          detail: null,
+          user_safe_message: null,
+        },
+        account_usage: {
+          available: false,
+          detail: "Snowflake Account Usage is unavailable for this role.",
+          user_safe_message:
+            "Snowflake Account Usage is unavailable for this role.",
+        },
+      },
+      sectionStatuses: {
+        overview: "ready",
+        warehouse: "ready",
+        storage: "unavailable",
+      },
+    };
+    vi.mocked(startDashboardRun).mockResolvedValue(completedRun);
+    vi.mocked(fetchDashboardView).mockResolvedValue(completedView);
+    mockPollResolvesWith(completedView);
+
+    render(
+      <CostDashboard
+        demoMode={false}
+        runtime={{
+          accessToken: "test-access-token",
+          organizationId: "org-123",
+          organizationName: "Acme Analytics",
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+
+    expect(
+      await screen.findByText(
+        "Snowflake Account Usage is unavailable for this role.",
+      ),
+    ).toBeInTheDocument();
+    // The classified group message is user-safe, so the storage section shows
+    // no "Report this issue" link.
+    const storageSection = screen.getByTestId(
+      "dashboard-section-storage-spend",
+    );
+    expect(
+      within(storageSection).queryByRole("link", {
+        name: /report this issue/i,
+      }),
+    ).toBeNull();
+  });
+
   it("keeps unavailable sections failed after changing range on a completed Snowflake run", async () => {
     const runningRun: DashboardRun = {
       ...demoDashboardView.run,
