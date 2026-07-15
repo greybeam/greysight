@@ -11,9 +11,8 @@ dependencies = [
   "httpx==0.28.1",
   "pyyaml==6.0.2",
   "python-dotenv==1.2.2",
-  "snowflake-connector-python==3.12.4",
+  "adbc-driver-snowflake[dbapi]==1.11.0",
   "ruff==0.8.4",
-  "pyopenssl==24.3.0",
   "greysight-connect",
 ]
 

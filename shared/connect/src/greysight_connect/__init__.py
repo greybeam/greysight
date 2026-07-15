@@ -10,6 +10,7 @@ from greysight_connect.snowflake_client import (
     SnowflakeValidationError,
     execute_metadata_query,
     execute_source_query,
+    snowflake_cursor,
     validate_snowflake_connection,
 )
 from greysight_connect.org_connection_resolver import (
@@ -32,6 +33,7 @@ __all__ = [
     "SnowflakeValidationError",
     "execute_metadata_query",
     "execute_source_query",
+    "snowflake_cursor",
     "validate_snowflake_connection",
     "FetchConnection",
     "OrgConnectionNotConfiguredError",

@@ -1,46 +1,216 @@
 from unittest.mock import Mock
 
+import adbc_driver_manager
+import adbc_driver_manager.dbapi as adbc_dbapi
+import adbc_driver_snowflake
 import pytest
-import snowflake.connector
 
 from auto_savings.snowflake_session import (
     ConnectorErrorMetadata,
     SuspendOutcome,
     SuspendResult,
     TenantSession,
+    _sanitize_connector_message,
     connection_fingerprint,
+    connector_error_metadata,
     next_backoff,
 )
 
 
-def test_default_connect_forwards_socket_timeouts_and_bounds_login_timeout(monkeypatch):
-    # The DEFAULT (non-injected) connect path must forward the socket/network
-    # timeouts to the real snowflake.connector.connect (D2), and a hung initial
-    # connect must not outlive the poll watchdog: login_timeout (defaulted to the
-    # 120s query timeout by connector_kwargs) is overridden down to
-    # socket_timeout_seconds, which config validation keeps < poll_timeout (#2b).
-    import snowflake.connector as sf
+def _adbc_error(
+    error_class: type[adbc_dbapi.Error],
+    message: str,
+    *,
+    vendor_code: int | None = None,
+    sqlstate: str | None = None,
+    status_code: adbc_driver_manager.AdbcStatusCode = (
+        adbc_driver_manager.AdbcStatusCode.INVALID_ARGUMENT
+    ),
+) -> adbc_dbapi.Error:
+    return error_class(
+        message,
+        status_code=status_code,
+        vendor_code=vendor_code,
+        sqlstate=sqlstate,
+    )
 
-    class Cfg:
-        def connector_kwargs(self):
-            return {"account": "ab12345", "user": "svc", "login_timeout": 120}
 
-    captured = {}
+def test_sanitize_normalizes_whitespace_and_truncates():
+    assert _sanitize_connector_message("  a\n\tb   c  ") == "a b c"
+    assert _sanitize_connector_message(None) is None
+    assert _sanitize_connector_message("   ") is None
+    long = "x" * 1000
+    assert _sanitize_connector_message(long) == "x" * 512
 
-    def fake_connect(**kwargs):
-        captured.update(kwargs)
-        return Mock()
 
-    monkeypatch.setattr(sf, "connect", fake_connect)
+def test_sanitize_ordinary_message_unchanged():
+    assert (
+        _sanitize_connector_message("warehouse suspend failed: object does not exist")
+        == "warehouse suspend failed: object does not exist"
+    )
 
-    session = TenantSession(config=Cfg(), socket_timeout_seconds=15)  # no `connect` injected
+
+def test_sanitize_redacts_unencrypted_pem_block():
+    pem = (
+        "-----BEGIN PRIVATE KEY-----\n"
+        "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ\n"
+        "secretsecretsecretsecretsecretsecretsecretsecret\n"
+        "-----END PRIVATE KEY-----"
+    )
+    result = _sanitize_connector_message(f"connect failed: {pem} for user svc")
+    assert result is not None
+    assert "[REDACTED]" in result
+    assert "MIIEvQIBADAN" not in result
+    assert "secretsecret" not in result
+    assert "PRIVATE KEY" not in result
+    assert result.startswith("connect failed:")
+    assert result.endswith("for user svc")
+
+
+def test_sanitize_redacts_encrypted_pem_block():
+    pem = (
+        "-----BEGIN ENCRYPTED PRIVATE KEY-----\n"
+        "MIIFHzBJBgkqhkiG9w0BBQ0wPDAbBgkqhkiG9w0BBQwwDgQI\n"
+        "-----END ENCRYPTED PRIVATE KEY-----"
+    )
+    result = _sanitize_connector_message(f"bad key: {pem}")
+    assert result is not None
+    assert "MIIFHzBJ" not in result
+    assert "ENCRYPTED PRIVATE KEY" not in result
+    assert "[REDACTED]" in result
+
+
+def test_sanitize_redacts_adbc_key_and_passphrase_option_values():
+    msg = (
+        "failed opening connection: "
+        "jwt_private_key_pkcs8_value=MIIEvQIBADANsecretkeymaterial;"
+        "jwt_private_key_pkcs8_password=hunter2passphrase;"
+        "username=svc"
+    )
+    result = _sanitize_connector_message(msg)
+    assert result is not None
+    assert "MIIEvQIBADANsecretkeymaterial" not in result
+    assert "hunter2passphrase" not in result
+    assert "[REDACTED]" in result
+    # Unquoted values have no reliable terminator, so redaction fails safe
+    # through the end of the message: the trailing option is swallowed too.
+    assert result == "failed opening connection: jwt_private_key_pkcs8_value=[REDACTED]"
+
+
+# Value-end detection across quoting conventions (whitespace, `=>`, backslash
+# escapes, doubled quotes, unterminated quotes) proved unreliable, so a secret
+# key redacts unconditionally from the value start to the END of the message.
+@pytest.mark.parametrize(
+    "value",
+    [
+        "correct horse battery",  # bare, whitespace-separated
+        "=> secret",  # odd separator
+        "'correct horse battery staple'",  # single-quoted
+        '"correct horse battery staple"',  # double-quoted
+        '"correct\\"horse"',  # backslash-escaped quote
+        '"correct""horse"',  # doubled-quote escape
+        "'correct horse battery staple",  # unterminated quote
+    ],
+)
+@pytest.mark.parametrize(
+    "option",
+    ["password", "private_key_passphrase", "jwt_private_key_pkcs8_password"],
+)
+def test_sanitize_redacts_secret_values_to_end_of_message(option, value):
+    msg = f"connect failed: {option}={value}; username=svc"
+    result = _sanitize_connector_message(msg)
+    assert result == f"connect failed: {option}=[REDACTED]"
+    for fragment in ("correct", "horse", "battery", "secret", "username=svc"):
+        assert fragment not in result
+
+
+def test_sanitize_redacts_colon_separated_secret_to_end_of_message():
+    msg = 'connect failed: PASSWORD : "correct horse battery"; username=svc'
+    result = _sanitize_connector_message(msg)
+    assert result == "connect failed: PASSWORD=[REDACTED]"
+
+
+def test_sanitize_redacts_json_style_secret_values():
+    msg = 'options {"user": "svc", "password": "hunter two three"} rejected'
+    result = _sanitize_connector_message(msg)
+    assert result is not None
+    for fragment in ("hunter", "two", "three", "rejected"):
+        assert fragment not in result
+    assert "[REDACTED]" in result
+    assert '"user": "svc"' in result  # text BEFORE the secret key preserved
+
+
+def test_connector_error_metadata_never_leaks_quoted_passphrase_fragments():
+    exc = _adbc_error(
+        adbc_dbapi.OperationalError,
+        'auth failed: private_key_passphrase="hunter two three four" rejected',
+        vendor_code=250001,
+    )
+    metadata = connector_error_metadata(exc)
+    assert metadata.message is not None
+    for fragment in ("hunter", "two", "three", "four"):
+        assert fragment not in metadata.message
+    assert "[REDACTED]" in metadata.message
+
+
+def test_sanitize_truncated_pem_without_end_marker_fails_safe():
+    # A PEM whose END marker was cut off (e.g. by the driver's own truncation)
+    # must not leak its header or key fragment; redact through end of message.
+    msg = (
+        "connect failed with -----BEGIN ENCRYPTED PRIVATE KEY----- "
+        "MIIFHzBJBgkqhkiG9w0BBQ0wPDAbBgkq trailing text"
+    )
+    result = _sanitize_connector_message(msg)
+    assert result is not None
+    assert "MIIFHzBJ" not in result
+    assert "PRIVATE KEY" not in result
+    assert "trailing text" not in result
+    assert "[REDACTED]" in result
+    assert result.startswith("connect failed with")
+
+
+def test_sanitize_redacts_before_truncation():
+    # A PEM near the 512 boundary must not leak a partial secret through the cut.
+    pem = "-----BEGIN PRIVATE KEY-----" + "A" * 2000 + "-----END PRIVATE KEY-----"
+    result = _sanitize_connector_message(pem)
+    assert result is not None
+    assert "AAAA" not in result
+    assert result == "[REDACTED]"
+
+
+def test_connector_error_metadata_message_never_carries_key_material():
+    pem = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANsecret\n-----END PRIVATE KEY-----"
+    exc = _adbc_error(
+        adbc_dbapi.OperationalError,
+        f"auth failed with {pem} and jwt_private_key_pkcs8_password=topsecret",
+        vendor_code=250001,
+    )
+    metadata = connector_error_metadata(exc)
+    assert metadata.message is not None
+    assert "MIIEvQIBADANsecret" not in metadata.message
+    assert "topsecret" not in metadata.message
+    assert "PRIVATE KEY" not in metadata.message
+    assert "[REDACTED]" in metadata.message
+
+
+def test_default_connect_bounds_all_adbc_timeouts_and_keeps_session_alive(monkeypatch):
+    config = Mock()
+    config.adbc_db_kwargs.return_value = {"username": "svc"}
+    connection = Mock()
+    connect = Mock(return_value=connection)
+    monkeypatch.setattr(adbc_driver_snowflake.dbapi, "connect", connect)
+
+    session = TenantSession(config=config, socket_timeout_seconds=15)
     session.ensure_connected()
 
-    assert captured["socket_timeout"] == 15
-    assert captured["network_timeout"] == 15
-    assert captured["client_session_keep_alive"] is True
-    assert captured["account"] == "ab12345"
-    assert captured["login_timeout"] <= 15  # <= socket_timeout_seconds (< poll_timeout)
+    config.adbc_db_kwargs.assert_called_once_with(
+        timeout_seconds=15,
+        keep_session_alive=True,
+    )
+    connect.assert_called_once_with(
+        db_kwargs={"username": "svc"},
+        autocommit=True,
+    )
 
 
 def test_show_warehouses_reuses_one_connection():
@@ -55,7 +225,9 @@ def test_show_warehouses_reuses_one_connection():
         connects.append(1)
         return connection
 
-    session = TenantSession(config=object(), socket_timeout_seconds=15, connect=fake_connect)
+    session = TenantSession(
+        config=object(), socket_timeout_seconds=15, connect=fake_connect
+    )
     session.show_warehouses()
     session.show_warehouses()
     assert len(connects) == 1  # warm reuse, not reconnect-per-poll
@@ -65,7 +237,9 @@ def test_suspend_quotes_identifier_and_returns_accepted():
     cursor = Mock()
     connection = Mock()
     connection.cursor.return_value = cursor
-    session = TenantSession(config=object(), socket_timeout_seconds=15, connect=lambda c: connection)
+    session = TenantSession(
+        config=object(), socket_timeout_seconds=15, connect=lambda c: connection
+    )
 
     assert session.suspend_warehouse('weird"name') == SuspendResult(
         outcome=SuspendOutcome.ACCEPTED,
@@ -77,9 +251,10 @@ def test_suspend_quotes_identifier_and_returns_accepted():
 
 def test_suspend_90064_is_unknown_without_claiming_success(caplog):
     cursor = Mock()
-    cursor.execute.side_effect = snowflake.connector.errors.ProgrammingError(
-        msg="observed\nrace",
-        errno=90064,
+    cursor.execute.side_effect = _adbc_error(
+        adbc_dbapi.ProgrammingError,
+        "observed\nrace",
+        vendor_code=90064,
         sqlstate="57014",
     )
     connection = Mock()
@@ -109,9 +284,18 @@ def test_suspend_90064_is_unknown_without_claiming_success(caplog):
     assert record.connector_message == "observed race"
 
 
-def test_suspend_connection_failure_propagates_as_ambiguous():
+def test_suspend_90064_text_without_vendor_code_raises_normally():
+    # Only a real vendor code 90064 is the unknown-but-idempotent signal. An
+    # error whose text merely mentions the same code but carries no vendor code
+    # must fail closed: it propagates so the engine reconnects and backs off.
+    error = _adbc_error(
+        adbc_dbapi.ProgrammingError,
+        "observed race 90064",
+        vendor_code=None,
+        sqlstate="57014",
+    )
     cursor = Mock()
-    cursor.execute.side_effect = snowflake.connector.errors.OperationalError("lost")
+    cursor.execute.side_effect = error
     connection = Mock()
     connection.cursor.return_value = cursor
     session = TenantSession(
@@ -120,7 +304,26 @@ def test_suspend_connection_failure_propagates_as_ambiguous():
         connect=lambda _config: connection,
     )
 
-    with pytest.raises(snowflake.connector.errors.OperationalError, match="lost"):
+    with pytest.raises(adbc_dbapi.ProgrammingError):
+        session.suspend_warehouse("WH1")
+
+
+def test_suspend_connection_failure_propagates_as_ambiguous():
+    cursor = Mock()
+    cursor.execute.side_effect = _adbc_error(
+        adbc_dbapi.OperationalError,
+        "lost",
+        status_code=adbc_driver_manager.AdbcStatusCode.IO,
+    )
+    connection = Mock()
+    connection.cursor.return_value = cursor
+    session = TenantSession(
+        config=object(),
+        socket_timeout_seconds=15,
+        connect=lambda _config: connection,
+    )
+
+    with pytest.raises(adbc_dbapi.OperationalError, match="lost"):
         session.suspend_warehouse("WH1")
 
 
@@ -164,7 +367,9 @@ def test_close_hard_closes_old_connection_and_next_op_reconnects():
         connections.append(conn)
         return conn
 
-    session = TenantSession(config=object(), socket_timeout_seconds=15, connect=fake_connect)
+    session = TenantSession(
+        config=object(), socket_timeout_seconds=15, connect=fake_connect
+    )
     session.ensure_connected()
     first_connection = connections[0]
     assert len(connections) == 1
@@ -215,15 +420,15 @@ def test_connection_fingerprint_changes_when_identity_rotates():
     assert base != connection_fingerprint(Cfg("acct2", "svc", "PEM-A"))  # account
     assert base != connection_fingerprint(Cfg("acct1", "other", "PEM-A"))  # user
     assert base != connection_fingerprint(Cfg("acct1", "svc", "PEM-B"))  # key
-    assert base != connection_fingerprint(
-        Cfg("acct1", "svc", "PEM-A", role="ROLE_B")
-    )
+    assert base != connection_fingerprint(Cfg("acct1", "svc", "PEM-A", role="ROLE_B"))
     assert base != connection_fingerprint(
         Cfg("acct1", "svc", "PEM-A", passphrase="PASS_B")
     )
 
 
-def test_connection_fingerprint_tracks_path_key_contents_and_handles_unreadable(tmp_path):
+def test_connection_fingerprint_tracks_path_key_contents_and_handles_unreadable(
+    tmp_path,
+):
     key_path = tmp_path / "tenant-key.pem"
     key_path.write_text("KEY-A")
 
