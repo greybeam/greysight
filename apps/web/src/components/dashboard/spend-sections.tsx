@@ -1,6 +1,7 @@
 "use client";
 
 import { Card, Text } from "@tremor/react";
+import type { ReactNode } from "react";
 
 import type {
   AIDetailViewModel,
@@ -64,6 +65,7 @@ export function flattenServiceDailySeries(
 type OverviewSectionProps =
   | { status: "idle" }
   | { status: "loading"; loadingMessage?: string }
+  | { status: "error"; message: ReactNode }
   | {
       status: "ready";
       capacityBalance?: CapacityBalanceViewModel | null;
@@ -92,6 +94,17 @@ export function OverviewSection(props: OverviewSectionProps) {
   }
   if (props.status === "loading") {
     return <OverviewSectionSkeleton loadingMessage={props.loadingMessage} />;
+  }
+  if (props.status === "error") {
+    return (
+      <DashboardSection
+        ariaLabel="Overview"
+        testId="dashboard-section-overview"
+        title="Overview"
+      >
+        <SectionEmptyState message={props.message} />
+      </DashboardSection>
+    );
   }
   const { capacityBalance, currency, range, serviceSpend, totalSpend } = props;
   const filtered = filterServiceSpend(serviceSpend, selected, currency);
@@ -198,7 +211,10 @@ function OverviewSectionSkeleton({
       title="Overview"
     >
       <div data-testid="overview-skeleton" className="grid gap-4">
-        <section aria-label="Capacity balance summary" data-dashboard-panel="true">
+        <section
+          aria-label="Capacity balance summary"
+          data-dashboard-panel="true"
+        >
           <Card className="p-6">
             <Text>Ending Balance</Text>
             <StatValueSkeleton />
@@ -243,6 +259,7 @@ function OverviewSectionSkeleton({
 type WarehouseSpendSectionProps =
   | { status: "idle" }
   | { status: "loading"; loadingMessage?: string }
+  | { status: "error"; message: ReactNode }
   | {
       status: "ready";
       currency: string;
@@ -270,6 +287,17 @@ export function WarehouseSpendSection(props: WarehouseSpendSectionProps) {
   if (props.status === "loading") {
     return (
       <WarehouseSpendSectionSkeleton loadingMessage={props.loadingMessage} />
+    );
+  }
+  if (props.status === "error") {
+    return (
+      <DashboardSection
+        ariaLabel="Warehouse spend"
+        testId="dashboard-section-warehouse-spend"
+        title="Warehouse spend"
+      >
+        <SectionEmptyState message={props.message} />
+      </DashboardSection>
     );
   }
   const { currency, range, viewModel } = props;
@@ -419,6 +447,7 @@ function WarehouseSpendSectionSkeleton({
 type StorageSpendSectionProps =
   | { status: "idle" }
   | { status: "loading"; loadingMessage?: string }
+  | { status: "error"; message: ReactNode }
   | {
       status: "ready";
       currency: string;
@@ -444,7 +473,20 @@ export function StorageSpendSection(props: StorageSpendSectionProps) {
     );
   }
   if (props.status === "loading") {
-    return <StorageSpendSectionSkeleton loadingMessage={props.loadingMessage} />;
+    return (
+      <StorageSpendSectionSkeleton loadingMessage={props.loadingMessage} />
+    );
+  }
+  if (props.status === "error") {
+    return (
+      <DashboardSection
+        ariaLabel="Storage spend"
+        testId="dashboard-section-storage-spend"
+        title="Storage spend"
+      >
+        <SectionEmptyState message={props.message} />
+      </DashboardSection>
+    );
   }
   const { currency, range, viewModel } = props;
   const filtered = filterStorageSpend(viewModel, selected, currency);

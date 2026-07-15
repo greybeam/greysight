@@ -27,6 +27,10 @@ class SnowflakeConfigurationError(RuntimeError):
 class SnowflakeValidationError(RuntimeError):
     """Raised with a user-safe Snowflake validation message."""
 
+    def __init__(self, message: str, *, user_safe_message: str | None = None) -> None:
+        super().__init__(message)
+        self.user_safe_message = user_safe_message
+
 
 class SnowflakeQueryError(RuntimeError):
     """Raised with a user-safe Snowflake query message."""
@@ -172,7 +176,10 @@ def execute_source_query(
     try:
         connection = (connect or _connect)(config)
     except SnowflakeValidationError as exc:
-        raise SnowflakeQueryError(str(exc), user_safe_message=str(exc)) from None
+        raise SnowflakeQueryError(
+            str(exc),
+            user_safe_message=exc.user_safe_message,
+        ) from None
     except Exception:
         raise SnowflakeQueryError("Could not query Snowflake.") from None
     try:
@@ -409,10 +416,14 @@ def _validation_error(
         exc, include_login_reference=phase == "connect"
     )
     _log_validation_failure(exc, phase=phase, metadata=metadata)
-    safe_message = (user_message or _base_user_safe_message(exc)) + (
+    known_message = _known_base_user_safe_message(exc)
+    safe_message = (user_message or known_message or _base_user_safe_message(exc)) + (
         _user_diagnostic_suffix(metadata)
     )
-    return SnowflakeValidationError(safe_message)
+    return SnowflakeValidationError(
+        safe_message,
+        user_safe_message=safe_message if known_message is not None else None,
+    )
 
 
 def _log_validation_failure(

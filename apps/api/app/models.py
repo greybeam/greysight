@@ -153,6 +153,7 @@ def _validate_usage_date(dataset_key: str, row_index: int, value: Any) -> None:
 class SourceAvailability(BaseModel):
     available: bool
     detail: str | None = None
+    user_safe_message: str | None = None
 
 
 class DashboardDatasetMetadata(BaseModel):

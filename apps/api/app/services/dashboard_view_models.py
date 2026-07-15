@@ -17,6 +17,15 @@ def _all_ready_section_statuses() -> dict[str, SectionStatus]:
     return {"overview": "ready", "warehouse": "ready", "storage": "ready"}
 
 
+def _no_section_errors() -> dict[str, DashboardSectionError | None]:
+    return {"overview": None, "warehouse": None, "storage": None}
+
+
+class DashboardSectionError(BaseModel):
+    message: str
+    reportable: bool
+
+
 class DashboardViewRange(BaseModel):
     mode: DashboardRangeMode
     window_days: int | None
@@ -210,4 +219,7 @@ class DashboardViewResponse(BaseModel):
     )
     section_statuses: dict[str, SectionStatus] = Field(
         default_factory=_all_ready_section_statuses
+    )
+    section_errors: dict[str, DashboardSectionError | None] = Field(
+        default_factory=_no_section_errors
     )

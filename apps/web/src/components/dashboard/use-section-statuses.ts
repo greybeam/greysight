@@ -7,7 +7,7 @@ import type {
   DashboardViewSectionStatuses,
 } from "../../lib/dashboard-contracts";
 
-export type SectionStatus = "idle" | "loading" | "ready";
+export type SectionStatus = "idle" | "loading" | "ready" | "error";
 
 export type DashboardSectionStatuses = Record<
   DashboardViewSectionKey,
@@ -119,14 +119,21 @@ export function useSectionStatuses({
       return clearTimers;
     }
 
-    // Progressive path: map server readiness directly; no timers. `unavailable`
-    // deliberately maps to "loading" (skeleton) — this task adds no explicit
-    // unavailable/error UI.
+    // Progressive path: map server readiness directly; no timers. Unavailable
+    // is terminal and must render an error rather than an indefinite skeleton.
     if (hasReadiness) {
+      const localStatus = (
+        status: DashboardViewSectionStatuses[DashboardViewSectionKey],
+      ): SectionStatus =>
+        status === "ready"
+          ? "ready"
+          : status === "unavailable"
+            ? "error"
+            : "loading";
       setStatuses({
-        overview: readinessOverview === "ready" ? "ready" : "loading",
-        warehouse: readinessWarehouse === "ready" ? "ready" : "loading",
-        storage: readinessStorage === "ready" ? "ready" : "loading",
+        overview: localStatus(readinessOverview ?? "pending"),
+        warehouse: localStatus(readinessWarehouse ?? "pending"),
+        storage: localStatus(readinessStorage ?? "pending"),
       });
       return clearTimers;
     }

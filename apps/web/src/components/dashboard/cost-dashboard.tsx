@@ -122,6 +122,19 @@ function DashboardFailureMessage({
   );
 }
 
+function sectionFailureMessage(
+  view: DashboardView | null,
+  section: "overview" | "warehouse" | "storage",
+) {
+  const error = view?.sectionErrors[section];
+  return (
+    <DashboardFailureMessage
+      message={error?.message ?? `Could not load ${section} data.`}
+      reportable={error?.reportable ?? true}
+    />
+  );
+}
+
 function rangeKey(runId: string, range: DashboardViewRangeRequest): string {
   if (isCustomRangeRequest(range)) {
     return `${runId}:custom:${range.startDate}:${range.endDate}`;
@@ -848,7 +861,9 @@ function CostDashboardContent({
               />
             ) : null}
             <OverviewSection
-              {...(sectionStatuses.overview === "ready" && dataReady && viewModel
+              {...(sectionStatuses.overview === "ready" &&
+              dataReady &&
+              viewModel
                 ? {
                     status: "ready",
                     capacityBalance: viewModel.capacityBalance,
@@ -857,25 +872,41 @@ function CostDashboardContent({
                     serviceSpend: viewModel.serviceSpend,
                     totalSpend: viewModel.totalSpend,
                   }
-                : {
-                    status:
-                      sectionStatuses.overview === "idle" ? "idle" : "loading",
-                    loadingMessage: loadingMessage ?? undefined,
-                  })}
+                : sectionStatuses.overview === "error"
+                  ? {
+                      status: "error",
+                      message: sectionFailureMessage(viewModel, "overview"),
+                    }
+                  : {
+                      status:
+                        sectionStatuses.overview === "idle"
+                          ? "idle"
+                          : "loading",
+                      loadingMessage: loadingMessage ?? undefined,
+                    })}
             />
             <WarehouseSpendSection
-              {...(sectionStatuses.warehouse === "ready" && dataReady && viewModel
+              {...(sectionStatuses.warehouse === "ready" &&
+              dataReady &&
+              viewModel
                 ? {
                     status: "ready",
                     currency: viewModel.header.currency,
                     range: activeRange ?? viewModel.range,
                     viewModel: viewModel.warehouseSpend,
                   }
-                : {
-                    status:
-                      sectionStatuses.warehouse === "idle" ? "idle" : "loading",
-                    loadingMessage: loadingMessage ?? undefined,
-                  })}
+                : sectionStatuses.warehouse === "error"
+                  ? {
+                      status: "error",
+                      message: sectionFailureMessage(viewModel, "warehouse"),
+                    }
+                  : {
+                      status:
+                        sectionStatuses.warehouse === "idle"
+                          ? "idle"
+                          : "loading",
+                      loadingMessage: loadingMessage ?? undefined,
+                    })}
             />
             <AiSpendSection
               {...(sectionStatuses.overview === "idle"
@@ -900,11 +931,16 @@ function CostDashboardContent({
                     range: activeRange ?? viewModel.range,
                     viewModel: viewModel.storageSpend,
                   }
-                : {
-                    status:
-                      sectionStatuses.storage === "idle" ? "idle" : "loading",
-                    loadingMessage: loadingMessage ?? undefined,
-                  })}
+                : sectionStatuses.storage === "error"
+                  ? {
+                      status: "error",
+                      message: sectionFailureMessage(viewModel, "storage"),
+                    }
+                  : {
+                      status:
+                        sectionStatuses.storage === "idle" ? "idle" : "loading",
+                      loadingMessage: loadingMessage ?? undefined,
+                    })}
             />
           </>
         )}
@@ -912,3 +948,4 @@ function CostDashboardContent({
     </main>
   );
 }
+

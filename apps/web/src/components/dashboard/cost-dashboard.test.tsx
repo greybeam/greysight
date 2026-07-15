@@ -676,7 +676,7 @@ describe("CostDashboard", () => {
       source: "snowflake",
       status: "running",
     };
-    const provisionalView: DashboardView = {
+    const provisionalView = {
       ...demoDashboardView,
       run: runningRun,
       sectionStatuses: {
@@ -684,7 +684,12 @@ describe("CostDashboard", () => {
         warehouse: "pending",
         storage: "unavailable",
       },
-    };
+      sectionErrors: {
+        overview: null,
+        warehouse: null,
+        storage: { message: "Storage failed safely.", reportable: false },
+      },
+    } as DashboardView;
     vi.mocked(startDashboardRun).mockResolvedValue(runningRun);
     vi.mocked(fetchDashboardView).mockResolvedValue(provisionalView);
     // Surface the provisional view via onResult, then stay pending so the
@@ -710,8 +715,9 @@ describe("CostDashboard", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
 
-    // Overview is server-ready: its content paints while warehouse (pending) and
-    // storage (unavailable) remain in their loading skeletons.
+    // Overview is server-ready and warehouse is still pending. Storage reached
+    // a terminal unavailable state, so it must show its error instead of a
+    // permanent loading skeleton.
     expect(
       await screen.findByText("Total Spend in Last 30 Days"),
     ).toBeInTheDocument();
@@ -720,11 +726,12 @@ describe("CostDashboard", () => {
       screen.getByTestId("warehouse-spend-skeleton-chart"),
     ).toBeInTheDocument();
     expect(
-      screen.getByTestId("storage-spend-skeleton-chart"),
+      await screen.findByText("Storage failed safely."),
     ).toBeInTheDocument();
+    expect(screen.queryByTestId("storage-spend-skeleton-chart")).toBeNull();
   });
 
-  it("keeps unavailable sections skeletoned after changing range on a completed Snowflake run", async () => {
+  it("keeps unavailable sections failed after changing range on a completed Snowflake run", async () => {
     const runningRun: DashboardRun = {
       ...demoDashboardView.run,
       id: "run-range-unavailable",
@@ -735,9 +742,8 @@ describe("CostDashboard", () => {
       ...runningRun,
       status: "completed",
     };
-    // Completed run where storage never landed: the section statuses are NOT
-    // all ready, so storage must stay skeletoned across range changes rather
-    // than falling back to the timed all-ready reveal.
+    // Completed run where storage never landed: its terminal error must persist
+    // across range changes rather than falling back to the all-ready reveal.
     const completedView: DashboardView = {
       ...demoDashboardView,
       run: completedRun,
@@ -746,18 +752,25 @@ describe("CostDashboard", () => {
         warehouse: "ready",
         storage: "unavailable",
       },
+      sectionErrors: {
+        overview: null,
+        warehouse: null,
+        storage: { message: "Storage failed safely.", reportable: false },
+      },
     };
     vi.mocked(startDashboardRun).mockResolvedValue(runningRun);
     // Every range returns the same completed-but-storage-unavailable view, with
     // its range reflecting the requested window so the active-range chip tracks.
-    vi.mocked(fetchDashboardView).mockImplementation(async (_runId, request) => ({
-      ...completedView,
-      range: {
-        ...completedView.range,
-        mode: "relative" as const,
-        windowDays: request?.windowDays ?? 30,
-      },
-    }));
+    vi.mocked(fetchDashboardView).mockImplementation(
+      async (_runId, request) => ({
+        ...completedView,
+        range: {
+          ...completedView.range,
+          mode: "relative" as const,
+          windowDays: request?.windowDays ?? 30,
+        },
+      }),
+    );
     mockPollResolvesWith(completedView);
 
     render(
@@ -773,20 +786,18 @@ describe("CostDashboard", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
 
-    // The completed view paints overview, but storage (unavailable) stays
-    // skeletoned. Wait for the relative-window prefetch so the 7-day view is
-    // cached before switching ranges.
+    // The completed view paints overview and the storage error. Wait for the
+    // relative-window prefetch so the 7-day view is cached before switching.
     expect(
       await screen.findByText("Total Spend in Last 30 Days"),
     ).toBeInTheDocument();
     await waitFor(() => expect(fetchDashboardView).toHaveBeenCalledTimes(3));
-    expect(
-      screen.getByTestId("storage-spend-skeleton-chart"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Storage failed safely.")).toBeInTheDocument();
+    expect(screen.queryByTestId("storage-spend-skeleton-chart")).toBeNull();
 
     // Switch to the cached 7-day window: the cached view's section statuses
-    // must be reused so the unavailable storage section is not falsely revealed
-    // as ready. No additional fetch is issued for the cached range.
+    // must be reused so the unavailable storage section remains terminal. No
+    // additional fetch is issued for the cached range.
     fireEvent.click(screen.getByRole("button", { name: "7 days" }));
 
     expect(screen.getByRole("button", { name: "7 days" })).toHaveAttribute(
@@ -795,15 +806,12 @@ describe("CostDashboard", () => {
     );
     expect(fetchDashboardView).toHaveBeenCalledTimes(3);
     await waitFor(() =>
-      expect(
-        screen.getByTestId("storage-spend-skeleton-chart"),
-      ).toBeInTheDocument(),
+      expect(screen.getByText("Storage failed safely.")).toBeInTheDocument(),
     );
+    expect(screen.queryByTestId("storage-spend-skeleton-chart")).toBeNull();
     // The 7-day overview content still paints (it is ready); only the
-    // unavailable storage section stays skeletoned.
-    expect(
-      screen.getByText("Total Spend in Last 7 Days"),
-    ).toBeInTheDocument();
+    // unavailable storage section stays failed.
+    expect(screen.getByText("Total Spend in Last 7 Days")).toBeInTheDocument();
   });
 
   it.each([["failed"], ["expired"]] as const)(
@@ -1337,3 +1345,4 @@ describe("CostDashboard", () => {
     });
   });
 });
+

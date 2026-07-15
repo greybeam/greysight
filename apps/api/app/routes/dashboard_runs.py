@@ -43,7 +43,11 @@ from app.services.dashboard_run_cache import (
     RunCacheStoreError,
     get_run_cache_store,
 )
-from app.services.dashboard_view_models import DashboardViewRange, DashboardViewResponse
+from app.services.dashboard_view_models import (
+    DashboardSectionError,
+    DashboardViewRange,
+    DashboardViewResponse,
+)
 from app.services.deferred_sources import DEFERRED_SOURCES
 from app.services.demo_data import build_demo_dashboard_dataset
 from app.services.parallel_source_runner import SourceOutcome
@@ -1138,8 +1142,14 @@ def read_dashboard_run_view(
                     )
                 }
             )
+        section_statuses = compute_section_statuses(source_statuses or {})
         view = view.model_copy(
-            update={"section_statuses": compute_section_statuses(source_statuses or {})}
+            update={
+                "section_statuses": section_statuses,
+                "section_errors": _section_errors_for(
+                    section_statuses, metadata, data_mode=None
+                ),
+            }
         )
         _record_dashboard_run_view_retrieved(view)
         return view.model_dump(mode="json")
@@ -1176,11 +1186,17 @@ def read_dashboard_run_view(
         # is not wrongly downgraded when Account Usage collapsed but Organization
         # Usage succeeded, and vice versa.
         completed_data_mode = _data_mode_for(metadata)
+        section_statuses = compute_section_statuses(
+            effective_statuses, data_mode=completed_data_mode
+        )
         view = view.model_copy(
             update={
-                "section_statuses": compute_section_statuses(
-                    effective_statuses, data_mode=completed_data_mode
-                )
+                "section_statuses": section_statuses,
+                "section_errors": _section_errors_for(
+                    section_statuses,
+                    metadata,
+                    data_mode=completed_data_mode,
+                ),
             }
         )
     _record_dashboard_run_view_retrieved(view)
@@ -1201,6 +1217,55 @@ def _data_mode_for(metadata: Any) -> str | None:
     """Read the finalized ``data_mode`` (None → streaming OR-semantics fallback)."""
     value = _metadata_field(metadata, "data_mode")
     return value if isinstance(value, str) else None
+
+
+def _source_availability_field(
+    metadata: Any, group_field: str, value_field: str
+) -> Any:
+    group = _metadata_field(metadata, group_field)
+    if isinstance(group, dict):
+        return group.get(value_field)
+    if group is not None:
+        return getattr(group, value_field, None)
+    return None
+
+
+def _section_errors_for(
+    section_statuses: dict[str, str],
+    metadata: Any,
+    *,
+    data_mode: str | None,
+) -> dict[str, DashboardSectionError | None]:
+    overview_group = (
+        "organization_usage" if data_mode in {"billed", "demo"} else "account_usage"
+    )
+    groups = {
+        "overview": overview_group,
+        "warehouse": "account_usage",
+        "storage": "account_usage",
+    }
+    errors: dict[str, DashboardSectionError | None] = {
+        section: None for section in groups
+    }
+    for section, group in groups.items():
+        if section_statuses.get(section) != "unavailable":
+            continue
+        user_safe_message = _source_availability_field(
+            metadata, group, "user_safe_message"
+        )
+        detail = _source_availability_field(metadata, group, "detail")
+        message = (
+            user_safe_message
+            if isinstance(user_safe_message, str) and user_safe_message
+            else detail
+            if isinstance(detail, str) and detail
+            else f"Could not load {section} data."
+        )
+        errors[section] = DashboardSectionError(
+            message=message,
+            reportable=not bool(user_safe_message),
+        )
+    return errors
 
 
 def _group_is_available(metadata: Any, group_field: str) -> bool:

@@ -174,6 +174,23 @@ def test_source_query_preserves_safe_network_policy_message() -> None:
     assert "PEMSECRETMARKER" not in str(exc_info.value)
 
 
+def test_source_query_does_not_classify_fallback_validation_message() -> None:
+    raw_error = _FakeSnowflakeConnectionError("UNCLASSIFIEDSECRETMARKER")
+
+    with (
+        patch(
+            "greysight_connect.snowflake_client.snowflake.connector.connect",
+            side_effect=raw_error,
+        ),
+        patch.object(SnowflakeConnectionConfig, "connector_kwargs", return_value={}),
+        pytest.raises(SnowflakeQueryError) as exc_info,
+    ):
+        execute_source_query("select 1", {})
+
+    assert exc_info.value.user_safe_message is None
+    assert "UNCLASSIFIEDSECRETMARKER" not in str(exc_info.value)
+
+
 def test_validation_probe_identifies_unavailable_account_usage_view(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

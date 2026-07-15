@@ -604,11 +604,20 @@ describe("parseDashboardView", () => {
       const view = parseDashboardView({
         ...preparedViewPayload,
         section_statuses: { overview: "pending", warehouse: "ready", storage: "unavailable" },
+        section_errors: {
+          overview: null,
+          warehouse: null,
+          storage: { message: "Storage failed safely.", reportable: false },
+        },
       });
       expect(view.sectionStatuses).toEqual({
         overview: "pending",
         warehouse: "ready",
         storage: "unavailable",
+      });
+      expect(view.sectionErrors.storage).toEqual({
+        message: "Storage failed safely.",
+        reportable: false,
       });
     });
 
