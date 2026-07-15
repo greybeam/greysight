@@ -68,12 +68,11 @@ _SECRET_OPTION = re.compile(
     r"|private_key_passphrase"
     r"|password)"
     # The key may be quoted (JSON-style '"password": "..."') and the separator
-    # may be '=' or ':'. Quoted values may contain whitespace and
-    # backslash-escaped characters (including escaped quotes); redact through
-    # the true closing quote. Anything else — an unterminated quote or an
-    # unquoted value — has no reliable terminator, so fail safe by redacting
-    # through the end of the message.
-    r"[\"']?\s*[:=]\s*(?:'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|.*$)",
+    # may be '=' or ':'. Value-end detection is unreliable across quoting
+    # conventions (whitespace, odd separators like '=>', backslash escapes,
+    # doubled quotes, unterminated quotes), so fail safe: redact from the
+    # value start to the END of the message unconditionally.
+    r"[\"']?\s*[:=].*$",
     re.IGNORECASE,
 )
 
