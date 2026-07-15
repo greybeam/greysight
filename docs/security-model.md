@@ -96,7 +96,7 @@ disconnecting and reconnecting through the wizard.
 Snowflake access is backend-only. The API loads source definitions from
 `sql/dashboard_sources.yml` and executes approved SQL files in `sql/snowflake/`.
 Runtime values such as the analysis window are validated by FastAPI and passed
-through Snowflake connector bind parameters.
+through ADBC Snowflake bind parameters.
 
 API responses should not include raw SQL text, detailed customer query records,
 private key paths, or private key contents.
