@@ -137,6 +137,30 @@ def test_sanitize_redacts_quoted_secret_values_with_whitespace(option, quote):
     assert "username=svc" in result  # non-secret option preserved
 
 
+@pytest.mark.parametrize("quote", ["'", '"'])
+def test_sanitize_redacts_quoted_secret_with_escaped_quote(quote):
+    # An escaped quote inside the value must not terminate the redaction early:
+    # password="correct\"horse" leaks 'horse"' if the \" ends the match.
+    msg = f"connect failed: password={quote}correct\\{quote}horse{quote} for user svc"
+    result = _sanitize_connector_message(msg)
+    assert result is not None
+    assert "correct" not in result
+    assert "horse" not in result
+    assert "[REDACTED]" in result
+    assert result.endswith("for user svc")  # trailing ordinary text preserved
+
+
+def test_sanitize_escaped_backslash_before_closing_quote_terminates():
+    # password="secret\\" — the backslash is itself escaped, so the final quote
+    # DOES close the value; trailing ordinary text must survive.
+    msg = 'connect failed: password="secret\\\\" for user svc'
+    result = _sanitize_connector_message(msg)
+    assert result is not None
+    assert "secret" not in result
+    assert "[REDACTED]" in result
+    assert result == "connect failed: password=[REDACTED] for user svc"
+
+
 def test_sanitize_unterminated_quoted_secret_fails_safe():
     # A quoted value with no closing quote cannot be parsed reliably; the rest
     # of the message must be suppressed rather than leaked.
