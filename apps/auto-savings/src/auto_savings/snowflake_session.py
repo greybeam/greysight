@@ -65,7 +65,11 @@ _SECRET_OPTION = re.compile(
     r"|private_key_pem"
     r"|private_key_passphrase"
     r"|password)"
-    r"\s*=\s*[^;\s]+",
+    # Quoted values may contain whitespace; redact through the closing quote.
+    # An unterminated quote cannot be parsed reliably, so fail safe by
+    # redacting through the end of the message. Unquoted values keep the
+    # original first-token behavior.
+    r"\s*=\s*(?:'[^']*'|\"[^\"]*\"|'.*$|\".*$|[^;\s]+)",
     re.IGNORECASE,
 )
 

@@ -95,6 +95,46 @@ def test_sanitize_redacts_adbc_key_and_passphrase_option_values():
     assert "username=svc" in result  # non-secret option preserved
 
 
+@pytest.mark.parametrize(
+    "option",
+    ["password", "private_key_passphrase", "jwt_private_key_pkcs8_password"],
+)
+@pytest.mark.parametrize("quote", ["'", '"'])
+def test_sanitize_redacts_quoted_secret_values_with_whitespace(option, quote):
+    secret = "correct horse battery staple"
+    msg = f"connect failed: {option}={quote}{secret}{quote}; username=svc"
+    result = _sanitize_connector_message(msg)
+    assert result is not None
+    for fragment in secret.split():
+        assert fragment not in result
+    assert "[REDACTED]" in result
+    assert "username=svc" in result  # non-secret option preserved
+
+
+def test_sanitize_unterminated_quoted_secret_fails_safe():
+    # A quoted value with no closing quote cannot be parsed reliably; the rest
+    # of the message must be suppressed rather than leaked.
+    msg = "connect failed: password='correct horse battery staple; username=svc"
+    result = _sanitize_connector_message(msg)
+    assert result is not None
+    for fragment in ("correct", "horse", "battery", "staple"):
+        assert fragment not in result
+    assert "[REDACTED]" in result
+
+
+def test_connector_error_metadata_never_leaks_quoted_passphrase_fragments():
+    exc = _adbc_error(
+        adbc_dbapi.OperationalError,
+        'auth failed: private_key_passphrase="hunter two three four" rejected',
+        vendor_code=250001,
+    )
+    metadata = connector_error_metadata(exc)
+    assert metadata.message is not None
+    for fragment in ("hunter", "two", "three", "four"):
+        assert fragment not in metadata.message
+    assert "[REDACTED]" in metadata.message
+
+
 def test_sanitize_redacts_before_truncation():
     # A PEM near the 512 boundary must not leak a partial secret through the cut.
     pem = "-----BEGIN PRIVATE KEY-----" + "A" * 2000 + "-----END PRIVATE KEY-----"
