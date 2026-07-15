@@ -2211,3 +2211,63 @@ def test_warehouse_bars_idle_pct_none_when_no_compute() -> None:
     bars = view.warehouse_spend.warehouse_bars
     assert len(bars) == 1
     assert bars[0].idle_pct is None
+
+
+def test_warehouse_bars_idle_pct_none_when_attribution_unavailable() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    datasets["warehouse_spend_daily"] = [
+        {
+            "usage_date": "2026-06-08",
+            "warehouse_name": "ADAPTIVE_WH",
+            "credits_used": 10.0,
+            "credits_used_compute": 10.0,
+            "credits_attributed_queries": None,
+        }
+    ]
+    datasets["query_compute_by_user_daily"] = []
+
+    view = build_dashboard_view(
+        run=_demo_run(),
+        datasets=datasets,
+        metadata=_demo_metadata(),
+        source_start_date=source_start,
+        source_end_date=source_end,
+        start_date=date(2026, 6, 8),
+        end_date=date(2026, 6, 8),
+    )
+
+    assert [bar.name for bar in view.warehouse_spend.warehouse_bars] == [
+        "ADAPTIVE_WH"
+    ]
+    assert view.warehouse_spend.warehouse_bars[0].idle_pct is None
+
+
+def test_warehouse_bars_reject_missing_attribution_field() -> None:
+    datasets = _demo_datasets()
+    source_start, source_end = _source_bounds(datasets)
+    datasets["warehouse_spend_daily"] = [
+        {
+            "usage_date": "2026-06-08",
+            "warehouse_name": "LEGACY_WH",
+            "credits_used": 10.0,
+            "credits_used_compute": 10.0,
+        }
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "missing required numeric field "
+            "warehouse_spend_daily.credits_attributed_queries"
+        ),
+    ):
+        build_dashboard_view(
+            run=_demo_run(),
+            datasets=datasets,
+            metadata=_demo_metadata(),
+            source_start_date=source_start,
+            source_end_date=source_end,
+            start_date=date(2026, 6, 8),
+            end_date=date(2026, 6, 8),
+        )
