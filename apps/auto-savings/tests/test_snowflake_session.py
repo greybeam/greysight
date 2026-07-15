@@ -92,7 +92,33 @@ def test_sanitize_redacts_adbc_key_and_passphrase_option_values():
     assert "MIIEvQIBADANsecretkeymaterial" not in result
     assert "hunter2passphrase" not in result
     assert "[REDACTED]" in result
-    assert "username=svc" in result  # non-secret option preserved
+    # Unquoted values have no reliable terminator, so redaction fails safe
+    # through the end of the message: the trailing option is swallowed too.
+    assert result == "failed opening connection: jwt_private_key_pkcs8_value=[REDACTED]"
+
+
+@pytest.mark.parametrize("secret_tail", ["correct horse battery", "=> secret"])
+def test_sanitize_unquoted_secret_redacts_to_end_of_message(secret_tail):
+    # An unquoted value's end is inherently ambiguous; nothing after the key
+    # may survive — including whitespace-separated fragments and odd
+    # separators like '=>'.
+    msg = f"connect failed: password={secret_tail}; username=svc"
+    result = _sanitize_connector_message(msg)
+    assert result is not None
+    for fragment in ("correct", "horse", "battery", "secret", ">", "username=svc"):
+        assert fragment not in result
+    assert result == "connect failed: password=[REDACTED]"
+
+
+def test_sanitize_quoted_secret_preserves_trailing_ordinary_text():
+    # Where parsing IS reliable (a properly quoted value), precision is kept:
+    # ordinary text after the closing quote survives.
+    msg = "connect failed: password='correct horse battery staple' for user svc"
+    result = _sanitize_connector_message(msg)
+    assert result is not None
+    for fragment in ("correct", "horse", "battery", "staple"):
+        assert fragment not in result
+    assert result == "connect failed: password=[REDACTED] for user svc"
 
 
 @pytest.mark.parametrize(
@@ -140,16 +166,24 @@ def test_connector_error_metadata_never_leaks_quoted_passphrase_fragments():
     [
         'connect failed: PASSWORD: "correct horse battery staple"; username=svc',
         "connect failed: password: 'correct horse battery staple'; username=svc",
-        "connect failed: private_key_passphrase : correct; username=svc",
     ],
 )
-def test_sanitize_redacts_colon_separated_secret_values(msg):
+def test_sanitize_redacts_colon_separated_quoted_secret_values(msg):
     result = _sanitize_connector_message(msg)
     assert result is not None
     assert "correct" not in result
     assert "horse" not in result
     assert "[REDACTED]" in result
     assert "username=svc" in result  # non-secret option preserved
+
+
+def test_sanitize_colon_separated_unquoted_secret_fails_safe():
+    msg = "connect failed: private_key_passphrase : correct; username=svc"
+    result = _sanitize_connector_message(msg)
+    assert result is not None
+    assert "correct" not in result
+    assert "username=svc" not in result  # swallowed by unquoted fail-safe
+    assert "[REDACTED]" in result
 
 
 def test_sanitize_redacts_json_style_secret_values():
