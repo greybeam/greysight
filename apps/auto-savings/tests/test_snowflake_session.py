@@ -1,7 +1,9 @@
 from unittest.mock import Mock
 
+import adbc_driver_manager
+import adbc_driver_manager.dbapi as adbc_dbapi
+import adbc_driver_snowflake
 import pytest
-import snowflake.connector
 
 from auto_savings.snowflake_session import (
     ConnectorErrorMetadata,
@@ -13,34 +15,42 @@ from auto_savings.snowflake_session import (
 )
 
 
-def test_default_connect_forwards_socket_timeouts_and_bounds_login_timeout(monkeypatch):
-    # The DEFAULT (non-injected) connect path must forward the socket/network
-    # timeouts to the real snowflake.connector.connect (D2), and a hung initial
-    # connect must not outlive the poll watchdog: login_timeout (defaulted to the
-    # 120s query timeout by connector_kwargs) is overridden down to
-    # socket_timeout_seconds, which config validation keeps < poll_timeout (#2b).
-    import snowflake.connector as sf
+def _adbc_error(
+    error_class: type[adbc_dbapi.Error],
+    message: str,
+    *,
+    vendor_code: int | None = None,
+    sqlstate: str | None = None,
+    status_code: adbc_driver_manager.AdbcStatusCode = (
+        adbc_driver_manager.AdbcStatusCode.INVALID_ARGUMENT
+    ),
+) -> adbc_dbapi.Error:
+    return error_class(
+        message,
+        status_code=status_code,
+        vendor_code=vendor_code,
+        sqlstate=sqlstate,
+    )
 
-    class Cfg:
-        def connector_kwargs(self):
-            return {"account": "ab12345", "user": "svc", "login_timeout": 120}
 
-    captured = {}
+def test_default_connect_bounds_all_adbc_timeouts_and_keeps_session_alive(monkeypatch):
+    config = Mock()
+    config.adbc_db_kwargs.return_value = {"username": "svc"}
+    connection = Mock()
+    connect = Mock(return_value=connection)
+    monkeypatch.setattr(adbc_driver_snowflake.dbapi, "connect", connect)
 
-    def fake_connect(**kwargs):
-        captured.update(kwargs)
-        return Mock()
-
-    monkeypatch.setattr(sf, "connect", fake_connect)
-
-    session = TenantSession(config=Cfg(), socket_timeout_seconds=15)  # no `connect` injected
+    session = TenantSession(config=config, socket_timeout_seconds=15)
     session.ensure_connected()
 
-    assert captured["socket_timeout"] == 15
-    assert captured["network_timeout"] == 15
-    assert captured["client_session_keep_alive"] is True
-    assert captured["account"] == "ab12345"
-    assert captured["login_timeout"] <= 15  # <= socket_timeout_seconds (< poll_timeout)
+    config.adbc_db_kwargs.assert_called_once_with(
+        timeout_seconds=15,
+        keep_session_alive=True,
+    )
+    connect.assert_called_once_with(
+        db_kwargs={"username": "svc"},
+        autocommit=True,
+    )
 
 
 def test_show_warehouses_reuses_one_connection():
@@ -55,7 +65,9 @@ def test_show_warehouses_reuses_one_connection():
         connects.append(1)
         return connection
 
-    session = TenantSession(config=object(), socket_timeout_seconds=15, connect=fake_connect)
+    session = TenantSession(
+        config=object(), socket_timeout_seconds=15, connect=fake_connect
+    )
     session.show_warehouses()
     session.show_warehouses()
     assert len(connects) == 1  # warm reuse, not reconnect-per-poll
@@ -65,7 +77,9 @@ def test_suspend_quotes_identifier_and_returns_accepted():
     cursor = Mock()
     connection = Mock()
     connection.cursor.return_value = cursor
-    session = TenantSession(config=object(), socket_timeout_seconds=15, connect=lambda c: connection)
+    session = TenantSession(
+        config=object(), socket_timeout_seconds=15, connect=lambda c: connection
+    )
 
     assert session.suspend_warehouse('weird"name') == SuspendResult(
         outcome=SuspendOutcome.ACCEPTED,
@@ -77,9 +91,10 @@ def test_suspend_quotes_identifier_and_returns_accepted():
 
 def test_suspend_90064_is_unknown_without_claiming_success(caplog):
     cursor = Mock()
-    cursor.execute.side_effect = snowflake.connector.errors.ProgrammingError(
-        msg="observed\nrace",
-        errno=90064,
+    cursor.execute.side_effect = _adbc_error(
+        adbc_dbapi.ProgrammingError,
+        "observed\nrace",
+        vendor_code=90064,
         sqlstate="57014",
     )
     connection = Mock()
@@ -109,9 +124,18 @@ def test_suspend_90064_is_unknown_without_claiming_success(caplog):
     assert record.connector_message == "observed race"
 
 
-def test_suspend_connection_failure_propagates_as_ambiguous():
+def test_suspend_90064_text_without_vendor_code_raises_normally():
+    # Only a real vendor code 90064 is the unknown-but-idempotent signal. An
+    # error whose text merely mentions the same code but carries no vendor code
+    # must fail closed: it propagates so the engine reconnects and backs off.
+    error = _adbc_error(
+        adbc_dbapi.ProgrammingError,
+        "observed race 90064",
+        vendor_code=None,
+        sqlstate="57014",
+    )
     cursor = Mock()
-    cursor.execute.side_effect = snowflake.connector.errors.OperationalError("lost")
+    cursor.execute.side_effect = error
     connection = Mock()
     connection.cursor.return_value = cursor
     session = TenantSession(
@@ -120,7 +144,26 @@ def test_suspend_connection_failure_propagates_as_ambiguous():
         connect=lambda _config: connection,
     )
 
-    with pytest.raises(snowflake.connector.errors.OperationalError, match="lost"):
+    with pytest.raises(adbc_dbapi.ProgrammingError):
+        session.suspend_warehouse("WH1")
+
+
+def test_suspend_connection_failure_propagates_as_ambiguous():
+    cursor = Mock()
+    cursor.execute.side_effect = _adbc_error(
+        adbc_dbapi.OperationalError,
+        "lost",
+        status_code=adbc_driver_manager.AdbcStatusCode.IO,
+    )
+    connection = Mock()
+    connection.cursor.return_value = cursor
+    session = TenantSession(
+        config=object(),
+        socket_timeout_seconds=15,
+        connect=lambda _config: connection,
+    )
+
+    with pytest.raises(adbc_dbapi.OperationalError, match="lost"):
         session.suspend_warehouse("WH1")
 
 
@@ -164,7 +207,9 @@ def test_close_hard_closes_old_connection_and_next_op_reconnects():
         connections.append(conn)
         return conn
 
-    session = TenantSession(config=object(), socket_timeout_seconds=15, connect=fake_connect)
+    session = TenantSession(
+        config=object(), socket_timeout_seconds=15, connect=fake_connect
+    )
     session.ensure_connected()
     first_connection = connections[0]
     assert len(connections) == 1
@@ -215,15 +260,15 @@ def test_connection_fingerprint_changes_when_identity_rotates():
     assert base != connection_fingerprint(Cfg("acct2", "svc", "PEM-A"))  # account
     assert base != connection_fingerprint(Cfg("acct1", "other", "PEM-A"))  # user
     assert base != connection_fingerprint(Cfg("acct1", "svc", "PEM-B"))  # key
-    assert base != connection_fingerprint(
-        Cfg("acct1", "svc", "PEM-A", role="ROLE_B")
-    )
+    assert base != connection_fingerprint(Cfg("acct1", "svc", "PEM-A", role="ROLE_B"))
     assert base != connection_fingerprint(
         Cfg("acct1", "svc", "PEM-A", passphrase="PASS_B")
     )
 
 
-def test_connection_fingerprint_tracks_path_key_contents_and_handles_unreadable(tmp_path):
+def test_connection_fingerprint_tracks_path_key_contents_and_handles_unreadable(
+    tmp_path,
+):
     key_path = tmp_path / "tenant-key.pem"
     key_path.write_text("KEY-A")
 

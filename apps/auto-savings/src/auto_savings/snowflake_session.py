@@ -1,11 +1,11 @@
 """Warm, persistent per-tenant Snowflake session.
 
-The wedge-escape mechanism here is connector-level socket timeouts, not
-`close()`. A blocking C-level `recv()` inside the snowflake connector cannot
-be interrupted by calling `close()` from another thread; it can only be
-freed by the OS-level read timing out on its own. `socket_timeout_seconds`
-MUST be strictly less than the caller's poll timeout so the socket read
-fails before the watchdog trips (see WorkerConfig.__post_init__).
+The wedge-escape mechanism is ADBC's ``client_timeout``, which bounds network
+round trips and HTTP response reads inside the Go Snowflake driver. The worker
+sets login, request, and client timeouts to ``socket_timeout_seconds``.
+``socket_timeout_seconds`` MUST remain strictly less than the caller's poll
+timeout so the driver call returns before the watchdog trips (see
+WorkerConfig.__post_init__).
 """
 
 from __future__ import annotations
@@ -17,10 +17,11 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-try:
-    import snowflake.connector as _snowflake_connector
-except ImportError:  # pragma: no cover - snowflake connector optional at import time
-    _snowflake_connector = None
+import adbc_driver_manager  # noqa: F401  (ensures the ADBC manager package is importable)
+import adbc_driver_manager.dbapi as adbc_dbapi
+import adbc_driver_snowflake.dbapi
+
+from greysight_connect import snowflake_cursor
 
 logger = logging.getLogger(__name__)
 
@@ -56,18 +57,25 @@ def _sanitize_connector_message(value: object) -> str | None:
 
 
 def connector_error_metadata(exc: Any) -> ConnectorErrorMetadata:
+    is_adbc = isinstance(exc, adbc_dbapi.Error)
+    message = _sanitize_connector_message(str(exc)) if is_adbc else None
     return ConnectorErrorMetadata(
         error_type=type(exc).__name__,
-        errno=getattr(exc, "errno", None),
-        sqlstate=getattr(exc, "sqlstate", None),
-        message=_sanitize_connector_message(getattr(exc, "raw_msg", None)),
+        errno=exc.vendor_code if is_adbc else None,
+        sqlstate=exc.sqlstate if is_adbc else None,
+        message=message,
     )
 
 
-def _connect_with_kwargs(kwargs: dict) -> Any:
-    if _snowflake_connector is None:  # pragma: no cover
-        raise RuntimeError("snowflake-connector-python is not installed")
-    return _snowflake_connector.connect(**kwargs)
+def _connect_adbc(config: Any, *, timeout_seconds: int) -> Any:
+    options = config.adbc_db_kwargs(
+        timeout_seconds=timeout_seconds,
+        keep_session_alive=True,
+    )
+    return adbc_driver_snowflake.dbapi.connect(
+        db_kwargs=options,
+        autocommit=True,
+    )
 
 
 def _quote_identifier(name: str) -> str:
@@ -87,36 +95,28 @@ class TenantSession:
         self._config = config
         self.socket_timeout_seconds = socket_timeout_seconds
         # An injected `connect` (tests) receives the config and returns a
-        # connection. The default path builds the connection itself so it can
-        # pass the socket/network timeouts — the load-bearing wedge-escape.
+        # connection. The default path builds the ADBC connection itself so it
+        # can bound the login/request/client timeouts — the load-bearing
+        # wedge-escape (see the module docstring).
         self._connect = connect
         self._connection: Any = None
-
-    def _connector_kwargs(self) -> dict:
-        kwargs = dict(self._config.connector_kwargs())
-        kwargs["client_session_keep_alive"] = True
-        kwargs["network_timeout"] = self.socket_timeout_seconds
-        kwargs["socket_timeout"] = self.socket_timeout_seconds
-        # connector_kwargs() defaults login_timeout to the shared 120s query
-        # timeout, so a hung initial connect could outlive the poll watchdog even
-        # though socket/network reads time out in socket_timeout_seconds. Bound
-        # the connect the same way (socket_timeout_seconds is already validated
-        # to be < poll_timeout_seconds) so a wedged connect can't escape it.
-        kwargs["login_timeout"] = self.socket_timeout_seconds
-        return kwargs
 
     def ensure_connected(self) -> None:
         if self._connection is None:
             if self._connect is not None:
                 self._connection = self._connect(self._config)
             else:
-                # Default path: pass the socket/network timeouts through to the
-                # real Snowflake connection so a wedged recv() times out on its own.
-                self._connection = _connect_with_kwargs(self._connector_kwargs())
+                # Default path: build the ADBC connection with all timeouts
+                # bounded to socket_timeout_seconds so a wedged driver call
+                # returns before the poll watchdog trips.
+                self._connection = _connect_adbc(
+                    self._config,
+                    timeout_seconds=self.socket_timeout_seconds,
+                )
 
     def show_warehouses(self) -> list[dict]:
         self.ensure_connected()
-        cursor = self._connection.cursor()
+        cursor = snowflake_cursor(self._connection)
         try:
             cursor.execute("SHOW WAREHOUSES")
             columns = [col[0].lower() for col in cursor.description]
@@ -127,7 +127,7 @@ class TenantSession:
 
     def suspend_warehouse(self, name: str) -> SuspendResult:
         self.ensure_connected()
-        cursor = self._connection.cursor()
+        cursor = snowflake_cursor(self._connection)
         try:
             quoted = _quote_identifier(name)
             cursor.execute(f"ALTER WAREHOUSE {quoted} SUSPEND")
@@ -137,11 +137,7 @@ class TenantSession:
             except Exception:
                 pass
 
-            if (
-                _snowflake_connector is not None
-                and isinstance(exc, _snowflake_connector.errors.Error)
-                and exc.errno == 90064
-            ):
+            if isinstance(exc, adbc_dbapi.Error) and exc.vendor_code == 90064:
                 metadata = connector_error_metadata(exc)
                 logger.warning(
                     "Snowflake suspend outcome is unknown but idempotent",

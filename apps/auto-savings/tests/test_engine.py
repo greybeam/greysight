@@ -3,8 +3,9 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
 
+import adbc_driver_manager
+import adbc_driver_manager.dbapi as adbc_dbapi
 import pytest
-from snowflake.connector.errors import OperationalError
 
 from auto_savings.config import WorkerConfig
 from auto_savings.engine import CycleResult, run_cycle
@@ -14,6 +15,18 @@ from auto_savings.snowflake_session import (
     SuspendResult,
 )
 from auto_savings.store import EnrollmentRow, SavingsEvent, StoreError
+
+
+def _operational_error(
+    msg: str, *, errno: int, sqlstate: str
+) -> adbc_dbapi.OperationalError:
+    return adbc_dbapi.OperationalError(
+        msg,
+        status_code=adbc_driver_manager.AdbcStatusCode.IO,
+        vendor_code=errno,
+        sqlstate=sqlstate,
+    )
+
 
 NOW = datetime(2026, 7, 12, 12, 0, 0, tzinfo=timezone.utc)
 CREATED_ON = NOW - timedelta(days=1)
@@ -141,9 +154,10 @@ def _rows(**overrides) -> list[dict]:
     return [row]
 
 
-_BASE_LOG_RECORD_KEYS = set(
-    logging.LogRecord("", 0, "", 0, "", (), None).__dict__
-) | {"message", "asctime"}
+_BASE_LOG_RECORD_KEYS = set(logging.LogRecord("", 0, "", 0, "", (), None).__dict__) | {
+    "message",
+    "asctime",
+}
 
 
 def _structured_fields(record: logging.LogRecord) -> dict[str, object]:
@@ -283,7 +297,9 @@ def test_unknown_90064_requests_backoff_with_actual_connector_metadata(caplog):
 
     assert result is CycleResult.RETRY_BACKOFF
     assert store.events == []
-    outcome = next(record for record in caplog.records if record.event == "suspend_outcome")
+    outcome = next(
+        record for record in caplog.records if record.event == "suspend_outcome"
+    )
     assert outcome.connector_error_type == "ProgrammingError"
     assert outcome.connector_errno == 90064
     assert outcome.connector_sqlstate == "57014"
@@ -299,14 +315,12 @@ def test_unknown_90064_requests_backoff_with_actual_connector_metadata(caplog):
     error_metric = next(
         record
         for record in caplog.records
-        if getattr(record, "metric_name", None)
-        == "auto_savings_suspend_error_total"
+        if getattr(record, "metric_name", None) == "auto_savings_suspend_error_total"
     )
     attempt_metric = next(
         record
         for record in caplog.records
-        if getattr(record, "metric_name", None)
-        == "auto_savings_suspend_attempt_total"
+        if getattr(record, "metric_name", None) == "auto_savings_suspend_attempt_total"
     )
     assert (error_metric.errno, error_metric.sqlstate) == (90064, "57014")
     assert error_metric.attempt_id == outcome.attempt_id
@@ -327,14 +341,18 @@ def test_unknown_90064_requests_backoff_with_actual_connector_metadata(caplog):
 
 def test_ambiguous_connection_error_writes_no_event_and_propagates(caplog):
     store = TrackingStore()
-    error = OperationalError(msg="secret connector detail", errno=250001, sqlstate="08001")
+    error = _operational_error(
+        "secret connector detail", errno=250001, sqlstate="08001"
+    )
 
     with caplog.at_level(logging.ERROR, logger="auto_savings.engine"):
-        with pytest.raises(OperationalError):
+        with pytest.raises(adbc_dbapi.OperationalError):
             _run(store, suspend=Mock(side_effect=error))
 
     assert store.events == []
-    outcome = next(record for record in caplog.records if record.event == "suspend_outcome")
+    outcome = next(
+        record for record in caplog.records if record.event == "suspend_outcome"
+    )
     assert outcome.connector_error_type == "OperationalError"
     assert outcome.connector_errno == 250001
     assert outcome.connector_sqlstate == "08001"
@@ -426,7 +444,9 @@ def test_identity_mismatch_guardedly_deletes_stale_enrollment():
     store = TrackingStore()
     suspend = Mock()
 
-    _run(store, rows=_rows(created_on=CREATED_ON + timedelta(seconds=1)), suspend=suspend)
+    _run(
+        store, rows=_rows(created_on=CREATED_ON + timedelta(seconds=1)), suspend=suspend
+    )
 
     assert store.deletions == [("org-1", "WH1", CREATED_ON, UPDATED_AT)]
     assert store.authorizations == []
@@ -493,7 +513,10 @@ def test_unknown_outcome_does_not_starve_later_enrollments():
     result = _run(store, rows=rows, suspend=suspend)
 
     assert result is CycleResult.RETRY_BACKOFF
-    assert [authorization[1] for authorization in store.authorizations] == ["WH1", "WH2"]
+    assert [authorization[1] for authorization in store.authorizations] == [
+        "WH1",
+        "WH2",
+    ]
     assert [event.warehouse_name for event in store.events] == ["WH2"]
 
 
@@ -604,10 +627,10 @@ def test_observability_uses_named_metric_events_with_required_labels(caplog):
 
 
 def test_ambiguous_error_emits_named_error_and_attempt_metrics(caplog):
-    error = OperationalError(msg="lost", errno=250001, sqlstate="08001")
+    error = _operational_error("lost", errno=250001, sqlstate="08001")
 
     with caplog.at_level(logging.INFO, logger="auto_savings.engine"):
-        with pytest.raises(OperationalError):
+        with pytest.raises(adbc_dbapi.OperationalError):
             _run(TrackingStore(), suspend=Mock(side_effect=error))
 
     metrics = [record for record in caplog.records if record.event == "metric"]
