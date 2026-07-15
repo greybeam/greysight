@@ -55,8 +55,10 @@ _REDACTED = "[REDACTED]"
 # can never reach log telemetry. Applied AFTER whitespace normalization (PEM
 # newlines are already collapsed to spaces) and BEFORE truncation, so a
 # truncated PEM can't slip a partial secret through.
+# A BEGIN header with no matching END marker (e.g. the driver truncated the
+# message itself) fails safe: redact from the header to the end of the message.
 _PEM_BLOCK = re.compile(
-    r"-----BEGIN[^-]*PRIVATE KEY-----.*?-----END[^-]*PRIVATE KEY-----",
+    r"-----BEGIN[^-]*PRIVATE KEY-----(?:.*?-----END[^-]*PRIVATE KEY-----|.*$)",
     re.IGNORECASE,
 )
 _SECRET_OPTION = re.compile(
@@ -65,11 +67,12 @@ _SECRET_OPTION = re.compile(
     r"|private_key_pem"
     r"|private_key_passphrase"
     r"|password)"
-    # Quoted values may contain whitespace; redact through the closing quote.
-    # An unterminated quote cannot be parsed reliably, so fail safe by
-    # redacting through the end of the message. Unquoted values keep the
-    # original first-token behavior.
-    r"\s*=\s*(?:'[^']*'|\"[^\"]*\"|'.*$|\".*$|[^;\s]+)",
+    # The key may be quoted (JSON-style '"password": "..."') and the separator
+    # may be '=' or ':'. Quoted values may contain whitespace; redact through
+    # the closing quote. An unterminated quote cannot be parsed reliably, so
+    # fail safe by redacting through the end of the message. Unquoted values
+    # keep the original first-token behavior.
+    r"[\"']?\s*[:=]\s*(?:'[^']*'|\"[^\"]*\"|'.*$|\".*$|[^;\s]+)",
     re.IGNORECASE,
 )
 

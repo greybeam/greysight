@@ -135,6 +135,49 @@ def test_connector_error_metadata_never_leaks_quoted_passphrase_fragments():
     assert "[REDACTED]" in metadata.message
 
 
+@pytest.mark.parametrize(
+    "msg",
+    [
+        'connect failed: PASSWORD: "correct horse battery staple"; username=svc',
+        "connect failed: password: 'correct horse battery staple'; username=svc",
+        "connect failed: private_key_passphrase : correct; username=svc",
+    ],
+)
+def test_sanitize_redacts_colon_separated_secret_values(msg):
+    result = _sanitize_connector_message(msg)
+    assert result is not None
+    assert "correct" not in result
+    assert "horse" not in result
+    assert "[REDACTED]" in result
+    assert "username=svc" in result  # non-secret option preserved
+
+
+def test_sanitize_redacts_json_style_secret_values():
+    msg = 'options {"user": "svc", "password": "hunter two three"} rejected'
+    result = _sanitize_connector_message(msg)
+    assert result is not None
+    for fragment in ("hunter", "two", "three"):
+        assert fragment not in result
+    assert "[REDACTED]" in result
+    assert '"user": "svc"' in result  # non-secret option preserved
+
+
+def test_sanitize_truncated_pem_without_end_marker_fails_safe():
+    # A PEM whose END marker was cut off (e.g. by the driver's own truncation)
+    # must not leak its header or key fragment; redact through end of message.
+    msg = (
+        "connect failed with -----BEGIN ENCRYPTED PRIVATE KEY----- "
+        "MIIFHzBJBgkqhkiG9w0BBQ0wPDAbBgkq trailing text"
+    )
+    result = _sanitize_connector_message(msg)
+    assert result is not None
+    assert "MIIFHzBJ" not in result
+    assert "PRIVATE KEY" not in result
+    assert "trailing text" not in result
+    assert "[REDACTED]" in result
+    assert result.startswith("connect failed with")
+
+
 def test_sanitize_redacts_before_truncation():
     # A PEM near the 512 boundary must not leak a partial secret through the cut.
     pem = "-----BEGIN PRIVATE KEY-----" + "A" * 2000 + "-----END PRIVATE KEY-----"
