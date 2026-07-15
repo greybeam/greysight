@@ -31,7 +31,8 @@ exception details never cross the API boundary.
 The classification is preserved through dashboard source execution so that a
 failed run and a failed deferred source do not collapse into an unhelpful
 generic `502`. Existing authentication, organization membership checks, and
-HTTP status behavior remain unchanged.
+HTTP status behavior remain unchanged. Successful response shapes remain
+unchanged; failed dashboard requests gain the structured safe error detail.
 
 ## Frontend Behavior
 
