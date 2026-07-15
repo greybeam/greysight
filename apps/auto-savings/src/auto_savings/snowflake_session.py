@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
@@ -47,12 +48,41 @@ class SuspendResult:
     connector_error: ConnectorErrorMetadata | None = None
 
 
+_REDACTED = "[REDACTED]"
+
+# ADBC/Go-driver error text can echo connection options or key material. Redact
+# any PEM block and the value of any key/passphrase connection option so secrets
+# can never reach log telemetry. Applied AFTER whitespace normalization (PEM
+# newlines are already collapsed to spaces) and BEFORE truncation, so a
+# truncated PEM can't slip a partial secret through.
+_PEM_BLOCK = re.compile(
+    r"-----BEGIN[^-]*PRIVATE KEY-----.*?-----END[^-]*PRIVATE KEY-----",
+    re.IGNORECASE,
+)
+_SECRET_OPTION = re.compile(
+    r"(jwt_private_key_pkcs8_value"
+    r"|jwt_private_key_pkcs8_password"
+    r"|private_key_pem"
+    r"|private_key_passphrase"
+    r"|password)"
+    r"\s*=\s*[^;\s]+",
+    re.IGNORECASE,
+)
+
+
+def _redact_secrets(message: str) -> str:
+    message = _PEM_BLOCK.sub(_REDACTED, message)
+    message = _SECRET_OPTION.sub(lambda m: f"{m.group(1)}={_REDACTED}", message)
+    return message
+
+
 def _sanitize_connector_message(value: object) -> str | None:
     if value is None:
         return None
     message = " ".join(str(value).split())
     if not message:
         return None
+    message = _redact_secrets(message)
     return message[:512]
 
 

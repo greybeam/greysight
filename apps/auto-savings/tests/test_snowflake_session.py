@@ -10,7 +10,9 @@ from auto_savings.snowflake_session import (
     SuspendOutcome,
     SuspendResult,
     TenantSession,
+    _sanitize_connector_message,
     connection_fingerprint,
+    connector_error_metadata,
     next_backoff,
 )
 
@@ -31,6 +33,90 @@ def _adbc_error(
         vendor_code=vendor_code,
         sqlstate=sqlstate,
     )
+
+
+def test_sanitize_normalizes_whitespace_and_truncates():
+    assert _sanitize_connector_message("  a\n\tb   c  ") == "a b c"
+    assert _sanitize_connector_message(None) is None
+    assert _sanitize_connector_message("   ") is None
+    long = "x" * 1000
+    assert _sanitize_connector_message(long) == "x" * 512
+
+
+def test_sanitize_ordinary_message_unchanged():
+    assert (
+        _sanitize_connector_message("warehouse suspend failed: object does not exist")
+        == "warehouse suspend failed: object does not exist"
+    )
+
+
+def test_sanitize_redacts_unencrypted_pem_block():
+    pem = (
+        "-----BEGIN PRIVATE KEY-----\n"
+        "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ\n"
+        "secretsecretsecretsecretsecretsecretsecretsecret\n"
+        "-----END PRIVATE KEY-----"
+    )
+    result = _sanitize_connector_message(f"connect failed: {pem} for user svc")
+    assert result is not None
+    assert "[REDACTED]" in result
+    assert "MIIEvQIBADAN" not in result
+    assert "secretsecret" not in result
+    assert "PRIVATE KEY" not in result
+    assert result.startswith("connect failed:")
+    assert result.endswith("for user svc")
+
+
+def test_sanitize_redacts_encrypted_pem_block():
+    pem = (
+        "-----BEGIN ENCRYPTED PRIVATE KEY-----\n"
+        "MIIFHzBJBgkqhkiG9w0BBQ0wPDAbBgkqhkiG9w0BBQwwDgQI\n"
+        "-----END ENCRYPTED PRIVATE KEY-----"
+    )
+    result = _sanitize_connector_message(f"bad key: {pem}")
+    assert result is not None
+    assert "MIIFHzBJ" not in result
+    assert "ENCRYPTED PRIVATE KEY" not in result
+    assert "[REDACTED]" in result
+
+
+def test_sanitize_redacts_adbc_key_and_passphrase_option_values():
+    msg = (
+        "failed opening connection: "
+        "jwt_private_key_pkcs8_value=MIIEvQIBADANsecretkeymaterial;"
+        "jwt_private_key_pkcs8_password=hunter2passphrase;"
+        "username=svc"
+    )
+    result = _sanitize_connector_message(msg)
+    assert result is not None
+    assert "MIIEvQIBADANsecretkeymaterial" not in result
+    assert "hunter2passphrase" not in result
+    assert "[REDACTED]" in result
+    assert "username=svc" in result  # non-secret option preserved
+
+
+def test_sanitize_redacts_before_truncation():
+    # A PEM near the 512 boundary must not leak a partial secret through the cut.
+    pem = "-----BEGIN PRIVATE KEY-----" + "A" * 2000 + "-----END PRIVATE KEY-----"
+    result = _sanitize_connector_message(pem)
+    assert result is not None
+    assert "AAAA" not in result
+    assert result == "[REDACTED]"
+
+
+def test_connector_error_metadata_message_never_carries_key_material():
+    pem = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANsecret\n-----END PRIVATE KEY-----"
+    exc = _adbc_error(
+        adbc_dbapi.OperationalError,
+        f"auth failed with {pem} and jwt_private_key_pkcs8_password=topsecret",
+        vendor_code=250001,
+    )
+    metadata = connector_error_metadata(exc)
+    assert metadata.message is not None
+    assert "MIIEvQIBADANsecret" not in metadata.message
+    assert "topsecret" not in metadata.message
+    assert "PRIVATE KEY" not in metadata.message
+    assert "[REDACTED]" in metadata.message
 
 
 def test_default_connect_bounds_all_adbc_timeouts_and_keeps_session_alive(monkeypatch):
