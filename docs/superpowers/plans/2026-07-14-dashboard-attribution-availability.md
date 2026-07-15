@@ -188,9 +188,11 @@ def _cached_datasets_match_current_contract(cached: CachedDashboardRun) -> bool:
 ```
 
 After `get_active` returns a cache entry and before creating a snapshot, reject
-incompatible entries. Log only the organization ID, delete through the existing
-store, catch `RunCacheStoreError` from deletion, and return an empty 204 response
-even if cleanup fails.
+incompatible entries. Log only the organization ID, delete through a new
+`delete_if_current(cached)` store method filtered by organization ID, run ID,
+and completion timestamp, catch `RunCacheStoreError` from deletion, and return
+an empty 204 response even if cleanup fails. Add in-memory and Supabase adapter
+tests proving a concurrently written newer cache row is preserved.
 
 - [ ] **Step 4: Run the cache-route tests and verify GREEN**
 

@@ -55,6 +55,10 @@ class RunCacheStore(Protocol):
         """Update datasets only if the org cache row still matches cached_run."""
         ...
 
+    def delete_if_current(self, cached_run: CachedDashboardRun) -> None:
+        """Delete only if the org cache row still matches cached_run."""
+        ...
+
     def delete(self, organization_id: str) -> None:
         """Remove the org's cached run (no-op if none exists)."""
         ...
@@ -106,6 +110,16 @@ class InMemoryRunCacheStore:
 
     def delete(self, organization_id: str) -> None:
         self._rows.pop(organization_id, None)
+
+    def delete_if_current(self, cached_run: CachedDashboardRun) -> None:
+        current = self._rows.get(cached_run.organization_id)
+        if (
+            current is None
+            or current.run_id != cached_run.run_id
+            or current.completed_at != cached_run.completed_at
+        ):
+            return
+        self._rows.pop(cached_run.organization_id, None)
 
 
 class SupabaseRunCacheStore:
@@ -235,6 +249,25 @@ class SupabaseRunCacheStore:
                 response = client.delete(
                     self._table_url,
                     params={"organization_id": f"eq.{organization_id}"},
+                    headers=self._headers(),
+                )
+        except httpx.HTTPError as exc:
+            raise RunCacheStoreError() from exc
+        if response.status_code not in (200, 204):
+            raise RunCacheStoreError()
+
+    def delete_if_current(self, cached_run: CachedDashboardRun) -> None:
+        try:
+            with httpx.Client(
+                timeout=self._timeout_seconds, transport=self._transport
+            ) as client:
+                response = client.delete(
+                    self._table_url,
+                    params={
+                        "organization_id": f"eq.{cached_run.organization_id}",
+                        "run_id": f"eq.{cached_run.run_id}",
+                        "completed_at": f"eq.{cached_run.completed_at.isoformat()}",
+                    },
                     headers=self._headers(),
                 )
         except httpx.HTTPError as exc:

@@ -971,7 +971,7 @@ def read_cached_dashboard_run(
     if not _cached_datasets_match_current_contract(cached):
         logger.warning("Ignoring incompatible dashboard cache for org %s", org_id)
         try:
-            store.delete(org_id)
+            store.delete_if_current(cached)
         except RunCacheStoreError:
             logger.exception(
                 "Failed to delete incompatible dashboard cache for org %s", org_id

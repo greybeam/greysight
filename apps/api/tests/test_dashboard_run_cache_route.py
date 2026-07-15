@@ -143,10 +143,10 @@ def test_cached_rejects_incompatible_dataset_when_cleanup_fails(
     datasets["warehouse_spend_daily"][0].pop("credits_attributed_queries")
     run_store.upsert(replace(cached, datasets=datasets))
 
-    def fail_delete(_organization_id: str) -> None:
+    def fail_delete(_cached_run: CachedDashboardRun) -> None:
         raise RunCacheStoreError()
 
-    monkeypatch.setattr(run_store, "delete", fail_delete)
+    monkeypatch.setattr(run_store, "delete_if_current", fail_delete)
     app.dependency_overrides[require_auth_context] = _member_ctx
     try:
         response = TestClient(app).get(
@@ -156,6 +156,40 @@ def test_cached_rejects_incompatible_dataset_when_cleanup_fails(
         app.dependency_overrides.clear()
 
     assert response.status_code == 204
+
+
+def test_cached_cleanup_does_not_delete_newer_compatible_run(
+    _stores, monkeypatch
+) -> None:
+    _settings_store, run_store = _stores
+    _seed_active_cached_run(run_store)
+    current = run_store.get_active(ORG_ID)
+    assert current is not None
+
+    stale_datasets = deepcopy(current.datasets)
+    stale_datasets["warehouse_spend_daily"][0].pop("credits_attributed_queries")
+    stale = replace(current, datasets=stale_datasets)
+    newer = replace(
+        current,
+        run_id="00000000-0000-0000-0000-0000000000bb",
+        completed_at=current.completed_at + timedelta(minutes=5),
+    )
+
+    def stale_read(organization_id: str, *, now: datetime | None = None):
+        run_store._rows[organization_id] = newer
+        return stale
+
+    monkeypatch.setattr(run_store, "get_active", stale_read)
+    app.dependency_overrides[require_auth_context] = _member_ctx
+    try:
+        response = TestClient(app).get(
+            f"/api/dashboard-runs/cached?organization_id={ORG_ID}"
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 204
+    assert run_store._rows[ORG_ID] == newer
 
 
 def test_cached_returns_204_when_cache_disabled(_stores) -> None:

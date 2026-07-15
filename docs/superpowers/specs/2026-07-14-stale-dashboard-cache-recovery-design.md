@@ -32,8 +32,9 @@ field value remains contract-compatible because the key exists.
 When the required base datasets are absent or incompatible:
 
 1. Treat the cached run as a cache miss and return HTTP 204.
-2. Delete the incompatible cache row on a best-effort basis so later page loads
-   do not repeatedly inspect it.
+2. Delete the incompatible cache row on a best-effort basis only if its run ID
+   and completion timestamp still match the row that was validated, so cleanup
+   cannot remove a concurrently written fresh cache.
 3. Log deletion failures server-side without exposing cached data or turning the
    recovery response into a 500.
 
@@ -68,6 +69,8 @@ Add a route regression test that stores an otherwise valid cached run whose
 `warehouse_spend_daily` row lacks `credits_attributed_queries`. Assert that
 `GET /api/dashboard-runs/cached` returns 204 and removes the stale cache entry.
 Existing valid-cache route tests must continue returning a completed cached run.
+Add a race regression test proving cleanup preserves a newer cache row written
+after the incompatible row was read.
 
 Add a prepared-view regression test containing one warehouse with null
 `credits_attributed_queries`. Assert that the dashboard view still builds, the
