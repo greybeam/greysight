@@ -428,8 +428,6 @@ def _base_user_safe_message(exc: Exception) -> str:
     known = _known_base_user_safe_message(exc)
     if known is not None:
         return known
-    if _is_timeout(exc):
-        return _TIMEOUT_SAFE_MESSAGE
     return (
         "Could not validate Snowflake connection. Ask your Snowflake "
         "administrator to check LOGIN_HISTORY for this user and try again."
@@ -438,7 +436,12 @@ def _base_user_safe_message(exc: Exception) -> str:
 
 def _known_base_user_safe_message(exc: Exception) -> str | None:
     message = str(exc).lower()
-    if isinstance(exc, TimeoutError) or "timed out" in message or "timeout" in message:
+    if (
+        _is_timeout(exc)
+        or isinstance(exc, TimeoutError)
+        or "timed out" in message
+        or "timeout" in message
+    ):
         safe_message = _TIMEOUT_SAFE_MESSAGE
     elif (
         "not allowed to access snowflake" in message

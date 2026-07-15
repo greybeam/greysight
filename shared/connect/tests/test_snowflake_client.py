@@ -8,6 +8,7 @@ import adbc_driver_snowflake
 import pytest
 
 from greysight_connect.snowflake_client import (
+    _TIMEOUT_SAFE_MESSAGE,
     SnowflakeConfigurationError,
     SnowflakeConnectionConfig,
     SnowflakeObjectUnavailableError,
@@ -677,6 +678,9 @@ class _Cursor:
     def execute(self, sql, params=None):
         raise self._exc
 
+    def close(self):
+        return None
+
     @property
     def description(self):
         return ()
@@ -728,6 +732,49 @@ def test_missing_vendor_code_still_raises_generic_query_error():
             "select 1", {"window_days": 30}, connect=lambda _cfg: _Conn(exc)
         )
     assert not isinstance(exc_info.value, SnowflakeObjectUnavailableError)
+
+
+def test_source_query_classifies_status_only_timeout():
+    # TIMEOUT status but message text lacks "timeout"/"timed out".
+    exc = _adbc_error(
+        "SECRETDEADLINEMARKER",
+        status_code=adbc_driver_manager.AdbcStatusCode.TIMEOUT,
+    )
+    with pytest.raises(SnowflakeQueryError) as exc_info:
+        execute_source_query(
+            "select 1", {"window_days": 30}, connect=lambda _cfg: _Conn(exc)
+        )
+    assert exc_info.value.user_safe_message is not None
+    assert exc_info.value.user_safe_message.startswith(_TIMEOUT_SAFE_MESSAGE)
+    assert "SECRETDEADLINEMARKER" not in str(exc_info.value)
+
+
+def test_metadata_query_classifies_status_only_timeout():
+    exc = _adbc_error(
+        "SECRETDEADLINEMARKER",
+        status_code=adbc_driver_manager.AdbcStatusCode.TIMEOUT,
+    )
+    with pytest.raises(SnowflakeQueryError) as exc_info:
+        execute_metadata_query("SHOW WAREHOUSES", connect=lambda _cfg: _Conn(exc))
+    assert exc_info.value.user_safe_message is not None
+    assert exc_info.value.user_safe_message.startswith(_TIMEOUT_SAFE_MESSAGE)
+    assert "SECRETDEADLINEMARKER" not in str(exc_info.value)
+
+
+def test_validation_classifies_status_only_timeout():
+    raw_error = _adbc_error(
+        "SECRETDEADLINEMARKER",
+        status_code=adbc_driver_manager.AdbcStatusCode.TIMEOUT,
+    )
+    with (
+        patch(_ADBC_CONNECT, side_effect=raw_error),
+        patch.object(SnowflakeConnectionConfig, "adbc_db_kwargs", return_value={}),
+        pytest.raises(SnowflakeValidationError) as exc_info,
+    ):
+        validate_snowflake_connection()
+    assert exc_info.value.user_safe_message is not None
+    assert exc_info.value.user_safe_message.startswith(_TIMEOUT_SAFE_MESSAGE)
+    assert "SECRETDEADLINEMARKER" not in str(exc_info.value)
 
 
 def test_column_does_not_exist_raises_generic_query_error_not_object_unavailable():
