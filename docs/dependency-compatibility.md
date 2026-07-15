@@ -13,3 +13,14 @@ Install dependencies with lifecycle scripts disabled:
 ```bash
 npm install --ignore-scripts
 ```
+
+## Python
+
+`adbc-driver-snowflake[dbapi]==1.11.0` is pinned across the shared connect
+package, the API, and the worker. This version requires its matching
+`adbc-driver-manager` and PyArrow native wheels, which are resolved
+transitively via `uv.lock` in each package. The supported Python 3.12 Debian
+deployment images must continue resolving binary wheels for
+`adbc-driver-snowflake`, `adbc-driver-manager`, and `pyarrow`; if a future
+version bump drops prebuilt wheels for the deployment platform, the pin must
+be re-verified against the Docker builds before merging.

@@ -5,7 +5,7 @@ requires-python = ">=3.12"
 dependencies = [
     "greysight-connect",
     "httpx==0.28.1",
-    "snowflake-connector-python==3.12.4",
+    "adbc-driver-snowflake[dbapi]==1.11.0",
     "python-dotenv",
 ]
 
