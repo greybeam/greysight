@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+import adbc_driver_snowflake
 from cryptography.hazmat.primitives import serialization
 
 from greysight_connect.snowflake_account import validate_account_identifier
@@ -136,29 +137,62 @@ class SnowflakeConnectionConfig:
             "session_parameters": {"QUERY_TAG": "greysight"},
         }
 
-    def _load_private_key_der(self) -> bytes:
+    def adbc_db_kwargs(
+        self,
+        *,
+        timeout_seconds: int | None = None,
+        keep_session_alive: bool = False,
+    ) -> dict[str, str]:
+        required_values = {
+            "SNOWFLAKE_ACCOUNT": self.account,
+            "SNOWFLAKE_USER": self.user,
+            "SNOWFLAKE_ROLE": self.role,
+            "SNOWFLAKE_WAREHOUSE": self.warehouse,
+            "SNOWFLAKE_PRIVATE_KEY": self.private_key_pem or self.private_key_path,
+        }
+        missing = [name for name, value in required_values.items() if not value]
+        if missing:
+            raise SnowflakeConfigurationError(
+                "Snowflake connection is not configured. Missing: " + ", ".join(missing)
+            )
+        validate_account_identifier(self.account)
+        timeout = timeout_seconds or self.query_timeout_seconds
+        duration = f"{timeout}s"
+        options = {
+            adbc_driver_snowflake.DatabaseOptions.ACCOUNT.value: self.account,
+            "username": self.user,
+            adbc_driver_snowflake.DatabaseOptions.ROLE.value: self.role,
+            adbc_driver_snowflake.DatabaseOptions.WAREHOUSE.value: self.warehouse,
+            adbc_driver_snowflake.DatabaseOptions.DATABASE.value: self.database or "SNOWFLAKE",
+            adbc_driver_snowflake.DatabaseOptions.SCHEMA.value: self.schema or "ACCOUNT_USAGE",
+            adbc_driver_snowflake.DatabaseOptions.AUTH_TYPE.value: "auth_jwt",
+            adbc_driver_snowflake.DatabaseOptions.JWT_PRIVATE_KEY_VALUE.value: self._load_private_key_pem(),
+            adbc_driver_snowflake.DatabaseOptions.LOGIN_TIMEOUT.value: duration,
+            adbc_driver_snowflake.DatabaseOptions.REQUEST_TIMEOUT.value: duration,
+            adbc_driver_snowflake.DatabaseOptions.CLIENT_TIMEOUT.value: duration,
+        }
+        if self.private_key_passphrase:
+            options[adbc_driver_snowflake.DatabaseOptions.JWT_PRIVATE_KEY_PASSWORD.value] = self.private_key_passphrase
+        if keep_session_alive:
+            options[adbc_driver_snowflake.DatabaseOptions.KEEP_SESSION_ALIVE.value] = "true"
+        return options
+
+    def _load_private_key_pem(self) -> str:
         if self.private_key_pem is None and self.private_key_path is None:
             raise SnowflakeConfigurationError("Snowflake connection is not configured.")
-
-        password = (
-            self.private_key_passphrase.encode("utf-8")
-            if self.private_key_passphrase
-            else None
-        )
         try:
-            pem_bytes = (
-                self.private_key_pem.encode("utf-8")
-                if self.private_key_pem is not None
-                else self.private_key_path.read_bytes()
+            if self.private_key_pem is not None:
+                pem = self.private_key_pem
+            else:
+                assert self.private_key_path is not None
+                pem = self.private_key_path.read_text(encoding="utf-8")
+            password = (
+                self.private_key_passphrase.encode("utf-8")
+                if self.private_key_passphrase
+                else None
             )
-            private_key = serialization.load_pem_private_key(
-                pem_bytes, password=password
-            )
-            return private_key.private_bytes(
-                encoding=serialization.Encoding.DER,
-                format=serialization.PrivateFormat.PKCS8,
-                encryption_algorithm=serialization.NoEncryption(),
-            )
+            serialization.load_pem_private_key(pem.encode("utf-8"), password=password)
+            return pem
         except (OSError, TypeError, ValueError):
             raise SnowflakeConfigurationError(
                 "Snowflake private key could not be loaded."

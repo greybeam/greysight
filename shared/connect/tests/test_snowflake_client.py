@@ -353,7 +353,7 @@ def test_config_from_environment_loads_private_key_path_without_exposing_it(
 
     assert config.private_key_path == key_path
     with pytest.raises(SnowflakeConfigurationError) as exc_info:
-        config.connector_kwargs()
+        config.adbc_db_kwargs()
     assert str(key_path) not in str(exc_info.value)
     assert exc_info.value.__cause__ is None
 
@@ -498,31 +498,106 @@ def test_execute_source_query_maps_query_errors_to_neutral_message() -> None:
     assert "raw account usage failure" not in str(exc_info.value)
 
 
-def _generate_pem() -> str:
+def _generate_pem(*, passphrase: str | None = None) -> str:
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    encryption = (
+        serialization.BestAvailableEncryption(passphrase.encode("utf-8"))
+        if passphrase
+        else serialization.NoEncryption()
+    )
     return key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
+        encryption_algorithm=encryption,
     ).decode("utf-8")
 
 
-def test_loads_private_key_from_pem_content() -> None:
-    pem = _generate_pem()
+def test_adbc_db_kwargs_preserves_existing_jwt_onboarding_contract() -> None:
+    pem = _generate_pem(passphrase="hunter2")
+    config = SnowflakeConnectionConfig(
+        account="ORG-ACCOUNT",
+        user="svc",
+        role="GREYSIGHT_RL",
+        warehouse="GREYSIGHT_WH",
+        database=None,
+        schema=None,
+        private_key_pem=pem,
+        private_key_passphrase="hunter2",
+        query_timeout_seconds=120,
+    )
+
+    options = config.adbc_db_kwargs()
+
+    assert options["adbc.snowflake.sql.account"] == "ORG-ACCOUNT"
+    assert options["username"] == "svc"
+    assert options["adbc.snowflake.sql.role"] == "GREYSIGHT_RL"
+    assert options["adbc.snowflake.sql.warehouse"] == "GREYSIGHT_WH"
+    assert options["adbc.snowflake.sql.db"] == "SNOWFLAKE"
+    assert options["adbc.snowflake.sql.schema"] == "ACCOUNT_USAGE"
+    assert options["adbc.snowflake.sql.auth_type"] == "auth_jwt"
+    assert options["adbc.snowflake.sql.client_option.jwt_private_key_pkcs8_value"] == pem
+    assert options["adbc.snowflake.sql.client_option.jwt_private_key_pkcs8_password"] == "hunter2"
+    assert "password" not in options
+
+
+def test_adbc_db_kwargs_reads_private_key_from_path(tmp_path: Path) -> None:
+    pem = _generate_pem(passphrase="hunter2")
+    key_path = tmp_path / "snowflake_key.p8"
+    key_path.write_text(pem, encoding="utf-8")
+    config = SnowflakeConnectionConfig(
+        account="ORG-ACCOUNT",
+        user="svc",
+        role="GREYSIGHT_RL",
+        warehouse="GREYSIGHT_WH",
+        private_key_path=key_path,
+        private_key_passphrase="hunter2",
+    )
+
+    options = config.adbc_db_kwargs()
+
+    assert (
+        options["adbc.snowflake.sql.client_option.jwt_private_key_pkcs8_value"] == pem
+    )
+    assert (
+        options["adbc.snowflake.sql.client_option.jwt_private_key_pkcs8_password"]
+        == "hunter2"
+    )
+
+
+def test_adbc_db_kwargs_rejects_missing_fields() -> None:
+    config = SnowflakeConnectionConfig(account="acct")
+    with pytest.raises(SnowflakeConfigurationError) as exc_info:
+        config.adbc_db_kwargs()
+    assert "Missing" in str(exc_info.value)
+
+
+def test_adbc_db_kwargs_rejects_wrong_passphrase() -> None:
+    pem = _generate_pem(passphrase="hunter2")
     config = SnowflakeConnectionConfig(
         account="acct",
         user="u",
         role="r",
         warehouse="w",
-        database="SNOWFLAKE",
-        schema="ACCOUNT_USAGE",
         private_key_pem=pem,
+        private_key_passphrase="wrong",
     )
-    kwargs = config.connector_kwargs()
-    assert isinstance(kwargs["private_key"], bytes) and len(kwargs["private_key"]) > 0
+    with pytest.raises(SnowflakeConfigurationError):
+        config.adbc_db_kwargs()
+
+
+def test_adbc_db_kwargs_rejects_malformed_pem() -> None:
+    config = SnowflakeConnectionConfig(
+        account="acct",
+        user="u",
+        role="r",
+        warehouse="w",
+        private_key_pem="not a valid key",
+    )
+    with pytest.raises(SnowflakeConfigurationError):
+        config.adbc_db_kwargs()
 
 
 def test_repr_does_not_leak_key_material() -> None:
@@ -540,7 +615,7 @@ def test_repr_does_not_leak_key_material() -> None:
     assert "hunter2" not in text
 
 
-def test_connector_kwargs_rejects_malformed_account() -> None:
+def test_adbc_db_kwargs_rejects_malformed_account() -> None:
     from greysight_connect.snowflake_account import InvalidSnowflakeAccountError
 
     pem = _generate_pem()
@@ -552,7 +627,7 @@ def test_connector_kwargs_rejects_malformed_account() -> None:
         private_key_pem=pem,
     )
     with pytest.raises(InvalidSnowflakeAccountError):
-        config.connector_kwargs()
+        config.adbc_db_kwargs()
 
 
 def test_execute_source_query_normalizes_connection_failure() -> None:
