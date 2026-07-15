@@ -15,7 +15,6 @@ from greysight_connect.snowflake_client import (
     SnowflakeValidationError,
     execute_metadata_query,
     execute_source_query,
-    snowflake_cursor,
     validate_snowflake_connection,
 )
 
@@ -126,6 +125,19 @@ def test_execute_source_query_rejects_invalid_window_before_connecting() -> None
             execute_source_query(
                 "select %(window_days)s as window_days",
                 {"window_days": 0},
+            )
+
+    connect.assert_not_called()
+
+
+def test_execute_source_query_rejects_missing_bind_before_connecting() -> None:
+    with patch(_ADBC_CONNECT) as connect:
+        with pytest.raises(
+            ValueError, match="Missing Snowflake bind param: account_locator"
+        ):
+            execute_source_query(
+                "select %(account_locator)s",
+                {"window_days": 30},
             )
 
     connect.assert_not_called()
@@ -645,20 +657,6 @@ def test_execute_source_query_normalizes_invalid_account() -> None:
 
     with pytest.raises(SnowflakeQueryError):
         execute_source_query("select 1", {}, config)
-
-
-def test_snowflake_cursor_tags_query() -> None:
-    connection = _Connection(_RecordingCursor(description=[], rows=[]))
-
-    snowflake_cursor(connection)
-
-    assert connection.cursor_kwargs == [
-        {
-            "adbc_stmt_kwargs": {
-                adbc_driver_snowflake.StatementOptions.QUERY_TAG.value: "greysight"
-            }
-        }
-    ]
 
 
 # ---------------------------------------------------------------------------

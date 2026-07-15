@@ -195,6 +195,7 @@ def execute_source_query(
     connect: Callable[[SnowflakeConnectionConfig | None], Any] | None = None,
 ) -> list[dict[str, Any]]:
     _validate_window_params(bind_params)
+    adbc_sql, values = _adbc_bindings(sql, bind_params)
     try:
         connection = (connect or _connect)(config)
     except SnowflakeValidationError as exc:
@@ -204,7 +205,6 @@ def execute_source_query(
         ) from None
     except Exception:
         raise SnowflakeQueryError("Could not query Snowflake.") from None
-    adbc_sql, values = _adbc_bindings(sql, bind_params)
     try:
         with snowflake_cursor(connection) as cursor:
             if values:
