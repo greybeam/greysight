@@ -1,3 +1,4 @@
+from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -21,6 +22,7 @@ from app.services.dashboard_cache_settings import (
 from app.services.dashboard_run_cache import (
     CachedDashboardRun,
     InMemoryRunCacheStore,
+    RunCacheStoreError,
     configure_run_cache_store,
 )
 from app.services.demo_data import DEMO_ACCOUNT_LOCATOR, build_demo_dashboard_dataset
@@ -107,6 +109,53 @@ def test_cached_returns_204_when_no_cached_run(_stores) -> None:
         app.dependency_overrides.clear()
     assert response.status_code == 204
     assert response.content == b""
+
+
+def test_cached_rejects_and_deletes_incompatible_dataset(_stores) -> None:
+    _settings_store, run_store = _stores
+    _seed_active_cached_run(run_store)
+    cached = run_store.get_active(ORG_ID)
+    assert cached is not None
+    datasets = deepcopy(cached.datasets)
+    datasets["warehouse_spend_daily"][0].pop("credits_attributed_queries")
+    run_store.upsert(replace(cached, datasets=datasets))
+
+    app.dependency_overrides[require_auth_context] = _member_ctx
+    try:
+        response = TestClient(app).get(
+            f"/api/dashboard-runs/cached?organization_id={ORG_ID}"
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 204
+    assert run_store.get_active(ORG_ID) is None
+
+
+def test_cached_rejects_incompatible_dataset_when_cleanup_fails(
+    _stores, monkeypatch
+) -> None:
+    _settings_store, run_store = _stores
+    _seed_active_cached_run(run_store)
+    cached = run_store.get_active(ORG_ID)
+    assert cached is not None
+    datasets = deepcopy(cached.datasets)
+    datasets["warehouse_spend_daily"][0].pop("credits_attributed_queries")
+    run_store.upsert(replace(cached, datasets=datasets))
+
+    def fail_delete(_organization_id: str) -> None:
+        raise RunCacheStoreError()
+
+    monkeypatch.setattr(run_store, "delete", fail_delete)
+    app.dependency_overrides[require_auth_context] = _member_ctx
+    try:
+        response = TestClient(app).get(
+            f"/api/dashboard-runs/cached?organization_id={ORG_ID}"
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 204
 
 
 def test_cached_returns_204_when_cache_disabled(_stores) -> None:

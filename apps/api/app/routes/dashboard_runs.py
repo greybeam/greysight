@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from app.auth import AuthContext, require_auth_context, require_org_membership
 from app.config import Settings
 from app.models import (
+    REQUIRED_DATASET_KEYS,
     DashboardDatasetMetadata,
     DashboardDatasetResponse,
     DashboardRun,
@@ -928,6 +929,20 @@ def _reset_cached_snapshot_registry() -> None:
         _cached_snapshot_registry.clear()
 
 
+def _cached_datasets_match_current_contract(cached: CachedDashboardRun) -> bool:
+    try:
+        base_datasets = {
+            key: cached.datasets[key] for key in REQUIRED_DATASET_KEYS
+        }
+        DashboardRunCreateRequest(
+            window_days=cached.window_days,
+            datasets=base_datasets,
+        )
+    except (KeyError, ValueError):
+        return False
+    return True
+
+
 @router.get("/cached", response_model=CachedDashboardRunResponse)
 def read_cached_dashboard_run(
     organization_id: UUID,
@@ -953,6 +968,16 @@ def read_cached_dashboard_run(
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     if cached is None:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    if not _cached_datasets_match_current_contract(cached):
+        logger.warning("Ignoring incompatible dashboard cache for org %s", org_id)
+        try:
+            store.delete(org_id)
+        except RunCacheStoreError:
+            logger.exception(
+                "Failed to delete incompatible dashboard cache for org %s", org_id
+            )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # Connection fingerprint check: the cache row is keyed only by org, so if the
