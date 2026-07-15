@@ -1701,7 +1701,7 @@ def _prepared_view_or_http_error(
     end_date: date | None,
 ) -> DashboardViewResponse:
     try:
-        return build_dashboard_view(
+        view = build_dashboard_view(
             run=run,
             datasets=datasets,
             metadata=metadata,
@@ -1711,6 +1711,11 @@ def _prepared_view_or_http_error(
             start_date=start_date,
             end_date=end_date,
         )
+        # Attach the source-group availability metadata so the client can
+        # surface each group's curated user_safe_message for sections whose
+        # source group collapsed. Applied here so every /view producer (demo,
+        # provisional, completed snapshot) ships it consistently.
+        return view.model_copy(update={"metadata": metadata})
     except DashboardRangeOutOfBoundsError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
