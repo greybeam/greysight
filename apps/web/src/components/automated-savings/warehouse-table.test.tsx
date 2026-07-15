@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as automatedSavingsApi from "../../lib/automated-savings-api";
+import { DashboardApiError } from "../../lib/dashboard-errors";
 import { WarehouseTable } from "./warehouse-table";
 
 // The shared vitest setup registers no automatic DOM cleanup, so unmount each
@@ -189,16 +190,36 @@ describe("WarehouseTable", () => {
     },
   );
 
-  it("surfaces a toggle failure without changing enrollment", async () => {
+  it("surfaces a toggle failure's user-safe message without changing enrollment", async () => {
     vi.spyOn(automatedSavingsApi, "toggleWarehouse").mockRejectedValue(
-      new Error("Auto Savings API request failed with 502: Snowflake unavailable"),
+      new DashboardApiError(
+        "Auto Savings API request failed with 502",
+        "Could not list Snowflake warehouses.",
+      ),
     );
     const onChange = vi.fn();
     render(<WarehouseTable orgId="org-1" isAdmin accessToken="tok" warehouses={[base]} onChange={onChange} />);
 
     fireEvent.click(screen.getByRole("switch", { name: /WH1/i }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("Snowflake unavailable");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not list Snowflake warehouses.",
+    );
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("shows a generic message when a toggle failure has no user-safe detail", async () => {
+    vi.spyOn(automatedSavingsApi, "toggleWarehouse").mockRejectedValue(
+      new Error("Auto Savings API request failed with 502"),
+    );
+    const onChange = vi.fn();
+    render(<WarehouseTable orgId="org-1" isAdmin accessToken="tok" warehouses={[base]} onChange={onChange} />);
+
+    fireEvent.click(screen.getByRole("switch", { name: /WH1/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Something went wrong. Please try again.",
+    );
     expect(onChange).not.toHaveBeenCalled();
   });
 

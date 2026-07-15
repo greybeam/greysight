@@ -122,6 +122,24 @@ describe("automated-savings-api", () => {
     );
   });
 
+  it("surfaces a plain string FastAPI detail as the user-safe message", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ detail: "Could not list Snowflake warehouses." }),
+        { status: 502 },
+      ),
+    );
+
+    const error = await fetchWarehouses("org-1", { accessToken: "t" }).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(DashboardApiError);
+    expect((error as DashboardApiError).userSafeMessage).toBe(
+      "Could not list Snowflake warehouses.",
+    );
+  });
+
   it.each([
     ["agree", () => agree("org-1", { accessToken: "t" }), "/agree", undefined],
     ["global switch", () => setGlobalSwitch("org-1", true, { accessToken: "t" }), "/global-switch", { enabled: true }],

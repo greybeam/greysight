@@ -137,6 +137,11 @@ async function readUserSafeMessage(response: Response): Promise<string | null> {
     const body = (await response.json()) as unknown;
     if (typeof body !== "object" || body === null) return null;
     const detail = (body as { detail?: unknown }).detail;
+    // FastAPI string details on this API are server-curated and user-safe, so
+    // surface them directly (e.g. "Could not list Snowflake warehouses.").
+    if (typeof detail === "string") {
+      return detail.length > 0 ? detail : null;
+    }
     if (typeof detail !== "object" || detail === null) return null;
     const message = (detail as { user_safe_message?: unknown })
       .user_safe_message;
