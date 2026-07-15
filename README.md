@@ -1,6 +1,6 @@
 # Greysight
 
-**An open source dashboard for Snowflake cost observability.**
+**An open source Snowflake cost optimization and observability dashboard.**
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
@@ -12,13 +12,20 @@ Snowflake tells you what you spent. Finding out *where* it went usually means
 writing your own queries against `ACCOUNT_USAGE` and `ORGANIZATION_USAGE` and
 rebuilding the same charts every team builds. Greysight does that part for you:
 it reads approved, read-only metadata queries, turns them into a cost dashboard,
-and renders it in a Next.js app.
+and renders it in a Next.js app. Greysight also includes Auto Savings, a feature that suspends warehouses when Snowflake metadata
+proves they are idle.
 
 We offer a free hosted version at **[costs.greybeam.ai](https://costs.greybeam.ai)**.
 In case you want more info before signing up you can find that [here](https://www.greybeam.ai/greysight).
 Or run it yourself: using the quick start below.
 
 ![Greysight dashboard](docs/images/dashboard_overview.svg)
+
+## Features
+
+- **Cost observability:** Attribute Snowflake spend, inspect warehouse and query
+  costs, and review usage trends from one dashboard.
+- **Auto Savings:** Reduce idle compute by suspending active warehouses that have no running queries.
 
 ## Quick start
 
@@ -47,11 +54,14 @@ The role you authenticate with needs read access to the `ACCOUNT_USAGE` and
 `ORGANIZATION_USAGE` views. Then restart `npm run dev`. Full walkthrough:
 [docs/snowflake-setup.md](docs/snowflake-setup.md).
 
-Greysight only ever runs the read-only SQL at [sql/snowflake](sql/snowflake)
-and approved in [sql/dashboard_sources.yml](sql/dashboard_sources.yml). It does
-not write to your account, and credentials never reach the browser.
+Greysight only uses the read-only SQL at [sql/snowflake](sql/snowflake) and
+approved in [sql/dashboard_sources.yml](sql/dashboard_sources.yml) for dashboard
+data. This path does not write to your account, and Snowflake credentials are
+not returned to the browser. The separately enabled Auto Savings worker is
+the only exception: it can issue `ALTER WAREHOUSE … SUSPEND` for warehouses that
+you explicitly enroll.
 
-## How it works
+## How Greysight works
 
 The data path is intentionally boring:
 
@@ -65,11 +75,73 @@ The frontend never invents its own analytics. If a chart needs a new derived
 number, it gets added to the backend view contract first, so the dashboard and
 the data always agree.
 
+## Auto Savings
+
+Auto Savings runs as a separate worker. An organization must agree to use
+the feature, enable its organization-wide switch, and enroll and enable each
+warehouse before the worker can act on it.
+
+For each organization, the worker:
+
+1. Reads the current warehouse state with `SHOW WAREHOUSES`.
+2. Checks each enabled enrollment against that snapshot.
+3. Confirms the warehouse is a running `STANDARD` warehouse with no running or
+   queued statements, no quiescing compute, `AUTO_RESUME` enabled, and at least
+   60 seconds of uptime.
+4. Rechecks the current switches, warehouse identity, and enrollment version.
+5. Issues `ALTER WAREHOUSE … SUSPEND`.
+
+The full eligibility and fail-closed behavior is described
+in [How Auto Savings works](docs/automated-savings-how-it-works.md).
+
+### Try Auto Savings locally
+
+Auto Savings currently requires a Supabase backend. A fully local SQLite or DuckDB backend is planned for a future release.
+
+1. Follow the [Supabase setup](docs/local-development.md#supabase-setup), apply
+   the migrations in [supabase/migrations](supabase/migrations), and copy
+   `.env.example` to `.env`.
+2. Configure the root `.env` for authenticated Snowflake mode. `SUPABASE_URL`
+   must be set explicitly because the worker does not read the browser-facing
+   URL as a fallback.
+
+   ```bash
+   DATA_SOURCE=snowflake
+   AUTH_REQUIRED=true
+   NEXT_PUBLIC_AUTH_REQUIRED=true
+   NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+   NEXT_PUBLIC_SUPABASE_URL=
+   NEXT_PUBLIC_SUPABASE_ANON_KEY=
+   SUPABASE_URL=
+   SUPABASE_SERVICE_ROLE_KEY=
+   ```
+
+3. Run `npm run dev`, sign in, and connect the organization to Snowflake using
+   the in-app connection flow.
+4. Give the configured Snowflake role permission to suspend the test warehouse.
+   The [Autod Savings operations guide](docs/automated-savings.md#snowflake-access)
+   describes the supported account-level and per-warehouse grants.
+5. Open **Auto Savings** in Greysight, agree to the feature, enroll the test
+   warehouse, and enable both the organization and warehouse switches.
+6. Start the worker in a second terminal:
+
+   ```bash
+   cd apps/auto-savings
+   uv run dev.py
+   ```
+
+7. Resume the test warehouse and leave it idle. After the warehouse has been
+   running for at least 60 seconds, the worker can suspend it on an eligible
+   polling cycle. Worker decisions and command outcomes are written as
+   structured logs.
+
 ## Project layout
 
 ```text
 apps/web/                Next.js dashboard, auth/org UI, browser API clients, tests
 apps/api/                FastAPI backend, Snowflake access, metrics, route tests
+apps/auto-savings/       Opt-in warehouse suspension worker and tests
+shared/connect/          Shared Snowflake and Supabase connection package
 sql/snowflake/           Approved read-only Snowflake SQL assets
 sql/dashboard_sources.yml  Dataset registry for dashboard sources
 supabase/migrations/     Schema, RLS, org membership, credential storage
@@ -95,6 +167,8 @@ credentials.
 
 - [Local development](docs/local-development.md)
 - [Snowflake setup](docs/snowflake-setup.md)
+- [How Auto Savings works](docs/automated-savings-how-it-works.md)
+- [Auto Savings operations guide](docs/automated-savings.md)
 - [Security model](docs/security-model.md)
 - [Deployment](docs/deployment.md)
 - [Dependency compatibility](docs/dependency-compatibility.md)
