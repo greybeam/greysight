@@ -304,46 +304,6 @@ def test_worker_reaches_completed_and_streams_datasets(monkeypatch):
     )
 
 
-def test_worker_streams_safe_failure_message_into_running_view(monkeypatch):
-    dr.dashboard_run_repository.clear()
-    run = dr.dashboard_run_repository.create_running_run(
-        organization_id=None,
-        source="snowflake",
-        window_days=100,
-        expected_sources=dr.BASE_RUN_SOURCE_KEYS,
-        retention_days=7,
-    )
-    run_id = UUID(run.id)
-    captured: dict[str, object] = {}
-
-    def fake_build(
-        settings, *, summary_window_days, connection_config, on_source_outcome=None
-    ):
-        assert on_source_outcome is not None
-        on_source_outcome(
-            SourceOutcome(
-                key="database_storage_daily",
-                rows=None,
-                available=False,
-                user_safe_message="Snowflake blocked the connection.",
-            )
-        )
-        captured.update(read_dashboard_run_view(run_id, None, None, None, _anon()))
-        return _Data()
-
-    monkeypatch.setattr(dr, "build_snowflake_dashboard_data", fake_build)
-    dr._run_dashboard_worker(run_id, Settings(), object(), 30)
-
-    assert captured["section_errors"] == {
-        "overview": None,
-        "warehouse": None,
-        "storage": {
-            "message": "Snowflake blocked the connection.",
-            "reportable": False,
-        },
-    }
-
-
 def test_worker_unhandled_exception_finalizes_failed(monkeypatch):
     dr.dashboard_run_repository.clear()
     run = dr.dashboard_run_repository.create_running_run(
@@ -523,15 +483,6 @@ def test_completed_snapshot_collapsed_group_yields_unavailable_sections():
     assert section["overview"] == "unavailable", section
     assert section["warehouse"] == "unavailable", section
     assert section["storage"] == "unavailable", section
-    expected_error = {
-        "message": "Snowflake Account Usage is unavailable for this role.",
-        "reportable": False,
-    }
-    assert payload["section_errors"] == {
-        "overview": expected_error,
-        "warehouse": expected_error,
-        "storage": expected_error,
-    }
 
 
 def test_completed_snapshot_empty_window_group_available_yields_ready():

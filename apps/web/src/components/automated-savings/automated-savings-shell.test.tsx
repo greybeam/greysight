@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AccountChromeProvider } from "../../lib/account-context";
 import type { WarehouseRow } from "../../lib/automated-savings-api";
+import { DashboardApiError } from "../../lib/dashboard-errors";
 import { AutomatedSavingsShell } from "./automated-savings-shell";
 
 const fetchStatusMock = vi.fn();
@@ -154,12 +155,40 @@ describe("AutomatedSavingsShell", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       /couldn.t load/i,
     );
+    expect(
+      screen.getByRole("link", { name: /report this issue/i }),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /retry/i }));
 
     expect(
       await screen.findByRole("table", { name: /warehouses/i }),
     ).toBeInTheDocument();
+  });
+
+  it("shows a classified Snowflake failure without the report link", async () => {
+    fetchStatusMock.mockResolvedValue({
+      agreed: true,
+      globalEnabled: true,
+      grantPresent: true,
+      grantCheckedAt: null,
+      roleName: null,
+    });
+    fetchWarehousesMock.mockRejectedValue(
+      new DashboardApiError(
+        "Auto Savings API request failed with 502",
+        "Snowflake blocked the connection under its network policy.",
+      ),
+    );
+
+    renderShell();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /network policy/i,
+    );
+    expect(
+      screen.queryByRole("link", { name: /report this issue/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("reflects status.globalEnabled and flips it via the global switch", async () => {

@@ -212,8 +212,17 @@ def execute_metadata_query(
     no bind params, and — unlike a SELECT — never resumes a warehouse."""
     try:
         connection = (connect or _connect)(config)
-    except Exception:
-        raise SnowflakeQueryError("Could not query Snowflake.") from None
+    except Exception as exc:
+        known_message = (
+            exc.user_safe_message
+            if isinstance(exc, SnowflakeValidationError)
+            else _known_base_user_safe_message(exc)
+        )
+        message = str(exc) if known_message else "Could not query Snowflake."
+        raise SnowflakeQueryError(
+            message,
+            user_safe_message=message if known_message else None,
+        ) from None
     try:
         cursor = connection.cursor()
         try:
@@ -221,7 +230,12 @@ def execute_metadata_query(
             columns = [_column_name(column) for column in cursor.description or ()]
             return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
         except Exception as exc:
-            raise SnowflakeQueryError(_user_safe_message(exc)) from exc
+            known_message = _known_base_user_safe_message(exc)
+            message = _user_safe_message(exc) if known_message else "Could not query Snowflake."
+            raise SnowflakeQueryError(
+                message,
+                user_safe_message=message if known_message else None,
+            ) from None
         finally:
             cursor.close()
     finally:

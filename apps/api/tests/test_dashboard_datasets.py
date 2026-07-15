@@ -405,26 +405,6 @@ def test_tolerates_account_usage_failure_when_org_usage_is_available() -> None:
     assert data.datasets["account_spend_daily"] == []
 
 
-def test_mixed_known_and_unknown_group_failures_remain_reportable() -> None:
-    execute_success = _fake_execute()
-
-    def execute(sql: str, bind_params: dict[str, Any]) -> list[dict[str, Any]]:
-        lowered = sql.lower()
-        if "warehouse_metering_history" in lowered:
-            raise SnowflakeQueryError(
-                "known account failure",
-                user_safe_message="Snowflake Account Usage is unavailable.",
-            )
-        if "query_attribution_history" in lowered:
-            raise SnowflakeQueryError("unknown account failure")
-        return execute_success(sql, bind_params)
-
-    data = build_snowflake_dashboard_data(Settings(), execute=execute)
-
-    assert data.metadata.account_usage.available is False
-    assert data.metadata.account_usage.user_safe_message is None
-
-
 def test_fails_when_both_source_groups_are_unavailable() -> None:
     with pytest.raises(DashboardSourcesUnavailableError):
         build_snowflake_dashboard_data(

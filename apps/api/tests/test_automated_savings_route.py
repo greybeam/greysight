@@ -15,6 +15,7 @@ from app.services.automated_savings_store import (
 )
 from app.services.membership_directory import Organization
 from app.services.org_connection_resolver import OrgConnectionNotConfiguredError
+from app.services.snowflake_client import SnowflakeQueryError
 
 
 def _admin_ctx():
@@ -222,6 +223,37 @@ def test_capture_warehouse_identity_requires_exact_live_name(monkeypatch):
 
     assert captured is None
     assert exact == "2026-01-01T00:00:00Z"
+
+
+def test_list_warehouses_returns_classified_snowflake_failure(monkeypatch):
+    app.dependency_overrides[require_auth_context] = _member_ctx
+    monkeypatch.setattr(
+        "app.services.org_connection_resolver.resolve_snowflake_config",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        "app.services.snowflake_runtime.get_connection_fetcher",
+        lambda settings: object(),
+    )
+    monkeypatch.setattr(
+        "app.services.warehouse_directory.list_live_warehouses",
+        lambda config: (_ for _ in ()).throw(
+            SnowflakeQueryError(
+                "safe classified message",
+                user_safe_message="Snowflake blocked the connection under its network policy.",
+            )
+        ),
+    )
+
+    try:
+        response = TestClient(app).get("/api/automated-savings/org-1/warehouses")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == {
+        "user_safe_message": "Snowflake blocked the connection under its network policy."
+    }
 
 
 def test_management_routes_are_absent():

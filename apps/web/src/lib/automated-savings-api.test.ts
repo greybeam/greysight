@@ -7,6 +7,7 @@ import {
   setGlobalSwitch,
   toggleWarehouse,
 } from "./automated-savings-api";
+import { DashboardApiError } from "./dashboard-errors";
 
 describe("automated-savings-api", () => {
   afterEach(() => {
@@ -101,12 +102,24 @@ describe("automated-savings-api", () => {
       .rejects.toThrow("Malformed automated-savings API response");
   });
 
-  it("surfaces the API's error detail when the shared fetchJson helper hits a non-ok response", async () => {
+  it("surfaces only the API's structured user-safe error detail", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ detail: "org not found" }), { status: 500 }),
+      new Response(
+        JSON.stringify({
+          detail: { user_safe_message: "Snowflake network policy blocked access." },
+        }),
+        { status: 502 },
+      ),
     );
-    await expect(fetchStatus("org-1", { accessToken: "t" }))
-      .rejects.toThrow(/500: org not found/);
+
+    const error = await fetchStatus("org-1", { accessToken: "t" }).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(DashboardApiError);
+    expect((error as DashboardApiError).userSafeMessage).toBe(
+      "Snowflake network policy blocked access.",
+    );
   });
 
   it.each([

@@ -3,10 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { usePrefersReducedMotion } from "../../lib/use-prefers-reduced-motion";
-import {
-  DASHBOARD_ISSUE_URL,
-  dashboardFailure,
-} from "../../lib/dashboard-errors";
+import { dashboardFailure } from "../../lib/dashboard-errors";
 import {
   fetchCachedDashboardRun,
   fetchDashboardView,
@@ -34,6 +31,7 @@ import FilterBar, {
   canApplyDateRange,
   type WindowDays,
 } from "./filter-bar";
+import DashboardFailureMessage from "./dashboard-failure-message";
 import SectionEmptyState from "./section-empty-state";
 import {
   AiSpendSection,
@@ -95,42 +93,15 @@ function runFailure(run: DashboardRun) {
   };
 }
 
-function DashboardFailureMessage({
-  message,
-  reportable,
-}: {
-  message: string;
-  reportable: boolean;
-}) {
-  return (
-    <>
-      {message}
-      {reportable ? (
-        <>
-          {" "}
-          <a
-            className="underline underline-offset-2 hover:text-slate-100"
-            href={DASHBOARD_ISSUE_URL}
-            rel="noreferrer"
-            target="_blank"
-          >
-            Report this issue
-          </a>
-        </>
-      ) : null}
-    </>
-  );
-}
-
 function sectionFailureMessage(
   view: DashboardView | null,
   section: "overview" | "warehouse" | "storage",
 ) {
-  const error = view?.sectionErrors[section];
+  const userSafeMessage = view?.run.user_safe_message ?? null;
   return (
     <DashboardFailureMessage
-      message={error?.message ?? `Could not load ${section} data.`}
-      reportable={error?.reportable ?? true}
+      message={userSafeMessage ?? `Could not load ${section} data.`}
+      reportable={!userSafeMessage}
     />
   );
 }
@@ -837,11 +808,11 @@ function CostDashboardContent({
           />
         ) : (
           <>
-              {transientLoadError ? (
-                <p
-                  className="rounded-md border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-sm font-medium text-rose-300"
-                  role="alert"
-                >
+            {transientLoadError ? (
+              <p
+                className="rounded-md border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-sm font-medium text-rose-300"
+                role="alert"
+              >
                 <DashboardFailureMessage
                   message={transientLoadError}
                   reportable={loadState.reportable ?? true}
@@ -861,9 +832,7 @@ function CostDashboardContent({
               />
             ) : null}
             <OverviewSection
-              {...(sectionStatuses.overview === "ready" &&
-              dataReady &&
-              viewModel
+              {...(sectionStatuses.overview === "ready" && dataReady && viewModel
                 ? {
                     status: "ready",
                     capacityBalance: viewModel.capacityBalance,
@@ -886,9 +855,7 @@ function CostDashboardContent({
                     })}
             />
             <WarehouseSpendSection
-              {...(sectionStatuses.warehouse === "ready" &&
-              dataReady &&
-              viewModel
+              {...(sectionStatuses.warehouse === "ready" && dataReady && viewModel
                 ? {
                     status: "ready",
                     currency: viewModel.header.currency,
@@ -948,4 +915,3 @@ function CostDashboardContent({
     </main>
   );
 }
-

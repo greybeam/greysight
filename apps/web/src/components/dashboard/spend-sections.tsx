@@ -13,7 +13,6 @@ import type {
   TotalSpendViewModel,
   WarehouseSpendViewModel,
 } from "../../lib/dashboard-contracts";
-import { DASHBOARD_ISSUE_URL } from "../../lib/dashboard-errors";
 import {
   buildEndingBalanceLabel,
   buildSpendPeriodLabel,
@@ -33,6 +32,7 @@ import {
   StatValueSkeleton,
   TotalSpendBarCard,
 } from "./dashboard-design-system";
+import DashboardFailureMessage from "./dashboard-failure-message";
 import { DetailTable } from "./detail-tables";
 import SectionEmptyState from "./section-empty-state";
 import SectionIdleState from "./section-idle-state";
@@ -60,6 +60,26 @@ export function flattenServiceDailySeries(
     ...point.values,
     date: point.date,
   }));
+}
+
+// Shared terminal error frame for a dashboard section: the section shell wrapping
+// a single failure message. Used by every section's `status === "error"` branch.
+function SectionErrorState({
+  ariaLabel,
+  testId,
+  title,
+  message,
+}: {
+  ariaLabel: string;
+  testId: string;
+  title: string;
+  message: ReactNode;
+}) {
+  return (
+    <DashboardSection ariaLabel={ariaLabel} testId={testId} title={title}>
+      <SectionEmptyState message={message} />
+    </DashboardSection>
+  );
 }
 
 type OverviewSectionProps =
@@ -97,13 +117,12 @@ export function OverviewSection(props: OverviewSectionProps) {
   }
   if (props.status === "error") {
     return (
-      <DashboardSection
+      <SectionErrorState
         ariaLabel="Overview"
         testId="dashboard-section-overview"
         title="Overview"
-      >
-        <SectionEmptyState message={props.message} />
-      </DashboardSection>
+        message={props.message}
+      />
     );
   }
   const { capacityBalance, currency, range, serviceSpend, totalSpend } = props;
@@ -211,10 +230,7 @@ function OverviewSectionSkeleton({
       title="Overview"
     >
       <div data-testid="overview-skeleton" className="grid gap-4">
-        <section
-          aria-label="Capacity balance summary"
-          data-dashboard-panel="true"
-        >
+        <section aria-label="Capacity balance summary" data-dashboard-panel="true">
           <Card className="p-6">
             <Text>Ending Balance</Text>
             <StatValueSkeleton />
@@ -291,13 +307,12 @@ export function WarehouseSpendSection(props: WarehouseSpendSectionProps) {
   }
   if (props.status === "error") {
     return (
-      <DashboardSection
+      <SectionErrorState
         ariaLabel="Warehouse spend"
         testId="dashboard-section-warehouse-spend"
         title="Warehouse spend"
-      >
-        <SectionEmptyState message={props.message} />
-      </DashboardSection>
+        message={props.message}
+      />
     );
   }
   const { currency, range, viewModel } = props;
@@ -479,13 +494,12 @@ export function StorageSpendSection(props: StorageSpendSectionProps) {
   }
   if (props.status === "error") {
     return (
-      <DashboardSection
+      <SectionErrorState
         ariaLabel="Storage spend"
         testId="dashboard-section-storage-spend"
         title="Storage spend"
-      >
-        <SectionEmptyState message={props.message} />
-      </DashboardSection>
+        message={props.message}
+      />
     );
   }
   const { currency, range, viewModel } = props;
@@ -671,32 +685,17 @@ export function AiSpendSection(props: AiSpendSectionProps) {
   }
   if (props.detail.status === "error") {
     return (
-      <DashboardSection
+      <SectionErrorState
         ariaLabel="AI spend"
         testId="dashboard-section-ai-spend"
         title="AI spend"
-      >
-        <SectionEmptyState
-          message={
-            <>
-              {props.detail.message}
-              {props.detail.reportable ? (
-                <>
-                  {" "}
-                  <a
-                    className="underline underline-offset-2 hover:text-slate-100"
-                    href={DASHBOARD_ISSUE_URL}
-                    rel="noreferrer"
-                    target="_blank"
-                  >
-                    Report this issue
-                  </a>
-                </>
-              ) : null}
-            </>
-          }
-        />
-      </DashboardSection>
+        message={
+          <DashboardFailureMessage
+            message={props.detail.message}
+            reportable={props.detail.reportable}
+          />
+        }
+      />
     );
   }
   const { currency, loadingMessage, range, summary } = props;

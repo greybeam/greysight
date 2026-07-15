@@ -11,7 +11,9 @@ import {
   type AutomatedSavingsStatus,
   type WarehouseRow,
 } from "../../lib/automated-savings-api";
+import { DashboardApiError } from "../../lib/dashboard-errors";
 import { AppHeader } from "../dashboard/app-header";
+import DashboardFailureMessage from "../dashboard/dashboard-failure-message";
 import { Switch } from "../ui/switch";
 import {
   buildGrantSql,
@@ -23,6 +25,17 @@ import { WarehouseTable } from "./warehouse-table";
 
 type LoadState = "idle" | "loading" | "ready" | "error";
 type LoadOptions = { refreshAccess?: boolean };
+type LoadFailure = { message: string; reportable: boolean };
+
+function autoSavingsFailure(error: unknown): LoadFailure {
+  if (error instanceof DashboardApiError && error.userSafeMessage) {
+    return { message: error.userSafeMessage, reportable: false };
+  }
+  return {
+    message: "We couldn’t load Auto Savings. Please try again.",
+    reportable: true,
+  };
+}
 
 // The dark app chrome the dashboard establishes (`dark … bg-canvas
 // [color-scheme:dark]`). OrgShell renders its signed-in children bare, so —
@@ -77,6 +90,7 @@ export function AutomatedSavingsShell() {
   const [status, setStatus] = useState<AutomatedSavingsStatus | null>(null);
   const [warehouses, setWarehouses] = useState<WarehouseRow[]>([]);
   const [loadState, setLoadState] = useState<LoadState>("idle");
+  const [loadFailure, setLoadFailure] = useState<LoadFailure | null>(null);
   const [checking, setChecking] = useState(false);
   const [globalSwitching, setGlobalSwitching] = useState(false);
   const [controlError, setControlError] = useState<string | null>(null);
@@ -94,6 +108,7 @@ export function AutomatedSavingsShell() {
       currentOrgIdRef.current === requestOrgId;
 
     setLoadState("loading");
+    setLoadFailure(null);
     setStatus(null);
     setWarehouses([]);
     checkOperationRef.current = null;
@@ -131,8 +146,9 @@ export function AutomatedSavingsShell() {
       if (accessCheckFailed) {
         setControlError("Couldn’t check Snowflake access. Please try again.");
       }
-    } catch {
+    } catch (error) {
       if (!isCurrentRequest()) return;
+      setLoadFailure(autoSavingsFailure(error));
       setLoadState("error");
     }
   }, [orgId, accessToken]);
@@ -282,7 +298,13 @@ export function AutomatedSavingsShell() {
       ) : loadState === "error" || !status ? (
         <div className="rounded-lg border border-hairline bg-surface p-6">
           <p className="text-sm font-medium text-red-400" role="alert">
-            We couldn’t load Auto Savings. Please try again.
+            <DashboardFailureMessage
+              message={
+                loadFailure?.message ??
+                "We couldn’t load Auto Savings. Please try again."
+              }
+              reportable={loadFailure?.reportable ?? true}
+            />
           </p>
           <button
             type="button"

@@ -675,8 +675,9 @@ describe("CostDashboard", () => {
       id: "run-progressive",
       source: "snowflake",
       status: "running",
+      user_safe_message: "Storage failed safely.",
     };
-    const provisionalView = {
+    const provisionalView: DashboardView = {
       ...demoDashboardView,
       run: runningRun,
       sectionStatuses: {
@@ -684,12 +685,7 @@ describe("CostDashboard", () => {
         warehouse: "pending",
         storage: "unavailable",
       },
-      sectionErrors: {
-        overview: null,
-        warehouse: null,
-        storage: { message: "Storage failed safely.", reportable: false },
-      },
-    } as DashboardView;
+    };
     vi.mocked(startDashboardRun).mockResolvedValue(runningRun);
     vi.mocked(fetchDashboardView).mockResolvedValue(provisionalView);
     // Surface the provisional view via onResult, then stay pending so the
@@ -741,6 +737,7 @@ describe("CostDashboard", () => {
     const completedRun: DashboardRun = {
       ...runningRun,
       status: "completed",
+      user_safe_message: "Storage failed safely.",
     };
     // Completed run where storage never landed: its terminal error must persist
     // across range changes rather than falling back to the all-ready reveal.
@@ -752,25 +749,18 @@ describe("CostDashboard", () => {
         warehouse: "ready",
         storage: "unavailable",
       },
-      sectionErrors: {
-        overview: null,
-        warehouse: null,
-        storage: { message: "Storage failed safely.", reportable: false },
-      },
     };
     vi.mocked(startDashboardRun).mockResolvedValue(runningRun);
     // Every range returns the same completed-but-storage-unavailable view, with
     // its range reflecting the requested window so the active-range chip tracks.
-    vi.mocked(fetchDashboardView).mockImplementation(
-      async (_runId, request) => ({
-        ...completedView,
-        range: {
-          ...completedView.range,
-          mode: "relative" as const,
-          windowDays: request?.windowDays ?? 30,
-        },
-      }),
-    );
+    vi.mocked(fetchDashboardView).mockImplementation(async (_runId, request) => ({
+      ...completedView,
+      range: {
+        ...completedView.range,
+        mode: "relative" as const,
+        windowDays: request?.windowDays ?? 30,
+      },
+    }));
     mockPollResolvesWith(completedView);
 
     render(
@@ -1345,4 +1335,3 @@ describe("CostDashboard", () => {
     });
   });
 });
-

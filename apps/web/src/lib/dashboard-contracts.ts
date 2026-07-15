@@ -320,16 +320,6 @@ export type DashboardViewSectionStatuses = Record<
   DashboardSectionStatus
 >;
 
-export type DashboardSectionError = {
-  message: string;
-  reportable: boolean;
-};
-
-export type DashboardViewSectionErrors = Record<
-  DashboardViewSectionKey,
-  DashboardSectionError | null
->;
-
 export type DashboardView = {
   schema_version: 1;
   run: DashboardRun;
@@ -345,7 +335,6 @@ export type DashboardView = {
   detailTables: DetailTablesViewModel;
   aiSpendSummary: AISpendSummaryViewModel;
   sectionStatuses: DashboardViewSectionStatuses;
-  sectionErrors: DashboardViewSectionErrors;
 };
 
 const REQUIRED_DATASET_KEYS = [
@@ -434,12 +423,6 @@ const ALL_READY_SECTION_STATUSES: DashboardViewSectionStatuses = {
   storage: "ready",
 };
 
-const NO_SECTION_ERRORS: DashboardViewSectionErrors = {
-  overview: null,
-  warehouse: null,
-  storage: null,
-};
-
 function isDashboardSectionStatus(
   value: unknown,
 ): value is DashboardSectionStatus {
@@ -456,9 +439,7 @@ function parseSectionStatuses(
     return { ...ALL_READY_SECTION_STATUSES };
   }
   const record = readViewRecord(payload, "section_statuses", "sectionStatuses");
-  const result: DashboardViewSectionStatuses = {
-    ...ALL_READY_SECTION_STATUSES,
-  };
+  const result: DashboardViewSectionStatuses = { ...ALL_READY_SECTION_STATUSES };
   for (const key of DASHBOARD_VIEW_SECTION_KEYS) {
     const value = record[key];
     if (value === undefined) {
@@ -468,30 +449,6 @@ function parseSectionStatuses(
       throwInvalidDashboardView();
     }
     result[key] = value;
-  }
-  return result;
-}
-
-function parseSectionErrors(
-  payload: Record<string, unknown>,
-): DashboardViewSectionErrors {
-  if (!hasViewValue(payload, "section_errors", "sectionErrors")) {
-    return { ...NO_SECTION_ERRORS };
-  }
-  const record = readViewRecord(payload, "section_errors", "sectionErrors");
-  const result: DashboardViewSectionErrors = { ...NO_SECTION_ERRORS };
-  for (const key of DASHBOARD_VIEW_SECTION_KEYS) {
-    const value = record[key];
-    if (value === undefined || value === null) {
-      continue;
-    }
-    if (!isRecord(value)) {
-      throwInvalidDashboardView();
-    }
-    result[key] = {
-      message: readViewString(value, "message"),
-      reportable: readViewBoolean(value, "reportable"),
-    };
   }
   return result;
 }
@@ -593,7 +550,6 @@ export function parseDashboardView(payload: unknown): DashboardView {
         )
       : { total: 0, totalLabel: "$0.00", isEmpty: true },
     sectionStatuses: parseSectionStatuses(payload),
-    sectionErrors: parseSectionErrors(payload),
   };
 }
 
@@ -1500,4 +1456,3 @@ function readRequiredSummaryNumber(
 
   return value;
 }
-

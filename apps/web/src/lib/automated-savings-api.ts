@@ -1,4 +1,5 @@
 import resolveApiUrl, { authHeaders } from "./api-client";
+import { DashboardApiError } from "./dashboard-errors";
 
 export type AutomatedSavingsApiOptions = {
   accessToken?: string | null;
@@ -121,28 +122,25 @@ async function fetchJson(
   });
 
   if (!response.ok) {
-    // Surface the API's error detail (FastAPI returns `{ "detail": ... }`), so
-    // a failed call reports WHY instead of just the status code.
-    const detail = await readErrorDetail(response);
-    throw new Error(
-      `Auto Savings API request failed with ${response.status}${detail ? `: ${detail}` : ""}`,
+    const userSafeMessage = await readUserSafeMessage(response);
+    throw new DashboardApiError(
+      `Auto Savings API request failed with ${response.status}`,
+      userSafeMessage,
     );
   }
 
   return response.json();
 }
 
-async function readErrorDetail(response: Response): Promise<string | null> {
+async function readUserSafeMessage(response: Response): Promise<string | null> {
   try {
-    const body = await response.text();
-    if (!body) return null;
-    try {
-      const parsed = JSON.parse(body) as { detail?: unknown };
-      if (typeof parsed.detail === "string") return parsed.detail;
-    } catch {
-      // Non-JSON body — fall through to the raw text.
-    }
-    return body.slice(0, 300);
+    const body = (await response.json()) as unknown;
+    if (typeof body !== "object" || body === null) return null;
+    const detail = (body as { detail?: unknown }).detail;
+    if (typeof detail !== "object" || detail === null) return null;
+    const message = (detail as { user_safe_message?: unknown })
+      .user_safe_message;
+    return typeof message === "string" && message.length > 0 ? message : null;
   } catch {
     return null;
   }
