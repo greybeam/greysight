@@ -35,7 +35,12 @@ ExecuteFn = Callable[[str, dict[str, Any]], list[dict[str, Any]]]
 
 
 class DashboardSourcesUnavailableError(RuntimeError):
-    pass
+    def __init__(self, user_safe_message: str | None = None) -> None:
+        super().__init__(
+            user_safe_message
+            or "Could not query Snowflake billing or Account Usage data."
+        )
+        self.user_safe_message = user_safe_message
 
 
 class SnowflakeDashboardData(BaseModel):
@@ -122,7 +127,14 @@ def build_snowflake_dashboard_data(
 
     if not org_availability.available and not account_availability.available:
         raise DashboardSourcesUnavailableError(
-            "Could not query Snowflake billing or Account Usage data."
+            next(
+                (
+                    outcome.user_safe_message
+                    for outcome in outcomes.values()
+                    if not outcome.available and outcome.user_safe_message
+                ),
+                None,
+            )
         )
 
     if account_availability.available:

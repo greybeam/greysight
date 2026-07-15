@@ -12,6 +12,7 @@ import type {
   TotalSpendViewModel,
   WarehouseSpendViewModel,
 } from "../../lib/dashboard-contracts";
+import { DASHBOARD_ISSUE_URL } from "../../lib/dashboard-errors";
 import {
   buildEndingBalanceLabel,
   buildSpendPeriodLabel,
@@ -592,7 +593,7 @@ function buildTotalAiSpendLabel(
 
 export type AiSpendDetailState =
   | { status: "loading" }
-  | { status: "error" }
+  | { status: "error"; message: string; reportable: boolean }
   | { status: "ready"; viewModel: AIDetailViewModel };
 
 type AiSpendSectionProps =
@@ -623,6 +624,36 @@ export function AiSpendSection(props: AiSpendSectionProps) {
         title="AI spend"
       >
         <SectionIdleState />
+      </DashboardSection>
+    );
+  }
+  if (props.detail.status === "error") {
+    return (
+      <DashboardSection
+        ariaLabel="AI spend"
+        testId="dashboard-section-ai-spend"
+        title="AI spend"
+      >
+        <SectionEmptyState
+          message={
+            <>
+              {props.detail.message}
+              {props.detail.reportable ? (
+                <>
+                  {" "}
+                  <a
+                    className="underline underline-offset-2 hover:text-slate-100"
+                    href={DASHBOARD_ISSUE_URL}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    Report this issue
+                  </a>
+                </>
+              ) : null}
+            </>
+          }
+        />
       </DashboardSection>
     );
   }

@@ -31,6 +31,10 @@ class SnowflakeValidationError(RuntimeError):
 class SnowflakeQueryError(RuntimeError):
     """Raised with a user-safe Snowflake query message."""
 
+    def __init__(self, message: str, *, user_safe_message: str | None = None) -> None:
+        super().__init__(message)
+        self.user_safe_message = user_safe_message
+
 
 class SnowflakeObjectUnavailableError(SnowflakeQueryError):
     """Raised when a queried object does not exist or is not authorized.
@@ -167,6 +171,8 @@ def execute_source_query(
     _validate_window_params(bind_params)
     try:
         connection = (connect or _connect)(config)
+    except SnowflakeValidationError as exc:
+        raise SnowflakeQueryError(str(exc), user_safe_message=str(exc)) from None
     except Exception:
         raise SnowflakeQueryError("Could not query Snowflake.") from None
     try:
@@ -179,7 +185,12 @@ def execute_source_query(
             raise SnowflakeObjectUnavailableError(
                 "Snowflake object is unavailable for this account."
             ) from None
-        raise SnowflakeQueryError("Could not query Snowflake.") from None
+        known_message = _known_base_user_safe_message(exc)
+        message = _user_safe_message(exc) if known_message else "Could not query Snowflake."
+        raise SnowflakeQueryError(
+            message,
+            user_safe_message=message if known_message else None,
+        ) from None
     finally:
         connection.close()
 
@@ -337,6 +348,13 @@ def _user_safe_message(exc: Exception) -> str:
 
 
 def _base_user_safe_message(exc: Exception) -> str:
+    return _known_base_user_safe_message(exc) or (
+        "Could not validate Snowflake connection. Ask your Snowflake "
+        "administrator to check LOGIN_HISTORY for this user and try again."
+    )
+
+
+def _known_base_user_safe_message(exc: Exception) -> str | None:
     message = str(exc).lower()
     if isinstance(exc, TimeoutError) or "timed out" in message or "timeout" in message:
         safe_message = (
@@ -373,10 +391,7 @@ def _base_user_safe_message(exc: Exception) -> str:
             "private key."
         )
     else:
-        safe_message = (
-            "Could not validate Snowflake connection. Ask your Snowflake "
-            "administrator to check LOGIN_HISTORY for this user and try again."
-        )
+        safe_message = None
     return safe_message
 
 

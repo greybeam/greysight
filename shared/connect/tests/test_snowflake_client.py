@@ -154,6 +154,26 @@ def test_validation_reports_safe_network_policy_diagnostics(
     assert "PEMSECRETMARKER" not in caplog.text
 
 
+def test_source_query_preserves_safe_network_policy_message() -> None:
+    raw_error = _FakeSnowflakeConnectionError(
+        "Incoming request with IP/Token PEMSECRETMARKER is not allowed to "
+        "access Snowflake."
+    )
+
+    with (
+        patch(
+            "greysight_connect.snowflake_client.snowflake.connector.connect",
+            side_effect=raw_error,
+        ),
+        patch.object(SnowflakeConnectionConfig, "connector_kwargs", return_value={}),
+        pytest.raises(SnowflakeQueryError) as exc_info,
+    ):
+        execute_source_query("select 1", {})
+
+    assert "network policy" in str(exc_info.value).lower()
+    assert "PEMSECRETMARKER" not in str(exc_info.value)
+
+
 def test_validation_probe_identifies_unavailable_account_usage_view(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

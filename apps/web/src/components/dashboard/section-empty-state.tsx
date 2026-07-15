@@ -1,5 +1,7 @@
+import type { ReactNode } from "react";
+
 type SectionEmptyStateProps = {
-  message: string;
+  message: ReactNode;
 };
 
 export default function SectionEmptyState({ message }: SectionEmptyStateProps) {

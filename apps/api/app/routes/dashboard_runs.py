@@ -47,6 +47,7 @@ from app.services.dashboard_view_models import DashboardViewRange, DashboardView
 from app.services.deferred_sources import DEFERRED_SOURCES
 from app.services.demo_data import build_demo_dashboard_dataset
 from app.services.parallel_source_runner import SourceOutcome
+from app.services.snowflake_client import SnowflakeQueryError
 
 logger = logging.getLogger(__name__)
 
@@ -711,6 +712,7 @@ class InMemoryDashboardRunRepository:
         metadata: dict[str, Any] | None,
         datasets: dict[str, list[dict[str, Any]]],
         error: str | None = None,
+        user_safe_message: str | None = None,
     ) -> None:
         with self._lock:
             # Only finalize a run that is still running; never resurrect a
@@ -790,6 +792,7 @@ class InMemoryDashboardRunRepository:
                     "completed_at": now,
                     "updated_at": now,
                     "error": error,
+                    "user_safe_message": user_safe_message,
                 }
             )
             self._running_deadlines.pop(run_id, None)
@@ -1314,6 +1317,16 @@ def trigger_dashboard_source(
     except HTTPException:
         dashboard_run_repository.fail_source(run_id, source_id)
         raise
+    except SnowflakeQueryError as exc:
+        dashboard_run_repository.fail_source(run_id, source_id)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                {"user_safe_message": exc.user_safe_message}
+                if exc.user_safe_message
+                else "Deferred source fetch failed"
+            ),
+        ) from None
     except Exception:
         dashboard_run_repository.fail_source(run_id, source_id)
         raise HTTPException(
@@ -1807,7 +1820,7 @@ def _run_dashboard_worker(
             metadata=data.metadata.model_dump(mode="json"),
             datasets=data.datasets,
         )
-    except DashboardSourcesUnavailableError:
+    except DashboardSourcesUnavailableError as exc:
         repo.finalize_run(
             run_id,
             status="failed",
@@ -1815,6 +1828,7 @@ def _run_dashboard_worker(
             metadata=None,
             datasets={},
             error="Could not query Snowflake billing or Account Usage data.",
+            user_safe_message=exc.user_safe_message,
         )
     except Exception:  # noqa: BLE001 — terminal-state guarantee
         # The raw exception detail must never reach the user-facing run.error
