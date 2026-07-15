@@ -174,7 +174,7 @@ describe("useSectionStatuses per-section readiness", () => {
     expect(result.current).toEqual({
       overview: "loading",
       warehouse: "ready",
-      storage: "loading",
+      storage: "error",
     });
   });
 });

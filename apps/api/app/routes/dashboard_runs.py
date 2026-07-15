@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from app.auth import AuthContext, require_auth_context, require_org_membership
 from app.config import Settings
 from app.models import (
+    REQUIRED_DATASET_KEYS,
     DashboardDatasetMetadata,
     DashboardDatasetResponse,
     DashboardRun,
@@ -46,6 +47,7 @@ from app.services.dashboard_view_models import DashboardViewRange, DashboardView
 from app.services.deferred_sources import DEFERRED_SOURCES
 from app.services.demo_data import build_demo_dashboard_dataset
 from app.services.parallel_source_runner import SourceOutcome
+from app.services.snowflake_client import SnowflakeQueryError
 
 logger = logging.getLogger(__name__)
 
@@ -710,6 +712,7 @@ class InMemoryDashboardRunRepository:
         metadata: dict[str, Any] | None,
         datasets: dict[str, list[dict[str, Any]]],
         error: str | None = None,
+        user_safe_message: str | None = None,
     ) -> None:
         with self._lock:
             # Only finalize a run that is still running; never resurrect a
@@ -789,6 +792,7 @@ class InMemoryDashboardRunRepository:
                     "completed_at": now,
                     "updated_at": now,
                     "error": error,
+                    "user_safe_message": user_safe_message,
                 }
             )
             self._running_deadlines.pop(run_id, None)
@@ -928,6 +932,18 @@ def _reset_cached_snapshot_registry() -> None:
         _cached_snapshot_registry.clear()
 
 
+def _cached_datasets_match_current_contract(cached: CachedDashboardRun) -> bool:
+    try:
+        base_datasets = {key: cached.datasets[key] for key in REQUIRED_DATASET_KEYS}
+        DashboardRunCreateRequest(
+            window_days=cached.window_days,
+            datasets=base_datasets,
+        )
+    except (KeyError, ValueError):
+        return False
+    return True
+
+
 @router.get("/cached", response_model=CachedDashboardRunResponse)
 def read_cached_dashboard_run(
     organization_id: UUID,
@@ -953,6 +969,16 @@ def read_cached_dashboard_run(
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     if cached is None:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    if not _cached_datasets_match_current_contract(cached):
+        logger.warning("Ignoring incompatible dashboard cache for org %s", org_id)
+        try:
+            store.delete(cached.organization_id)
+        except RunCacheStoreError:
+            logger.exception(
+                "Failed to delete incompatible dashboard cache for org %s", org_id
+            )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # Connection fingerprint check: the cache row is keyed only by org, so if the
@@ -1291,6 +1317,20 @@ def trigger_dashboard_source(
     except HTTPException:
         dashboard_run_repository.fail_source(run_id, source_id)
         raise
+    except SnowflakeQueryError as exc:
+        dashboard_run_repository.fail_source(
+            run_id,
+            source_id,
+            error=exc.user_safe_message,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                {"user_safe_message": exc.user_safe_message}
+                if exc.user_safe_message
+                else "Deferred source fetch failed"
+            ),
+        ) from None
     except Exception:
         dashboard_run_repository.fail_source(run_id, source_id)
         raise HTTPException(
@@ -1370,9 +1410,13 @@ def read_dashboard_source(
         raise HTTPException(status_code=404, detail="Dashboard run not found")
     _require_dashboard_run_membership(auth_context, run.organization_id)
 
-    state = dashboard_run_repository.get_source_state(run_id, source_id) or "idle"
-    if state != "completed":
-        return {"status": state}
+    source = dashboard_run_repository.get_source(run_id, source_id)
+    if source.status != "completed":
+        response: dict[str, Any] = {"status": source.status}
+        user_safe_message = source.meta.get("error")
+        if isinstance(user_safe_message, str):
+            response["user_safe_message"] = user_safe_message
+        return response
 
     view_inputs = dashboard_run_repository.get_view_inputs(run_id)
     if view_inputs is None:
@@ -1657,7 +1701,7 @@ def _prepared_view_or_http_error(
     end_date: date | None,
 ) -> DashboardViewResponse:
     try:
-        return build_dashboard_view(
+        view = build_dashboard_view(
             run=run,
             datasets=datasets,
             metadata=metadata,
@@ -1667,6 +1711,11 @@ def _prepared_view_or_http_error(
             start_date=start_date,
             end_date=end_date,
         )
+        # Attach the source-group availability metadata so the client can
+        # surface each group's curated user_safe_message for sections whose
+        # source group collapsed. Applied here so every /view producer (demo,
+        # provisional, completed snapshot) ships it consistently.
+        return view.model_copy(update={"metadata": metadata})
     except DashboardRangeOutOfBoundsError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1756,7 +1805,7 @@ def _run_dashboard_worker(
             repo.set_dataset(run_id, outcome.key, outcome.rows)
             repo.complete_source(run_id, outcome.key)
         else:
-            repo.fail_source(run_id, outcome.key, error="unavailable")
+            repo.fail_source(run_id, outcome.key, error=outcome.user_safe_message)
 
     try:
         data = build_snowflake_dashboard_data(
@@ -1784,7 +1833,7 @@ def _run_dashboard_worker(
             metadata=data.metadata.model_dump(mode="json"),
             datasets=data.datasets,
         )
-    except DashboardSourcesUnavailableError:
+    except DashboardSourcesUnavailableError as exc:
         repo.finalize_run(
             run_id,
             status="failed",
@@ -1792,6 +1841,7 @@ def _run_dashboard_worker(
             metadata=None,
             datasets={},
             error="Could not query Snowflake billing or Account Usage data.",
+            user_safe_message=exc.user_safe_message,
         )
     except Exception:  # noqa: BLE001 — terminal-state guarantee
         # The raw exception detail must never reach the user-facing run.error

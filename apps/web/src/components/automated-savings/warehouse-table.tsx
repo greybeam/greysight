@@ -16,17 +16,17 @@ import {
   toggleWarehouse,
   type WarehouseRow,
 } from "../../lib/automated-savings-api";
+import { DashboardApiError } from "../../lib/dashboard-errors";
 import { Switch } from "../ui/switch";
 import { Tooltip } from "../ui/tooltip";
 
-// The API surfaces a user-facing reason as the `detail` after the status code
-// (see fetchJson). Prefer that over the raw "failed with 502: …" prefix; fall
-// back to a generic message so a mutation failure never bubbles up as an
-// unhandled promise rejection.
+// fetchJson throws a DashboardApiError whose `userSafeMessage` carries the API's
+// server-curated reason (see readUserSafeMessage). Surface that when present;
+// otherwise fall back to a generic message so a mutation failure never bubbles
+// up as an unhandled promise rejection or a raw "failed with 502" string.
 function toUserMessage(error: unknown): string {
-  if (error instanceof Error && error.message) {
-    const marker = error.message.indexOf(": ");
-    return marker >= 0 ? error.message.slice(marker + 2) : error.message;
+  if (error instanceof DashboardApiError && error.userSafeMessage) {
+    return error.userSafeMessage;
   }
   return "Something went wrong. Please try again.";
 }

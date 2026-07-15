@@ -1,6 +1,7 @@
 "use client";
 
 import { Card, Text } from "@tremor/react";
+import type { ReactNode } from "react";
 
 import type {
   AIDetailViewModel,
@@ -31,6 +32,7 @@ import {
   StatValueSkeleton,
   TotalSpendBarCard,
 } from "./dashboard-design-system";
+import DashboardFailureMessage from "./dashboard-failure-message";
 import { DetailTable } from "./detail-tables";
 import SectionEmptyState from "./section-empty-state";
 import SectionIdleState from "./section-idle-state";
@@ -60,9 +62,30 @@ export function flattenServiceDailySeries(
   }));
 }
 
+// Shared terminal error frame for a dashboard section: the section shell wrapping
+// a single failure message. Used by every section's `status === "error"` branch.
+function SectionErrorState({
+  ariaLabel,
+  testId,
+  title,
+  message,
+}: {
+  ariaLabel: string;
+  testId: string;
+  title: string;
+  message: ReactNode;
+}) {
+  return (
+    <DashboardSection ariaLabel={ariaLabel} testId={testId} title={title}>
+      <SectionEmptyState message={message} />
+    </DashboardSection>
+  );
+}
+
 type OverviewSectionProps =
   | { status: "idle" }
   | { status: "loading"; loadingMessage?: string }
+  | { status: "error"; message: ReactNode }
   | {
       status: "ready";
       capacityBalance?: CapacityBalanceViewModel | null;
@@ -91,6 +114,16 @@ export function OverviewSection(props: OverviewSectionProps) {
   }
   if (props.status === "loading") {
     return <OverviewSectionSkeleton loadingMessage={props.loadingMessage} />;
+  }
+  if (props.status === "error") {
+    return (
+      <SectionErrorState
+        ariaLabel="Overview"
+        testId="dashboard-section-overview"
+        title="Overview"
+        message={props.message}
+      />
+    );
   }
   const { capacityBalance, currency, range, serviceSpend, totalSpend } = props;
   const filtered = filterServiceSpend(serviceSpend, selected, currency);
@@ -242,6 +275,7 @@ function OverviewSectionSkeleton({
 type WarehouseSpendSectionProps =
   | { status: "idle" }
   | { status: "loading"; loadingMessage?: string }
+  | { status: "error"; message: ReactNode }
   | {
       status: "ready";
       currency: string;
@@ -269,6 +303,16 @@ export function WarehouseSpendSection(props: WarehouseSpendSectionProps) {
   if (props.status === "loading") {
     return (
       <WarehouseSpendSectionSkeleton loadingMessage={props.loadingMessage} />
+    );
+  }
+  if (props.status === "error") {
+    return (
+      <SectionErrorState
+        ariaLabel="Warehouse spend"
+        testId="dashboard-section-warehouse-spend"
+        title="Warehouse spend"
+        message={props.message}
+      />
     );
   }
   const { currency, range, viewModel } = props;
@@ -418,6 +462,7 @@ function WarehouseSpendSectionSkeleton({
 type StorageSpendSectionProps =
   | { status: "idle" }
   | { status: "loading"; loadingMessage?: string }
+  | { status: "error"; message: ReactNode }
   | {
       status: "ready";
       currency: string;
@@ -443,7 +488,19 @@ export function StorageSpendSection(props: StorageSpendSectionProps) {
     );
   }
   if (props.status === "loading") {
-    return <StorageSpendSectionSkeleton loadingMessage={props.loadingMessage} />;
+    return (
+      <StorageSpendSectionSkeleton loadingMessage={props.loadingMessage} />
+    );
+  }
+  if (props.status === "error") {
+    return (
+      <SectionErrorState
+        ariaLabel="Storage spend"
+        testId="dashboard-section-storage-spend"
+        title="Storage spend"
+        message={props.message}
+      />
+    );
   }
   const { currency, range, viewModel } = props;
   const filtered = filterStorageSpend(viewModel, selected, currency);
@@ -592,7 +649,7 @@ function buildTotalAiSpendLabel(
 
 export type AiSpendDetailState =
   | { status: "loading" }
-  | { status: "error" }
+  | { status: "error"; message: string; reportable: boolean }
   | { status: "ready"; viewModel: AIDetailViewModel };
 
 type AiSpendSectionProps =
@@ -624,6 +681,21 @@ export function AiSpendSection(props: AiSpendSectionProps) {
       >
         <SectionIdleState />
       </DashboardSection>
+    );
+  }
+  if (props.detail.status === "error") {
+    return (
+      <SectionErrorState
+        ariaLabel="AI spend"
+        testId="dashboard-section-ai-spend"
+        title="AI spend"
+        message={
+          <DashboardFailureMessage
+            message={props.detail.message}
+            reportable={props.detail.reportable}
+          />
+        }
+      />
     );
   }
   const { currency, loadingMessage, range, summary } = props;

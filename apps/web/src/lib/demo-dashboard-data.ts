@@ -209,8 +209,8 @@ const demoDashboardData: DashboardData = {
     estimated_credit_price_usd: CREDIT_RATE_USD,
     storage_price_usd_per_tb_month: STORAGE_RATE_USD,
     unsupported_reason: null,
-    organization_usage: { available: true, detail: null },
-    account_usage: { available: true, detail: null },
+    organization_usage: { available: true, detail: null, user_safe_message: null },
+    account_usage: { available: true, detail: null, user_safe_message: null },
   },
   datasets: {
     account_spend_daily: accountSpendDaily,

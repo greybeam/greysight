@@ -17,6 +17,7 @@ from app.services.automated_savings_store import (
     AutomatedSavingsStoreError,
     get_automated_savings_store,
 )
+from app.services.snowflake_client import SnowflakeQueryError
 from app.services.warehouse_directory import WarehouseStatus
 
 logger = logging.getLogger(__name__)
@@ -148,6 +149,14 @@ def _log_store_failure(operation: str, error: AutomatedSavingsStoreError) -> Non
     )
 
 
+def _snowflake_failure_detail(
+    error: SnowflakeQueryError, fallback: str
+) -> str | dict[str, str]:
+    if error.user_safe_message:
+        return {"user_safe_message": error.user_safe_message}
+    return fallback
+
+
 @router.get("/{organization_id}/status", response_model=StatusResponse)
 def get_status(
     organization_id: str,
@@ -226,6 +235,13 @@ def list_warehouses(
 
     try:
         live = warehouse_directory.list_live_warehouses(config)
+    except SnowflakeQueryError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=_snowflake_failure_detail(
+                exc, "Could not list Snowflake warehouses."
+            ),
+        ) from None
     except Exception:  # noqa: BLE001 — user-safe query failure surface
         raise HTTPException(
             status_code=502, detail="Could not list Snowflake warehouses."
@@ -273,6 +289,17 @@ def toggle_warehouse(
             warehouse_name=warehouse_name,
             settings=settings,
         )
+    except SnowflakeQueryError as exc:
+        logger.warning(
+            "automated savings upstream failure "
+            "operation=capture_warehouse_identity kind=query status=none"
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=_snowflake_failure_detail(
+                exc, "Could not read the warehouse's identity."
+            ),
+        ) from None
     except Exception:  # noqa: BLE001 — user-safe query failure surface
         logger.warning(
             "automated savings upstream failure "
@@ -333,6 +360,13 @@ def check_access(
 
     try:
         present = warehouse_directory.check_manage_warehouses_grant(config, role_name)
+    except SnowflakeQueryError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=_snowflake_failure_detail(
+                exc, "Could not check the Snowflake grant."
+            ),
+        ) from None
     except Exception:  # noqa: BLE001 — user-safe query failure surface
         raise HTTPException(
             status_code=502, detail="Could not check the Snowflake grant."

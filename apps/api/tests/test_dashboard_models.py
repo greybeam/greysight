@@ -52,7 +52,11 @@ def test_dashboard_dataset_metadata_serializes_dates_and_validates_literals() ->
 
     assert dumped["billing_through_date"] == "2026-06-08"
     assert dumped["account_usage_through_date"] == "2026-06-09"
-    assert dumped["organization_usage"] == {"available": True, "detail": None}
+    assert dumped["organization_usage"] == {
+        "available": True,
+        "detail": None,
+        "user_safe_message": None,
+    }
 
     with pytest.raises(ValueError):
         DashboardDatasetMetadata(

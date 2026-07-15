@@ -130,7 +130,10 @@ def _fake_execute(
                 return org_datasets["rate_sheet_daily"]
         assert bind_params == {"window_days": FETCH_WINDOW_DAYS}
         if account_fails:
-            raise SnowflakeQueryError("account usage unavailable")
+            raise SnowflakeQueryError(
+                "account usage unavailable",
+                user_safe_message="Snowflake Account Usage is unavailable.",
+            )
         for dataset_key, rows in account_datasets.items():
             if _known_account_sql_matches(dataset_key, lowered):
                 return rows
@@ -394,6 +397,10 @@ def test_tolerates_account_usage_failure_when_org_usage_is_available() -> None:
     assert data.metadata.data_mode == "billed"
     assert data.metadata.organization_usage.available is True
     assert data.metadata.account_usage.available is False
+    assert (
+        data.metadata.account_usage.user_safe_message
+        == "Snowflake Account Usage is unavailable."
+    )
     assert data.datasets["warehouse_spend_daily"] == []
     assert data.datasets["account_spend_daily"] == []
 

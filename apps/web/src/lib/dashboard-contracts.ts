@@ -94,6 +94,7 @@ export type CurrentAccount = {
 export type SourceAvailability = {
   available: boolean;
   detail: string | null;
+  user_safe_message: string | null;
 };
 
 export type DashboardDataMode = "demo" | "billed" | "estimated";
@@ -323,6 +324,10 @@ export type DashboardViewSectionStatuses = Record<
 export type DashboardView = {
   schema_version: 1;
   run: DashboardRun;
+  // Source-group availability metadata, present on completed/partial views so the
+  // classified `user_safe_message` for an unavailable group (account/organization
+  // usage) can be surfaced per section. Optional: legacy stored views omit it.
+  metadata?: DashboardDatasetMetadata;
   range: DashboardViewRange;
   projectionRange: DashboardProjectionRange;
   header: HeaderViewModel;
@@ -517,6 +522,9 @@ export function parseDashboardView(payload: unknown): DashboardView {
   return {
     schema_version: 1,
     run: parseDashboardViewRun(readViewRecord(payload, "run")),
+    ...(hasViewValue(payload, "metadata")
+      ? { metadata: parseDashboardMetadata(readViewRecord(payload, "metadata")) }
+      : {}),
     range: parseDashboardViewRange(readViewRecord(payload, "range")),
     projectionRange: parseDashboardProjectionRange(
       readViewRecord(payload, "projection_range", "projectionRange"),
@@ -1190,10 +1198,17 @@ function parseSourceAvailability(
   if (payload.detail !== undefined && !isNullableString(payload.detail)) {
     throw new Error(`Dashboard metadata ${key} detail is invalid`);
   }
+  if (
+    payload.user_safe_message !== undefined &&
+    !isNullableString(payload.user_safe_message)
+  ) {
+    throw new Error(`Dashboard metadata ${key} user_safe_message is invalid`);
+  }
 
   return {
     available: payload.available,
     detail: payload.detail ?? null,
+    user_safe_message: payload.user_safe_message ?? null,
   };
 }
 

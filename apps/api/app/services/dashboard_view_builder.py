@@ -1163,7 +1163,7 @@ def _warehouse_row_dollars(
 def _warehouse_idle_pct(
     *,
     compute_credits: float,
-    attributed_credits: float,
+    attributed_credits: float | None,
 ) -> float | None:
     """Idle share of a warehouse's compute credits over the window.
 
@@ -1174,10 +1174,14 @@ def _warehouse_idle_pct(
     strip the guard. Tiny negative float noise inside the epsilon band clamps to
     zero. A warehouse with exactly zero compute credits returns ``None``
     (rendered "–"); negative compute credits are an impossible summed state and
-    raise rather than silently returning null.
+    raise rather than silently returning null. Null attributed credits mean
+    Snowflake cannot provide this metric (for example, for adaptive warehouses),
+    so the idle percentage is unavailable too.
     """
     if compute_credits < 0.0:
         raise ValueError("warehouse_spend_daily credits_used_compute must be >= 0")
+    if attributed_credits is None:
+        return None
     if compute_credits == 0.0:
         return None
     idle_credits = compute_credits - attributed_credits
@@ -1243,16 +1247,20 @@ def _build_warehouse_spend(
         }
     )
     compute_by_warehouse: dict[str, float] = {}
-    attributed_by_warehouse: dict[str, float] = {}
+    attributed_by_warehouse: dict[str, float | None] = {}
     for row in warehouse_rows:
         warehouse_name = _string_field(row, "warehouse_name", "Unknown warehouse")
         compute_by_warehouse[warehouse_name] = compute_by_warehouse.get(
             warehouse_name, 0.0
         ) + _required_float_field(row, "warehouse_spend_daily", "credits_used_compute")
-        attributed_by_warehouse[warehouse_name] = attributed_by_warehouse.get(
-            warehouse_name, 0.0
-        ) + _required_float_field(
+        attributed_credits = _required_nullable_float_field(
             row, "warehouse_spend_daily", "credits_attributed_queries"
+        )
+        current_attributed_credits = attributed_by_warehouse.get(warehouse_name, 0.0)
+        attributed_by_warehouse[warehouse_name] = (
+            None
+            if current_attributed_credits is None or attributed_credits is None
+            else current_attributed_credits + attributed_credits
         )
 
     # Idle bars are built from the ranked warehouses (preserving spend-desc order)
@@ -1718,6 +1726,16 @@ def _nullable_float_field(
 ) -> float:
     if row.get(field_name) is None:
         return default
+    return _required_float_field(row, dataset_key, field_name)
+
+
+def _required_nullable_float_field(
+    row: DatasetRow, dataset_key: str, field_name: str
+) -> float | None:
+    if field_name not in row:
+        return _required_float_field(row, dataset_key, field_name)
+    if row[field_name] is None:
+        return None
     return _required_float_field(row, dataset_key, field_name)
 
 

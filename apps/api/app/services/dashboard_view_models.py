@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.models import DashboardRun, SCHEMA_VERSION
+from app.models import DashboardDatasetMetadata, DashboardRun, SCHEMA_VERSION
 
 DashboardRangeMode = Literal["relative", "custom"]
 DashboardDataModeLabel = Literal["Billed", "Estimated", "Demo"]
@@ -211,3 +211,8 @@ class DashboardViewResponse(BaseModel):
     section_statuses: dict[str, SectionStatus] = Field(
         default_factory=_all_ready_section_statuses
     )
+    # Source-group availability metadata (data_mode, organization_usage /
+    # account_usage with their curated detail/user_safe_message). The client
+    # reads it to surface classified messages for sections whose source group
+    # collapsed. Optional so legacy stored views without it stay valid.
+    metadata: DashboardDatasetMetadata | None = None

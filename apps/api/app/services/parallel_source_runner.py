@@ -21,6 +21,7 @@ class SourceOutcome:
     key: str
     rows: list[dict[str, Any]] | None
     available: bool
+    user_safe_message: str | None = None
 
 
 def run_sources_parallel(
@@ -57,8 +58,13 @@ def run_sources_parallel(
         try:
             rows = execute(job.sql, job.bind_params)
             outcome = SourceOutcome(key=job.key, rows=rows, available=True)
-        except unavailable_exc:
-            outcome = SourceOutcome(key=job.key, rows=None, available=False)
+        except unavailable_exc as exc:
+            outcome = SourceOutcome(
+                key=job.key,
+                rows=None,
+                available=False,
+                user_safe_message=getattr(exc, "user_safe_message", None),
+            )
         if on_complete is not None:
             on_complete(outcome)
         return outcome

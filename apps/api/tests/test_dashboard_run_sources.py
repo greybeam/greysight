@@ -8,6 +8,7 @@ from app.routes.dashboard_runs import (
     InMemoryDashboardRunRepository,
     dashboard_run_repository,
 )
+from app.services.snowflake_client import SnowflakeQueryError
 
 
 def _repo_with_run():
@@ -182,6 +183,32 @@ def test_post_source_then_get_returns_detail_view(client_with_completed_run):
     body = got.json()
     assert body["status"] == "completed"
     assert "view" in body and "daily_series" in body["view"]
+
+
+def test_failed_source_poll_preserves_safe_message(
+    client_with_completed_run, monkeypatch
+):
+    client, run_id = client_with_completed_run
+    safe_message = "Snowflake blocked the connection under its network policy."
+
+    def fail_query(sql, bind_params, config=None):
+        raise SnowflakeQueryError(
+            safe_message,
+            user_safe_message=safe_message,
+        )
+
+    monkeypatch.setattr(
+        "app.services.dashboard_datasets.execute_source_query", fail_query
+    )
+
+    posted = client.post(f"/api/dashboard-runs/{run_id}/sources/ai_consumption_daily")
+    assert posted.status_code == 502
+
+    polled = client.get(f"/api/dashboard-runs/{run_id}/sources/ai_consumption_daily")
+    assert polled.json() == {
+        "status": "failed",
+        "user_safe_message": safe_message,
+    }
 
 
 def test_get_unknown_source_404(client_with_completed_run):

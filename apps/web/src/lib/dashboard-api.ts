@@ -1,4 +1,5 @@
 import resolveApiUrl, { authHeaders } from "./api-client";
+import { DashboardApiError } from "./dashboard-errors";
 import parseDashboardDatasets, {
   parseAIDetailViewModel,
   parseDashboardRun,
@@ -185,6 +186,7 @@ export type DashboardSourceStatus =
 
 export type DashboardSourceResult = {
   status: DashboardSourceStatus;
+  userSafeMessage: string | null;
   view: AIDetailViewModel | null;
 };
 
@@ -222,8 +224,12 @@ export async function fetchDashboardSource(
   );
   const status = (payload as { status: DashboardSourceStatus }).status;
   const rawView = (payload as { view?: unknown }).view;
+  const rawUserSafeMessage = (payload as { user_safe_message?: unknown })
+    .user_safe_message;
   return {
     status,
+    userSafeMessage:
+      typeof rawUserSafeMessage === "string" ? rawUserSafeMessage : null,
     view: status === "completed" && rawView != null ? parseAIDetailViewModel(rawView) : null,
   };
 }
@@ -235,7 +241,11 @@ export async function pollDashboardSource(
   range: DashboardViewRangeRequest,
   { intervalMs = 3_000, maxAttempts = 40, accessToken }: PollOptions = {},
 ): Promise<DashboardSourceResult> {
-  let last: DashboardSourceResult = { status: "pending", view: null };
+  let last: DashboardSourceResult = {
+    status: "pending",
+    userSafeMessage: null,
+    view: null,
+  };
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     last = await fetchDashboardSource(runId, sourceId, range, { accessToken });
     if (
@@ -302,10 +312,28 @@ async function fetchJson(
   });
 
   if (!response.ok) {
-    throw new Error(`Dashboard API request failed with ${response.status}`);
+    const userSafeMessage = await readUserSafeMessage(response);
+    throw new DashboardApiError(
+      `Dashboard API request failed with ${response.status}`,
+      userSafeMessage,
+    );
   }
 
   return response.json();
+}
+
+async function readUserSafeMessage(response: Response): Promise<string | null> {
+  try {
+    const body = (await response.json()) as unknown;
+    if (typeof body !== "object" || body === null) return null;
+    const detail = (body as { detail?: unknown }).detail;
+    if (typeof detail !== "object" || detail === null) return null;
+    const message = (detail as { user_safe_message?: unknown })
+      .user_safe_message;
+    return typeof message === "string" && message.length > 0 ? message : null;
+  } catch {
+    return null;
+  }
 }
 
 function delay(ms: number): Promise<void> {

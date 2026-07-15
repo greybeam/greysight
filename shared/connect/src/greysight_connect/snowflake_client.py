@@ -27,9 +27,17 @@ class SnowflakeConfigurationError(RuntimeError):
 class SnowflakeValidationError(RuntimeError):
     """Raised with a user-safe Snowflake validation message."""
 
+    def __init__(self, message: str, *, user_safe_message: str | None = None) -> None:
+        super().__init__(message)
+        self.user_safe_message = user_safe_message
+
 
 class SnowflakeQueryError(RuntimeError):
     """Raised with a user-safe Snowflake query message."""
+
+    def __init__(self, message: str, *, user_safe_message: str | None = None) -> None:
+        super().__init__(message)
+        self.user_safe_message = user_safe_message
 
 
 class SnowflakeObjectUnavailableError(SnowflakeQueryError):
@@ -167,6 +175,11 @@ def execute_source_query(
     _validate_window_params(bind_params)
     try:
         connection = (connect or _connect)(config)
+    except SnowflakeValidationError as exc:
+        raise SnowflakeQueryError(
+            str(exc),
+            user_safe_message=exc.user_safe_message,
+        ) from None
     except Exception:
         raise SnowflakeQueryError("Could not query Snowflake.") from None
     try:
@@ -179,7 +192,12 @@ def execute_source_query(
             raise SnowflakeObjectUnavailableError(
                 "Snowflake object is unavailable for this account."
             ) from None
-        raise SnowflakeQueryError("Could not query Snowflake.") from None
+        known_message = _known_base_user_safe_message(exc)
+        message = _user_safe_message(exc) if known_message else "Could not query Snowflake."
+        raise SnowflakeQueryError(
+            message,
+            user_safe_message=message if known_message else None,
+        ) from None
     finally:
         connection.close()
 
@@ -194,8 +212,17 @@ def execute_metadata_query(
     no bind params, and — unlike a SELECT — never resumes a warehouse."""
     try:
         connection = (connect or _connect)(config)
-    except Exception:
-        raise SnowflakeQueryError("Could not query Snowflake.") from None
+    except Exception as exc:
+        known_message = (
+            exc.user_safe_message
+            if isinstance(exc, SnowflakeValidationError)
+            else _known_base_user_safe_message(exc)
+        )
+        message = str(exc) if known_message else "Could not query Snowflake."
+        raise SnowflakeQueryError(
+            message,
+            user_safe_message=message if known_message else None,
+        ) from None
     try:
         cursor = connection.cursor()
         try:
@@ -203,7 +230,12 @@ def execute_metadata_query(
             columns = [_column_name(column) for column in cursor.description or ()]
             return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
         except Exception as exc:
-            raise SnowflakeQueryError(_user_safe_message(exc)) from exc
+            known_message = _known_base_user_safe_message(exc)
+            message = _user_safe_message(exc) if known_message else "Could not query Snowflake."
+            raise SnowflakeQueryError(
+                message,
+                user_safe_message=message if known_message else None,
+            ) from None
         finally:
             cursor.close()
     finally:
@@ -337,6 +369,13 @@ def _user_safe_message(exc: Exception) -> str:
 
 
 def _base_user_safe_message(exc: Exception) -> str:
+    return _known_base_user_safe_message(exc) or (
+        "Could not validate Snowflake connection. Ask your Snowflake "
+        "administrator to check LOGIN_HISTORY for this user and try again."
+    )
+
+
+def _known_base_user_safe_message(exc: Exception) -> str | None:
     message = str(exc).lower()
     if isinstance(exc, TimeoutError) or "timed out" in message or "timeout" in message:
         safe_message = (
@@ -373,10 +412,7 @@ def _base_user_safe_message(exc: Exception) -> str:
             "private key."
         )
     else:
-        safe_message = (
-            "Could not validate Snowflake connection. Ask your Snowflake "
-            "administrator to check LOGIN_HISTORY for this user and try again."
-        )
+        safe_message = None
     return safe_message
 
 
@@ -394,10 +430,14 @@ def _validation_error(
         exc, include_login_reference=phase == "connect"
     )
     _log_validation_failure(exc, phase=phase, metadata=metadata)
-    safe_message = (user_message or _base_user_safe_message(exc)) + (
+    known_message = _known_base_user_safe_message(exc)
+    safe_message = (user_message or known_message or _base_user_safe_message(exc)) + (
         _user_diagnostic_suffix(metadata)
     )
-    return SnowflakeValidationError(safe_message)
+    return SnowflakeValidationError(
+        safe_message,
+        user_safe_message=safe_message if known_message is not None else None,
+    )
 
 
 def _log_validation_failure(

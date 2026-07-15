@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { usePrefersReducedMotion } from "../../lib/use-prefers-reduced-motion";
+import { dashboardFailure } from "../../lib/dashboard-errors";
 import {
   fetchCachedDashboardRun,
   fetchDashboardView,
@@ -16,6 +17,7 @@ import {
 } from "../../lib/dashboard-api";
 import {
   FETCH_WINDOW_DAYS,
+  type DashboardRun,
   type DashboardRunStatus,
   type DashboardView,
   type DashboardViewRange,
@@ -29,6 +31,7 @@ import FilterBar, {
   canApplyDateRange,
   type WindowDays,
 } from "./filter-bar";
+import DashboardFailureMessage from "./dashboard-failure-message";
 import SectionEmptyState from "./section-empty-state";
 import {
   AiSpendSection,
@@ -60,6 +63,7 @@ type CostDashboardProps = {
 type LoadState = {
   status: DashboardRunStatus | "loading";
   message?: string | null;
+  reportable?: boolean;
   view?: DashboardView;
 };
 
@@ -80,6 +84,41 @@ const TERMINAL_RUN_STATUSES: ReadonlySet<DashboardRunStatus> = new Set([
   "expired",
   "deleted",
 ]);
+
+function runFailure(run: DashboardRun) {
+  const message = run.user_safe_message ?? run.error;
+  return {
+    message,
+    reportable: Boolean(run.error && !run.user_safe_message),
+  };
+}
+
+function sectionFailureMessage(
+  view: DashboardView | null,
+  section: "overview" | "warehouse" | "storage",
+) {
+  // When a run completes with one source group unavailable, `run.user_safe_message`
+  // is null and the classified safe message lives on the relevant metadata group.
+  // Overview draws from organization usage in billed/demo modes, account usage
+  // otherwise; warehouse/storage always draw from account usage.
+  const group =
+    section === "overview" &&
+    (view?.metadata?.data_mode === "billed" ||
+      view?.metadata?.data_mode === "demo")
+      ? view?.metadata?.organization_usage
+      : view?.metadata?.account_usage;
+  const groupSafeMessage = group?.user_safe_message ?? null;
+  const runSafeMessage = view?.run.user_safe_message ?? null;
+  const userSafeMessage = groupSafeMessage ?? runSafeMessage;
+  const message =
+    userSafeMessage ?? group?.detail ?? `Could not load ${section} data.`;
+  return (
+    <DashboardFailureMessage
+      message={message}
+      reportable={!userSafeMessage}
+    />
+  );
+}
 
 function rangeKey(runId: string, range: DashboardViewRangeRequest): string {
   if (isCustomRangeRequest(range)) {
@@ -200,9 +239,11 @@ function CostDashboardContent({
   );
 
   const applyDashboardView = useCallback((dashboardView: DashboardView) => {
+    const failure = runFailure(dashboardView.run);
     setLoadState({
       status: dashboardView.run.status,
-      message: dashboardView.run.error ?? dashboardView.run.user_safe_message,
+      message: failure.message,
+      reportable: failure.reportable,
       view: dashboardView,
     });
     setActiveRange(dashboardView.range);
@@ -245,7 +286,7 @@ function CostDashboardContent({
       cacheView(dashboardView.run.id, DEFAULT_VIEW_RANGE, dashboardView);
       applyDashboardView(dashboardView);
       prefetchRelativeWindows(dashboardView.run.id, fetchDemoDashboardView);
-    } catch {
+    } catch (error) {
       if (data) {
         setLoadState({ status: data.run.status, view: data });
         setActiveRange(data.range);
@@ -253,10 +294,7 @@ function CostDashboardContent({
         setEndDate(data.range.endDate);
         return;
       }
-      setLoadState({
-        status: "failed",
-        message: "Could not load dashboard data.",
-      });
+      setLoadState({ status: "failed", ...dashboardFailure(error) });
     } finally {
       setRunInFlight(false);
       setLoadingReason(null);
@@ -292,10 +330,12 @@ function CostDashboardContent({
       if (runGeneration !== runGenerationRef.current) {
         return;
       }
+      const failure = runFailure(run);
       setLoadState((current) => ({
         ...current,
         status: run.status,
-        message: run.error ?? run.user_safe_message,
+        message: failure.message,
+        reportable: failure.reportable,
       }));
 
       // Stop holding every section in the skeleton via `runInFlight` once the
@@ -363,14 +403,11 @@ function CostDashboardContent({
       prefetchRelativeWindows(finalView.run.id, (range) =>
         fetchDashboardView(finalView.run.id, range, options),
       );
-    } catch {
+    } catch (error) {
       if (runGeneration !== runGenerationRef.current) {
         return;
       }
-      setLoadState({
-        status: "failed",
-        message: "Could not load dashboard data.",
-      });
+      setLoadState({ status: "failed", ...dashboardFailure(error) });
     } finally {
       if (runGeneration === runGenerationRef.current) {
         setRunInFlight(false);
@@ -411,12 +448,9 @@ function CostDashboardContent({
           applyDashboardView(dashboardView);
           prefetchRelativeWindows(dashboardView.run.id, fetchDemoDashboardView);
         }
-      } catch {
+      } catch (error) {
         if (isActive) {
-          setLoadState({
-            status: "failed",
-            message: "Could not load dashboard data.",
-          });
+          setLoadState({ status: "failed", ...dashboardFailure(error) });
         }
       } finally {
         if (isActive) {
@@ -497,12 +531,9 @@ function CostDashboardContent({
         prefetchRelativeWindows(dashboardView.run.id, (range) =>
           fetchDashboardView(cachedRunId, range, options),
         );
-      } catch {
+      } catch (error) {
         if (isActive && runGeneration === runGenerationRef.current) {
-          setLoadState({
-            status: "failed",
-            message: "Could not load dashboard data.",
-          });
+          setLoadState({ status: "failed", ...dashboardFailure(error) });
         }
       } finally {
         if (isActive && runGeneration === runGenerationRef.current) {
@@ -556,6 +587,7 @@ function CostDashboardContent({
         ...current,
         status: "loading",
         message: null,
+        reportable: false,
       }));
 
       try {
@@ -576,15 +608,19 @@ function CostDashboardContent({
           );
           applyDashboardView(dashboardView);
         }
-      } catch {
+      } catch (error) {
         if (
           runGeneration === runGenerationRef.current &&
           requestSeq === rangeRequestSeqRef.current
         ) {
+          const failure = dashboardFailure(error);
           setLoadState((current) => ({
             ...current,
             status: "failed",
-            message: "Could not load selected date range.",
+            message: failure.reportable
+              ? "Could not load selected date range."
+              : failure.message,
+            reportable: failure.reportable,
           }));
         }
       } finally {
@@ -680,7 +716,11 @@ function CostDashboardContent({
           if (result.view) {
             setAiDetail({ status: "ready", viewModel: result.view });
           } else {
-            setAiDetail({ status: "error" });
+            setAiDetail({
+              status: "error",
+              message: "Could not load dashboard data.",
+              reportable: true,
+            });
           }
           return;
         }
@@ -697,10 +737,17 @@ function CostDashboardContent({
         if (result.status === "completed" && result.view) {
           setAiDetail({ status: "ready", viewModel: result.view });
         } else {
-          setAiDetail({ status: "error" });
+          setAiDetail({
+            status: "error",
+            message:
+              result.userSafeMessage ?? "Could not load dashboard data.",
+            reportable: result.userSafeMessage === null,
+          });
         }
-      } catch {
-        if (seq === aiSeqRef.current) setAiDetail({ status: "error" });
+      } catch (error) {
+        if (seq === aiSeqRef.current) {
+          setAiDetail({ status: "error", ...dashboardFailure(error) });
+        }
       }
     })();
   }, [aiSource, shouldUseDemo, accessToken]);
@@ -766,7 +813,12 @@ function CostDashboardContent({
           />
         ) : isFailedWithoutView ? (
           <SectionEmptyState
-            message={loadState.message ?? "Could not load dashboard data."}
+            message={
+              <DashboardFailureMessage
+                message={loadState.message ?? "Could not load dashboard data."}
+                reportable={loadState.reportable ?? true}
+              />
+            }
           />
         ) : (
           <>
@@ -775,7 +827,10 @@ function CostDashboardContent({
                 className="rounded-md border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-sm font-medium text-rose-300"
                 role="alert"
               >
-                {transientLoadError}
+                <DashboardFailureMessage
+                  message={transientLoadError}
+                  reportable={loadState.reportable ?? true}
+                />
               </p>
             ) : null}
             {viewModel ? (
@@ -800,11 +855,18 @@ function CostDashboardContent({
                     serviceSpend: viewModel.serviceSpend,
                     totalSpend: viewModel.totalSpend,
                   }
-                : {
-                    status:
-                      sectionStatuses.overview === "idle" ? "idle" : "loading",
-                    loadingMessage: loadingMessage ?? undefined,
-                  })}
+                : sectionStatuses.overview === "error"
+                  ? {
+                      status: "error",
+                      message: sectionFailureMessage(viewModel, "overview"),
+                    }
+                  : {
+                      status:
+                        sectionStatuses.overview === "idle"
+                          ? "idle"
+                          : "loading",
+                      loadingMessage: loadingMessage ?? undefined,
+                    })}
             />
             <WarehouseSpendSection
               {...(sectionStatuses.warehouse === "ready" && dataReady && viewModel
@@ -814,11 +876,18 @@ function CostDashboardContent({
                     range: activeRange ?? viewModel.range,
                     viewModel: viewModel.warehouseSpend,
                   }
-                : {
-                    status:
-                      sectionStatuses.warehouse === "idle" ? "idle" : "loading",
-                    loadingMessage: loadingMessage ?? undefined,
-                  })}
+                : sectionStatuses.warehouse === "error"
+                  ? {
+                      status: "error",
+                      message: sectionFailureMessage(viewModel, "warehouse"),
+                    }
+                  : {
+                      status:
+                        sectionStatuses.warehouse === "idle"
+                          ? "idle"
+                          : "loading",
+                      loadingMessage: loadingMessage ?? undefined,
+                    })}
             />
             <AiSpendSection
               {...(sectionStatuses.overview === "idle"
@@ -843,11 +912,16 @@ function CostDashboardContent({
                     range: activeRange ?? viewModel.range,
                     viewModel: viewModel.storageSpend,
                   }
-                : {
-                    status:
-                      sectionStatuses.storage === "idle" ? "idle" : "loading",
-                    loadingMessage: loadingMessage ?? undefined,
-                  })}
+                : sectionStatuses.storage === "error"
+                  ? {
+                      status: "error",
+                      message: sectionFailureMessage(viewModel, "storage"),
+                    }
+                  : {
+                      status:
+                        sectionStatuses.storage === "idle" ? "idle" : "loading",
+                      loadingMessage: loadingMessage ?? undefined,
+                    })}
             />
           </>
         )}

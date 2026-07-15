@@ -35,7 +35,12 @@ ExecuteFn = Callable[[str, dict[str, Any]], list[dict[str, Any]]]
 
 
 class DashboardSourcesUnavailableError(RuntimeError):
-    pass
+    def __init__(self, user_safe_message: str | None = None) -> None:
+        super().__init__(
+            user_safe_message
+            or "Could not query Snowflake billing or Account Usage data."
+        )
+        self.user_safe_message = user_safe_message
 
 
 class SnowflakeDashboardData(BaseModel):
@@ -122,7 +127,14 @@ def build_snowflake_dashboard_data(
 
     if not org_availability.available and not account_availability.available:
         raise DashboardSourcesUnavailableError(
-            "Could not query Snowflake billing or Account Usage data."
+            next(
+                (
+                    outcome.user_safe_message
+                    for outcome in outcomes.values()
+                    if not outcome.available and outcome.user_safe_message
+                ),
+                None,
+            )
         )
 
     if account_availability.available:
@@ -243,13 +255,33 @@ def _group_from_outcomes(
 ) -> tuple[dict[str, list[dict[str, Any]]], SourceAvailability]:
     empty = {dataset_key: [] for dataset_key in sources}
     if skip:
-        return empty, SourceAvailability(available=False, detail=skip_detail)
+        return empty, SourceAvailability(
+            available=False,
+            detail=skip_detail,
+            user_safe_message=skip_detail,
+        )
 
-    if any(
-        not outcomes[dataset_key].available or outcomes[dataset_key].rows is None
+    unavailable_outcomes = [
+        outcomes[dataset_key]
         for dataset_key in sources
-    ):
-        return empty, SourceAvailability(available=False, detail=unavailable_detail)
+        if not outcomes[dataset_key].available or outcomes[dataset_key].rows is None
+    ]
+    if unavailable_outcomes:
+        safe_messages = [
+            outcome.user_safe_message
+            for outcome in unavailable_outcomes
+            if outcome.user_safe_message
+        ]
+        user_safe_message = (
+            safe_messages[0]
+            if len(safe_messages) == len(unavailable_outcomes)
+            else None
+        )
+        return empty, SourceAvailability(
+            available=False,
+            detail=user_safe_message or unavailable_detail,
+            user_safe_message=user_safe_message,
+        )
 
     datasets = {
         dataset_key: outcomes[dataset_key].rows or [] for dataset_key in sources

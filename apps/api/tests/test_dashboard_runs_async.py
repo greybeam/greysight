@@ -26,7 +26,7 @@ def _completed_metadata(*, account_usage_available: bool) -> dict:
     # Empty gating datasets => source bounds collapse to [today, today]; pin the
     # through_date to today so the requested [today, today] range is in-bounds.
     today = datetime.now(timezone.utc).date()
-    return DashboardDatasetMetadata(
+    metadata = DashboardDatasetMetadata(
         data_mode="estimated",
         account_locator="abc12345",
         currency="USD",
@@ -37,6 +37,14 @@ def _completed_metadata(*, account_usage_available: bool) -> dict:
         organization_usage=SourceAvailability(available=False),
         account_usage=SourceAvailability(available=account_usage_available),
     ).model_dump(mode="json")
+    if not account_usage_available:
+        safe_message = "Snowflake Account Usage is unavailable for this role."
+        metadata["account_usage"] = {
+            "available": False,
+            "detail": safe_message,
+            "user_safe_message": safe_message,
+        }
+    return metadata
 
 
 def _storage_rows() -> list[dict]:
@@ -475,6 +483,11 @@ def test_completed_snapshot_collapsed_group_yields_unavailable_sections():
     assert section["overview"] == "unavailable", section
     assert section["warehouse"] == "unavailable", section
     assert section["storage"] == "unavailable", section
+    # The view ships the source-group metadata so the client can surface the
+    # collapsed group's classified message for its unavailable sections.
+    assert payload["metadata"]["account_usage"]["user_safe_message"] == (
+        "Snowflake Account Usage is unavailable for this role."
+    )
 
 
 def test_completed_snapshot_empty_window_group_available_yields_ready():

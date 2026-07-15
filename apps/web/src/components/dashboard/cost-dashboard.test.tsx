@@ -675,6 +675,7 @@ describe("CostDashboard", () => {
       id: "run-progressive",
       source: "snowflake",
       status: "running",
+      user_safe_message: "Storage failed safely.",
     };
     const provisionalView: DashboardView = {
       ...demoDashboardView,
@@ -710,8 +711,9 @@ describe("CostDashboard", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
 
-    // Overview is server-ready: its content paints while warehouse (pending) and
-    // storage (unavailable) remain in their loading skeletons.
+    // Overview is server-ready and warehouse is still pending. Storage reached
+    // a terminal unavailable state, so it must show its error instead of a
+    // permanent loading skeleton.
     expect(
       await screen.findByText("Total Spend in Last 30 Days"),
     ).toBeInTheDocument();
@@ -720,11 +722,87 @@ describe("CostDashboard", () => {
       screen.getByTestId("warehouse-spend-skeleton-chart"),
     ).toBeInTheDocument();
     expect(
-      screen.getByTestId("storage-spend-skeleton-chart"),
+      await screen.findByText("Storage failed safely."),
     ).toBeInTheDocument();
+    expect(screen.queryByTestId("storage-spend-skeleton-chart")).toBeNull();
   });
 
-  it("keeps unavailable sections skeletoned after changing range on a completed Snowflake run", async () => {
+  it("surfaces the classified group message on a completed run with an unavailable source group", async () => {
+    // The run completed (no run-level user_safe_message); the classified safe
+    // message lives on the collapsed metadata group (account_usage), which the
+    // storage section must surface without a "Report this issue" link.
+    const completedRun: DashboardRun = {
+      ...demoDashboardView.run,
+      id: "run-group-message",
+      source: "snowflake",
+      status: "completed",
+      user_safe_message: null,
+    };
+    const completedView: DashboardView = {
+      ...demoDashboardView,
+      run: completedRun,
+      metadata: {
+        data_mode: "estimated",
+        account_locator: null,
+        currency: "USD",
+        billing_through_date: null,
+        account_usage_through_date: null,
+        estimated_credit_price_usd: 3,
+        storage_price_usd_per_tb_month: 20,
+        unsupported_reason: null,
+        organization_usage: {
+          available: true,
+          detail: null,
+          user_safe_message: null,
+        },
+        account_usage: {
+          available: false,
+          detail: "Snowflake Account Usage is unavailable for this role.",
+          user_safe_message:
+            "Snowflake Account Usage is unavailable for this role.",
+        },
+      },
+      sectionStatuses: {
+        overview: "ready",
+        warehouse: "ready",
+        storage: "unavailable",
+      },
+    };
+    vi.mocked(startDashboardRun).mockResolvedValue(completedRun);
+    vi.mocked(fetchDashboardView).mockResolvedValue(completedView);
+    mockPollResolvesWith(completedView);
+
+    render(
+      <CostDashboard
+        demoMode={false}
+        runtime={{
+          accessToken: "test-access-token",
+          organizationId: "org-123",
+          organizationName: "Acme Analytics",
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+
+    expect(
+      await screen.findByText(
+        "Snowflake Account Usage is unavailable for this role.",
+      ),
+    ).toBeInTheDocument();
+    // The classified group message is user-safe, so the storage section shows
+    // no "Report this issue" link.
+    const storageSection = screen.getByTestId(
+      "dashboard-section-storage-spend",
+    );
+    expect(
+      within(storageSection).queryByRole("link", {
+        name: /report this issue/i,
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps unavailable sections failed after changing range on a completed Snowflake run", async () => {
     const runningRun: DashboardRun = {
       ...demoDashboardView.run,
       id: "run-range-unavailable",
@@ -734,10 +812,10 @@ describe("CostDashboard", () => {
     const completedRun: DashboardRun = {
       ...runningRun,
       status: "completed",
+      user_safe_message: "Storage failed safely.",
     };
-    // Completed run where storage never landed: the section statuses are NOT
-    // all ready, so storage must stay skeletoned across range changes rather
-    // than falling back to the timed all-ready reveal.
+    // Completed run where storage never landed: its terminal error must persist
+    // across range changes rather than falling back to the all-ready reveal.
     const completedView: DashboardView = {
       ...demoDashboardView,
       run: completedRun,
@@ -773,20 +851,18 @@ describe("CostDashboard", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
 
-    // The completed view paints overview, but storage (unavailable) stays
-    // skeletoned. Wait for the relative-window prefetch so the 7-day view is
-    // cached before switching ranges.
+    // The completed view paints overview and the storage error. Wait for the
+    // relative-window prefetch so the 7-day view is cached before switching.
     expect(
       await screen.findByText("Total Spend in Last 30 Days"),
     ).toBeInTheDocument();
     await waitFor(() => expect(fetchDashboardView).toHaveBeenCalledTimes(3));
-    expect(
-      screen.getByTestId("storage-spend-skeleton-chart"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Storage failed safely.")).toBeInTheDocument();
+    expect(screen.queryByTestId("storage-spend-skeleton-chart")).toBeNull();
 
     // Switch to the cached 7-day window: the cached view's section statuses
-    // must be reused so the unavailable storage section is not falsely revealed
-    // as ready. No additional fetch is issued for the cached range.
+    // must be reused so the unavailable storage section remains terminal. No
+    // additional fetch is issued for the cached range.
     fireEvent.click(screen.getByRole("button", { name: "7 days" }));
 
     expect(screen.getByRole("button", { name: "7 days" })).toHaveAttribute(
@@ -795,15 +871,12 @@ describe("CostDashboard", () => {
     );
     expect(fetchDashboardView).toHaveBeenCalledTimes(3);
     await waitFor(() =>
-      expect(
-        screen.getByTestId("storage-spend-skeleton-chart"),
-      ).toBeInTheDocument(),
+      expect(screen.getByText("Storage failed safely.")).toBeInTheDocument(),
     );
+    expect(screen.queryByTestId("storage-spend-skeleton-chart")).toBeNull();
     // The 7-day overview content still paints (it is ready); only the
-    // unavailable storage section stays skeletoned.
-    expect(
-      screen.getByText("Total Spend in Last 7 Days"),
-    ).toBeInTheDocument();
+    // unavailable storage section stays failed.
+    expect(screen.getByText("Total Spend in Last 7 Days")).toBeInTheDocument();
   });
 
   it.each([["failed"], ["expired"]] as const)(
