@@ -23,6 +23,7 @@
 - `shared/connect/uv.lock`, `apps/api/uv.lock`, `apps/auto-savings/uv.lock`: regenerated dependency graphs.
 - `docs/dependency-compatibility.md`: document the native ADBC/PyArrow deployment boundary.
 - `docs/security-model.md`: rename the bind-parameter implementation reference from the old connector to ADBC.
+- `docs/automated-savings.md`: document ADBC timeout semantics and the residual `90064` mapping risk.
 
 ### Task 1: Replace the dependency graph
 
@@ -35,7 +36,64 @@
 - Modify: `apps/auto-savings/uv.lock`
 - Modify: `docs/dependency-compatibility.md`
 
-- [ ] **Step 1: Replace direct dependency pins**
+- [ ] **Step 1: Resolve the pin and verify every required API before editing**
+
+Run an isolated Python 3.12 preflight so a missing release, incompatible local
+wheel, renamed enum, incompatible exception constructor, or DB-API signature
+fails before any repository file changes:
+
+```bash
+rtk uv run --isolated --python 3.12 --with 'adbc-driver-snowflake[dbapi]==1.11.0' python - <<'PY'
+import inspect
+from importlib.metadata import version
+
+import adbc_driver_manager
+import adbc_driver_manager.dbapi as adbc_dbapi
+import adbc_driver_snowflake
+import adbc_driver_snowflake.dbapi as snowflake_dbapi
+
+assert version("adbc-driver-snowflake") == "1.11.0"
+expected_database_options = {
+    "ACCOUNT": "adbc.snowflake.sql.account",
+    "ROLE": "adbc.snowflake.sql.role",
+    "WAREHOUSE": "adbc.snowflake.sql.warehouse",
+    "DATABASE": "adbc.snowflake.sql.db",
+    "SCHEMA": "adbc.snowflake.sql.schema",
+    "AUTH_TYPE": "adbc.snowflake.sql.auth_type",
+    "JWT_PRIVATE_KEY_VALUE": "adbc.snowflake.sql.client_option.jwt_private_key_pkcs8_value",
+    "JWT_PRIVATE_KEY_PASSWORD": "adbc.snowflake.sql.client_option.jwt_private_key_pkcs8_password",
+    "LOGIN_TIMEOUT": "adbc.snowflake.sql.client_option.login_timeout",
+    "REQUEST_TIMEOUT": "adbc.snowflake.sql.client_option.request_timeout",
+    "CLIENT_TIMEOUT": "adbc.snowflake.sql.client_option.client_timeout",
+    "KEEP_SESSION_ALIVE": "adbc.snowflake.sql.client_option.keep_session_alive",
+}
+for member, value in expected_database_options.items():
+    assert getattr(adbc_driver_snowflake.DatabaseOptions, member).value == value
+assert (
+    adbc_driver_snowflake.StatementOptions.QUERY_TAG.value
+    == "adbc.snowflake.statement.query_tag"
+)
+error = adbc_dbapi.ProgrammingError(
+    "probe",
+    status_code=adbc_driver_manager.AdbcStatusCode.INVALID_ARGUMENT,
+    vendor_code=2003,
+    sqlstate="42000",
+)
+assert error.vendor_code == 2003
+assert "adbc_stmt_kwargs" in inspect.signature(adbc_dbapi.Connection.cursor).parameters
+assert any(
+    parameter.kind is inspect.Parameter.VAR_KEYWORD
+    for parameter in inspect.signature(snowflake_dbapi.connect).parameters.values()
+)
+print("ADBC 1.11.0 DB-API preflight passed")
+PY
+```
+
+Expected: the temporary environment resolves a compatible local wheel and
+prints `ADBC 1.11.0 DB-API preflight passed`. Debian wheel compatibility is
+verified independently by the Docker builds in Task 5.
+
+- [ ] **Step 2: Replace direct dependency pins**
 
 In all three `pyproject.toml` files, replace:
 
@@ -49,12 +107,15 @@ with:
 "adbc-driver-snowflake[dbapi]==1.11.0",
 ```
 
+Preserve each file's existing indentation (two spaces in `apps/api`, four in
+the shared package and worker).
+
 Remove `pyopenssl` from `shared/connect/pyproject.toml` and
 `pyopenssl==24.3.0` from `apps/api/pyproject.toml`; repository search confirms
 there are no direct imports. Keep `cryptography` in `shared/connect` because it
 validates PEM/passphrase pairs without serializing a second unencrypted key.
 
-- [ ] **Step 2: Regenerate each lockfile independently**
+- [ ] **Step 3: Regenerate each lockfile independently**
 
 Run:
 
@@ -67,21 +128,6 @@ rtk uv lock --directory apps/auto-savings
 Expected: all commands succeed; each lock contains `adbc-driver-snowflake`,
 `adbc-driver-manager`, and `pyarrow`, and contains no
 `snowflake-connector-python` package.
-
-- [ ] **Step 3: Verify the pinned API names before production edits**
-
-Run:
-
-```bash
-rtk uv run --directory shared/connect python -c "import adbc_driver_manager, adbc_driver_snowflake, adbc_driver_snowflake.dbapi; print(adbc_driver_snowflake.DatabaseOptions.CLIENT_TIMEOUT.value); print(adbc_driver_snowflake.StatementOptions.QUERY_TAG.value)"
-```
-
-Expected output includes:
-
-```text
-adbc.snowflake.sql.client_option.client_timeout
-adbc.snowflake.statement.query_tag
-```
 
 - [ ] **Step 4: Document the compatibility boundary**
 
@@ -167,8 +213,8 @@ Run:
 rtk uv run --directory shared/connect pytest tests/test_snowflake_client.py -k 'adbc_db_kwargs or malformed or repr or environment' -q
 ```
 
-Expected: FAIL because `adbc_db_kwargs` does not exist and the old connector
-method still returns Python-connector keys.
+Expected: the new `adbc_db_kwargs` tests FAIL because the method does not exist;
+pre-existing selected `repr` and environment tests may still pass.
 
 - [ ] **Step 3: Implement PEM validation without normalization**
 
@@ -297,6 +343,52 @@ def test_execute_source_query_translates_named_binds_in_occurrence_order() -> No
     assert rows == [{"window_days": 30, "account_locator": "XY12345"}]
 ```
 
+Use ADBC-compatible signatures in every injected fake retained by this file,
+including empty-bind, account-locator, neutral-message, validation, and
+object-unavailable groups:
+
+```python
+class _RecordingCursor:
+    def __init__(self, *, description, rows):
+        self.description = description
+        self._rows = rows
+        self.executed = []
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params) if params is not None else (sql,))
+
+    def fetchall(self):
+        return self._rows
+
+    def close(self):
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+class _Connection:
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self.cursor_kwargs = []
+
+    def cursor(self, **kwargs):
+        self.cursor_kwargs.append(kwargs)
+        return self._cursor
+
+    def close(self):
+        return None
+```
+
+Where a test keeps its own local fake rather than these helpers, change
+`cursor(self)` to `cursor(self, **kwargs)` and change
+`execute(self, sql, params)` to `execute(self, sql, params=None)`. Assert at
+least once that `cursor_kwargs` contains the ADBC `QUERY_TAG` statement option;
+do not repeat that assertion in every behavior test.
+
 Add one assertion to the same test group that `select '50%'` is unchanged with
 no parameters. Replace direct patches with
 `patch("greysight_connect.snowflake_client.adbc_driver_snowflake.dbapi.connect")`
@@ -393,6 +485,14 @@ def _connect(config: SnowflakeConnectionConfig | None) -> Any:
     effective_config = config or SnowflakeConnectionConfig.from_environment()
     try:
         options = effective_config.adbc_db_kwargs()
+    except SnowflakeConfigurationError as exc:
+        _log_validation_failure(
+            exc,
+            phase="configuration",
+            metadata=_safe_failure_metadata(exc),
+        )
+        raise
+    try:
         return adbc_driver_snowflake.dbapi.connect(
             db_kwargs=options,
             autocommit=True,
@@ -404,7 +504,47 @@ def _connect(config: SnowflakeConnectionConfig | None) -> Any:
 ```
 
 Use `snowflake_cursor` in source, metadata, and validation queries, and export
-it from `greysight_connect.__init__` for the worker.
+it from `greysight_connect.__init__` for the worker. Add it to both the import
+list and `__all__`:
+
+```python
+from greysight_connect.snowflake_client import (
+    SnowflakeConfigurationError,
+    SnowflakeConnectionConfig,
+    SnowflakeObjectUnavailableError,
+    SnowflakeQueryError,
+    SnowflakeValidationError,
+    execute_metadata_query,
+    execute_source_query,
+    snowflake_cursor,
+    validate_snowflake_connection,
+)
+
+__all__ = [
+    "InvalidSnowflakeAccountError",
+    "validate_account_identifier",
+    "SnowflakeConfigurationError",
+    "SnowflakeConnectionConfig",
+    "SnowflakeObjectUnavailableError",
+    "SnowflakeQueryError",
+    "SnowflakeValidationError",
+    "execute_metadata_query",
+    "execute_source_query",
+    "snowflake_cursor",
+    "validate_snowflake_connection",
+    "FetchConnection",
+    "OrgConnectionNotConfiguredError",
+    "OrgConnectionRow",
+    "OrgConnectionUnavailableError",
+    "ResolverSettings",
+    "SupabaseConnectionFetcher",
+    "resolve_snowflake_config",
+]
+```
+
+Retain `test_validation_logs_configuration_failure_without_raw_detail`; it
+proves the first exception block still logs `phase=configuration` without raw
+key details.
 
 - [ ] **Step 6: Adapt ADBC error metadata**
 
@@ -455,6 +595,7 @@ rtk git commit -m "feat: execute Snowflake queries through ADBC"
 - Modify: `apps/auto-savings/tests/test_snowflake_session.py`
 - Modify: `apps/auto-savings/tests/test_engine.py`
 - Modify: `apps/auto-savings/src/auto_savings/snowflake_session.py`
+- Modify: `docs/automated-savings.md`
 
 - [ ] **Step 1: Replace worker connector tests in place**
 
@@ -524,6 +665,24 @@ def _connect_adbc(config: Any, *, timeout_seconds: int) -> Any:
 default branch calls `_connect_adbc`. Use `snowflake_cursor` in
 `show_warehouses` and `suspend_warehouse`.
 
+Replace the module's Python-connector-specific wedge explanation with:
+
+```python
+"""Warm, persistent per-tenant Snowflake session.
+
+The wedge-escape mechanism is ADBC's ``client_timeout``, which bounds network
+round trips and HTTP response reads inside the Go Snowflake driver. The worker
+sets login, request, and client timeouts to ``socket_timeout_seconds``.
+``socket_timeout_seconds`` MUST remain strictly less than the caller's poll
+timeout so the driver call returns before the watchdog trips (see
+WorkerConfig.__post_init__).
+"""
+```
+
+Update the nearby `_connector_kwargs`/initial-connect comments as part of its
+replacement; no comment should describe the removed Python connector's
+C-level `recv()` behavior.
+
 - [ ] **Step 4: Adapt worker diagnostics and code 90064**
 
 Implement:
@@ -540,6 +699,9 @@ def connector_error_metadata(exc: Any) -> ConnectorErrorMetadata:
     )
 ```
 
+The bounded message remains available for every ADBC error, matching existing
+engine telemetry; sanitization and the 512-character limit remain unchanged.
+
 Classify unknown-idempotent only with:
 
 ```python
@@ -552,7 +714,23 @@ if (
 Any missing/zero/unrelated vendor code is re-raised so the engine follows its
 existing close/reconnect/backoff path.
 
-- [ ] **Step 5: Run the worker suite**
+- [ ] **Step 5: Document the residual vendor-code behavior**
+
+In `docs/automated-savings.md`, update the Snowflake failure guidance to state:
+
+```markdown
+ADBC preserves Snowflake vendor code `90064` as an unknown-but-idempotent
+outcome when the Go driver supplies that code. If ADBC omits or changes the
+vendor code, the worker fails closed: it records no suspend event, closes the
+session, reconnects, and applies retry backoff. Operators must not interpret
+the absence of `90064` telemetry as proof that a suspend was accepted.
+```
+
+This is intentionally fail-safe. The hermetic test proves behavior when ADBC
+supplies `90064` and when it supplies no vendor code; a live test must not try
+to manufacture an ambiguous network result.
+
+- [ ] **Step 6: Run the worker suite**
 
 Run:
 
@@ -566,10 +744,10 @@ Expected: all pass. Existing `test_warehouse_snapshot.py` tests already prove
 timezone-aware/string timestamp handling, `Decimal`-compatible count parsing,
 and fail-closed naive timestamp behavior; do not duplicate them.
 
-- [ ] **Step 6: Commit the worker migration**
+- [ ] **Step 7: Commit the worker migration**
 
 ```bash
-rtk git add apps/auto-savings/src/auto_savings/snowflake_session.py apps/auto-savings/tests/test_snowflake_session.py apps/auto-savings/tests/test_engine.py
+rtk git add apps/auto-savings/src/auto_savings/snowflake_session.py apps/auto-savings/tests/test_snowflake_session.py apps/auto-savings/tests/test_engine.py docs/automated-savings.md
 rtk git commit -m "feat: migrate automated savings to Snowflake ADBC"
 ```
 
@@ -592,7 +770,7 @@ policy.
 Run:
 
 ```bash
-rtk rg -n "snowflake\.connector|snowflake-connector-python|connector_kwargs|_load_private_key_der" shared apps docs --glob '!docs/superpowers/specs/**' --glob '!docs/superpowers/plans/**'
+rtk rg -ni "snowflake\.connector|snowflake-connector-python|snowflake connector|connector_kwargs|_load_private_key_der" shared apps docs --glob '!docs/superpowers/specs/**' --glob '!docs/superpowers/plans/**'
 ```
 
 Expected: no matches. If a test name or comment is the only match, rename it;

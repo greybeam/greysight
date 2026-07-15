@@ -107,8 +107,9 @@ Only ADBC DB-API errors are eligible for Snowflake vendor-code classification.
 Vendor codes `2003` and `3001` continue to identify unavailable objects. The
 worker classifies `90064` as unknown-but-idempotent only when it is present on
 an ADBC error. Missing or zero vendor codes fail closed as ordinary retryable
-errors. Worker telemetry may include a bounded, whitespace-normalized ADBC
-message for the `90064` path, but never connection options or secrets.
+errors. Worker telemetry may include the existing bounded,
+whitespace-normalized connector message for ADBC errors, but never connection
+options or secrets.
 
 Raw exceptions, PEM content, passphrases, and connection secrets must not reach
 user responses or logs.
