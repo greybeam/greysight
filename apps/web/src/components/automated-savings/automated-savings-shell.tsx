@@ -13,7 +13,10 @@ import {
   type WarehouseRow,
 } from "../../lib/automated-savings-api";
 import { queryKeys } from "../../lib/query-keys";
-import { useQueryIdentity } from "../../lib/query-identity";
+import {
+  useQueryIdentity,
+  type QueryIdentitySnapshot,
+} from "../../lib/query-identity";
 import { DashboardApiError } from "../../lib/dashboard-errors";
 import { AppHeader } from "../dashboard/app-header";
 import DashboardFailureMessage from "../dashboard/dashboard-failure-message";
@@ -246,9 +249,12 @@ export function AutomatedSavingsShell() {
         setControlError("Couldn’t update Auto Savings. Please try again.");
       }
     } finally {
+      // Always release the busy flag for the latest operation, regardless of
+      // identity staleness: it is local UI state and a switch back must not
+      // leave the global switch permanently disabled.
       if (globalOperationRef.current === operation) {
         globalOperationRef.current = null;
-        if (identity.isCurrent(captured)) setGlobalSwitching(false);
+        setGlobalSwitching(false);
       }
     }
   }
@@ -267,8 +273,10 @@ export function AutomatedSavingsShell() {
     }
   }
 
-  async function handleAgreementComplete() {
-    const captured = identity.capture();
+  async function handleAgreementComplete(captured: QueryIdentitySnapshot) {
+    // Identity is captured when `agree` STARTS (in OptInGate) and threaded here,
+    // so the entire completion — invalidation and the access refetch — is
+    // dropped if the org/account switched out from under the in-flight request.
     if (!orgId || !identity.isCurrent(captured)) return;
     // Invalidating the whole auto-savings scope refetches the actively observed
     // status query (one status GET) and marks warehouses stale; the warehouse
@@ -279,8 +287,9 @@ export function AutomatedSavingsShell() {
       queryKey: queryKeys.autoSavings.scope(captured.userId, captured.orgId),
     });
     if (!identity.isCurrent(captured)) return;
-    const refreshed =
-      queryClient.getQueryData<AutomatedSavingsStatus>(statusKey);
+    const refreshed = queryClient.getQueryData<AutomatedSavingsStatus>(
+      queryKeys.autoSavings.status(captured.userId, captured.orgId),
+    );
     // Access is a manual check, so refresh it explicitly after agreement.
     if (refreshed?.agreed) void accessQuery.refetch();
   }

@@ -5,11 +5,15 @@ import { useRef, useState } from "react";
 
 import { useAccountChrome } from "../../lib/account-context";
 import { agree } from "../../lib/automated-savings-api";
+import {
+  useQueryIdentity,
+  type QueryIdentitySnapshot,
+} from "../../lib/query-identity";
 
 type OptInGateProps = {
   orgId: string;
   roleName: string;
-  onAgreed: () => void;
+  onAgreed: (captured: QueryIdentitySnapshot) => void;
 };
 
 // Escapes a Snowflake identifier for safe interpolation into double-quoted
@@ -49,6 +53,7 @@ const REPO_URL =
 
 export function OptInGate({ orgId, roleName, onAgreed }: OptInGateProps) {
   const account = useAccountChrome();
+  const queryIdentity = useQueryIdentity();
   const [status, setStatus] = useState<"idle" | "submitting" | "error">("idle");
   const [copied, setCopied] = useState(false);
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -69,10 +74,14 @@ export function OptInGate({ orgId, roleName, onAgreed }: OptInGateProps) {
 
   async function handleAgree() {
     if (!isAdmin || status === "submitting") return;
+    // Capture the query identity at the moment agreement starts so the
+    // completion flow can be dropped if the org/account switches while the
+    // request is in flight (see handleAgreementComplete in the shell).
+    const captured = queryIdentity.capture();
     setStatus("submitting");
     try {
       await agree(orgId, { accessToken: account?.accessToken ?? null });
-      onAgreed();
+      onAgreed(captured);
     } catch {
       setStatus("error");
     }

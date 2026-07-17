@@ -1,14 +1,28 @@
 import {
   cleanup,
   fireEvent,
-  render,
+  render as rtlRender,
   screen,
   waitFor,
 } from "@testing-library/react";
+import type { ReactElement } from "react";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AccountChromeProvider } from "../../lib/account-context";
 import * as automatedSavingsApi from "../../lib/automated-savings-api";
+import { createTestQueryClient } from "../../lib/query-test-utils";
 import { normalizeRoleName, OptInGate, quoteIdent } from "./opt-in-gate";
+
+// OptInGate now reads the query identity (useQueryIdentity), which requires a
+// QueryClientProvider. Wrap every render so the gate resolves one; identity
+// falls back to the AccountChrome-derived snapshot (no QueryIdentityProvider).
+function render(ui: ReactElement) {
+  return rtlRender(
+    <QueryClientProvider client={createTestQueryClient()}>
+      {ui}
+    </QueryClientProvider>,
+  );
+}
 
 // The shared vitest setup registers no automatic DOM cleanup, so unmount each
 // render explicitly (project convention, see chart-tooltip.test.tsx).

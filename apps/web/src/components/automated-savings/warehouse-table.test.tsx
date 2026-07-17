@@ -65,6 +65,23 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+// A read-only observer of the org-1 warehouses cache entry. It never fetches
+// (enabled: false) and renders the names of whatever is written to WH_KEY, so a
+// stale authoritative write becomes visible in the DOM (rather than probing the
+// cache via getQueryData).
+function WarehouseCacheProbe() {
+  const { data } = useQuery({
+    queryKey: WH_KEY,
+    queryFn: () => Promise.resolve<automatedSavingsApi.WarehouseRow[]>([]),
+    enabled: false,
+  });
+  return (
+    <div data-testid="wh-cache-probe">
+      {(data ?? []).map((row) => row.name).join(",")}
+    </div>
+  );
+}
+
 describe("WarehouseTable", () => {
   it("disables the toggle when AUTO_RESUME is off", () => {
     renderTable(<WarehouseTable orgId="org-1" isAdmin warehouses={[{ ...base, autoResumeOk: false, enabled: false }]} onChange={() => {}} />);
@@ -165,12 +182,13 @@ describe("WarehouseTable", () => {
     const client = createTestQueryClient();
 
     // A cache-connected harness: the table reads its rows from the warehouses
-    // query and the authoritative post-enrollment write lands in that cache, so
-    // the transitioning status appears without any explicit onChange plumbing.
+    // query. The authoritative post-enrollment write lands in that cache and the
+    // follow-up invalidation refetch returns the same enrolled row, so the
+    // transitioning status appears without any explicit onChange plumbing.
     function CacheTable() {
       const { data } = useQuery({
         queryKey: WH_KEY,
-        queryFn: () => Promise.resolve([unenrolled]),
+        queryFn: () => Promise.resolve([enrolled]),
         initialData: [unenrolled],
       });
       return (
@@ -193,11 +211,15 @@ describe("WarehouseTable", () => {
     renderTable(<CacheTable />, client);
     fireEvent.click(screen.getByRole("switch", { name: /WH1/i }));
 
+    // Observable behavior: the authoritative transitioning status is rendered
+    // and the toggle now reads as enrolled.
     expect(await screen.findByText("Transitioning")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: /WH1/i })).toBeChecked(),
+    );
     expect(automatedSavingsApi.fetchWarehouses).toHaveBeenCalledWith("org-1", {
       accessToken: "tok",
     });
-    expect(client.getQueryData(WH_KEY)).toEqual([enrolled]);
   });
 
   it.each([
@@ -263,6 +285,7 @@ describe("WarehouseTable", () => {
 
     const view = render(
       <Providers client={client}>
+        <WarehouseCacheProbe />
         <WarehouseTable
           orgId="org-1"
           isAdmin
@@ -280,6 +303,7 @@ describe("WarehouseTable", () => {
         client={client}
         identity={{ userId: "test-user", activeOrganizationId: "org-2" }}
       >
+        <WarehouseCacheProbe />
         <WarehouseTable
           orgId="org-2"
           isAdmin
@@ -294,8 +318,9 @@ describe("WarehouseTable", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    // The stale org-1 result must not be written to the old org's cache.
-    expect(client.getQueryData(WH_KEY)).toBeUndefined();
+    // The stale org-1 result must not be written to the old org's cache, so the
+    // probe observing WH_KEY stays empty.
+    expect(screen.getByTestId("wh-cache-probe")).toHaveTextContent("");
   });
 
   it("drops the post-enrollment authoritative cache write after an account switch", async () => {
@@ -309,6 +334,7 @@ describe("WarehouseTable", () => {
 
     const view = render(
       <Providers client={client}>
+        <WarehouseCacheProbe />
         <WarehouseTable
           orgId="org-1"
           isAdmin
@@ -330,6 +356,7 @@ describe("WarehouseTable", () => {
           identityEpoch: 1,
         }}
       >
+        <WarehouseCacheProbe />
         <WarehouseTable
           orgId="org-1"
           isAdmin
@@ -344,7 +371,8 @@ describe("WarehouseTable", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(client.getQueryData(WH_KEY)).toBeUndefined();
+    // The stale write is dropped on the epoch bump, so the probe stays empty.
+    expect(screen.getByTestId("wh-cache-probe")).toHaveTextContent("");
   });
 
   it("surfaces a toggle failure's user-safe message without changing enrollment", async () => {
@@ -378,6 +406,57 @@ describe("WarehouseTable", () => {
       "Something went wrong. Please try again.",
     );
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("clears the row busy state after the identity goes stale mid-toggle", async () => {
+    // Busy is local UI state: even when the toggle resolves against a stale
+    // identity (org switched out and back), the per-operation token must still
+    // release busy so the row isn't left permanently disabled.
+    const client = createTestQueryClient();
+    const toggle = deferred<void>();
+    vi.spyOn(automatedSavingsApi, "toggleWarehouse").mockReturnValue(
+      toggle.promise,
+    );
+
+    const view = render(
+      <Providers client={client}>
+        <WarehouseTable
+          orgId="org-1"
+          isAdmin
+          accessToken="tok"
+          warehouses={[base]}
+          onChange={() => {}}
+        />
+      </Providers>,
+    );
+    const rowSwitch = screen.getByRole("switch", { name: /WH1/i });
+    fireEvent.click(rowSwitch);
+    expect(rowSwitch).toBeDisabled();
+
+    // The signed-in identity is re-issued while the toggle is in flight.
+    view.rerender(
+      <Providers
+        client={client}
+        identity={{
+          userId: "test-user",
+          activeOrganizationId: "org-1",
+          identityEpoch: 1,
+        }}
+      >
+        <WarehouseTable
+          orgId="org-1"
+          isAdmin
+          accessToken="tok"
+          warehouses={[base]}
+          onChange={() => {}}
+        />
+      </Providers>,
+    );
+
+    toggle.resolve();
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: /WH1/i })).not.toBeDisabled(),
+    );
   });
 
   it("protects a warehouse from overlapping toggle actions", async () => {

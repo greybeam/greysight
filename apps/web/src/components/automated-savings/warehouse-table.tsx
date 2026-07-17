@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Badge,
@@ -178,6 +178,10 @@ function WarehouseRowView({
   const disabledReasonId = useId();
   const queryClient = useQueryClient();
   const queryIdentity = useQueryIdentity();
+  // Per-operation token: a `finally` clears busy iff the same toggle that set it
+  // is still the latest one, so busy is always released even when the identity
+  // went stale (org/account switch) mid-flight — busy is local UI state.
+  const operationRef = useRef<object | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [refreshFailed, setRefreshFailed] = useState(false);
@@ -193,67 +197,78 @@ function WarehouseRowView({
   const displayStatus = deriveDisplayStatus(warehouse);
 
   async function handleToggle() {
-    if (toggleDisabled) return;
+    if (toggleDisabled || operationRef.current) return;
     // Capture identity at the start of the mutation so a late-arriving
     // authoritative result (below) is dropped if the org/account switches
     // out from under us while the request is in flight.
+    const operation = {};
+    operationRef.current = operation;
     const captured = queryIdentity.capture();
     const nextEnabled = !warehouse.enabled;
     setBusy(true);
     setActionError(null);
     setRefreshFailed(false);
     try {
-      await toggleWarehouse(orgId, warehouse.name, nextEnabled, { accessToken });
-    } catch (error) {
+      try {
+        await toggleWarehouse(orgId, warehouse.name, nextEnabled, {
+          accessToken,
+        });
+      } catch (error) {
+        if (queryIdentity.isCurrent(captured)) {
+          setActionError(toUserMessage(error));
+        }
+        return;
+      }
+
+      if (!queryIdentity.isCurrent(captured)) return;
+      // Optimistic row feedback; the authoritative query result (a full-list
+      // write on enrollment, or an invalidation refetch on disable) follows.
+      onChange({ ...warehouse, enabled: nextEnabled });
+
+      const warehousesKey = queryKeys.autoSavings.warehouses(
+        captured.userId,
+        orgId,
+      );
+      const statusKey = queryKeys.autoSavings.status(captured.userId, orgId);
+
+      if (nextEnabled) {
+        // First enrollment writes the authoritative warehouse details (e.g. a
+        // transitioning status) directly into the cache so the just-written
+        // truth is visible immediately, then invalidates both warehouses and
+        // status per the plan. The follow-up refetch returns the same
+        // authoritative list, so the extra request is harmless.
+        try {
+          const rows = await fetchWarehouses(orgId, { accessToken });
+          const authoritative = rows.find((row) => row.name === warehouse.name);
+          if (!authoritative) {
+            throw new Error("The enrolled warehouse could not be refreshed.");
+          }
+          if (!queryIdentity.isCurrent(captured)) return;
+          queryClient.setQueryData(warehousesKey, rows);
+        } catch {
+          if (queryIdentity.isCurrent(captured)) {
+            setRefreshFailed(true);
+            setActionError(
+              "Enrollment was saved, but its details could not be refreshed.",
+            );
+          }
+        }
+      }
       if (queryIdentity.isCurrent(captured)) {
-        setActionError(toUserMessage(error));
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: warehousesKey }),
+          queryClient.invalidateQueries({ queryKey: statusKey }),
+        ]);
+      }
+    } finally {
+      // Always release busy for the latest operation, regardless of identity
+      // staleness: busy is local UI state and a switch back must not leave the
+      // row permanently disabled.
+      if (operationRef.current === operation) {
+        operationRef.current = null;
         setBusy(false);
       }
-      return;
     }
-
-    if (!queryIdentity.isCurrent(captured)) return;
-    // Optimistic row feedback; the authoritative query result (a full-list
-    // write on enrollment, or an invalidation refetch on disable) follows.
-    onChange({ ...warehouse, enabled: nextEnabled });
-
-    const warehousesKey = queryKeys.autoSavings.warehouses(
-      captured.userId,
-      orgId,
-    );
-    const statusKey = queryKeys.autoSavings.status(captured.userId, orgId);
-
-    if (nextEnabled) {
-      // First enrollment hydrates authoritative warehouse details (e.g. a
-      // transitioning status) directly into the cache rather than invalidating
-      // the warehouses query, so the just-written truth is not immediately
-      // clobbered by a refetch.
-      try {
-        const rows = await fetchWarehouses(orgId, { accessToken });
-        const authoritative = rows.find((row) => row.name === warehouse.name);
-        if (!authoritative) {
-          throw new Error("The enrolled warehouse could not be refreshed.");
-        }
-        if (!queryIdentity.isCurrent(captured)) return;
-        queryClient.setQueryData(warehousesKey, rows);
-      } catch {
-        if (queryIdentity.isCurrent(captured)) {
-          setRefreshFailed(true);
-          setActionError(
-            "Enrollment was saved, but its details could not be refreshed.",
-          );
-        }
-      }
-      if (queryIdentity.isCurrent(captured)) {
-        await queryClient.invalidateQueries({ queryKey: statusKey });
-      }
-    } else if (queryIdentity.isCurrent(captured)) {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: warehousesKey }),
-        queryClient.invalidateQueries({ queryKey: statusKey }),
-      ]);
-    }
-    if (queryIdentity.isCurrent(captured)) setBusy(false);
   }
 
   async function handleRefresh() {

@@ -281,7 +281,7 @@ describe("AutomatedSavingsShell", () => {
     });
     fetchWarehousesMock
       .mockResolvedValueOnce([{ ...baseRow, enabled: false }])
-      .mockResolvedValueOnce([{ ...baseRow, enabled: true }]);
+      .mockResolvedValue([{ ...baseRow, enabled: true }]);
     toggleWarehouseMock.mockResolvedValue(undefined);
 
     renderShell();
@@ -608,6 +608,59 @@ describe("AutomatedSavingsShell", () => {
       .toBeInTheDocument();
     expect(fetchStatusMock.mock.calls.filter(([orgId]) => orgId === "org-1"))
       .toHaveLength(1);
+  });
+
+  it("drops the agreement completion when the org switches mid-request", async () => {
+    // Identity is captured when agree STARTS (org-1). Switching to org-2 while
+    // the request is in flight must drop the entire completion so the new org's
+    // scope is never invalidated/refetched off the stale agreement.
+    let resolveAgreement: (() => void) | undefined;
+    agreeMock.mockImplementation(
+      () => new Promise<void>((resolve) => { resolveAgreement = resolve; }),
+    );
+    fetchStatusMock.mockImplementation((orgId: string) =>
+      orgId === "org-1"
+        ? Promise.resolve({
+            agreed: false,
+            globalEnabled: false,
+            grantPresent: false,
+            grantCheckedAt: null,
+            roleName: null,
+          })
+        : Promise.resolve({
+            agreed: true,
+            globalEnabled: true,
+            grantPresent: true,
+            grantCheckedAt: null,
+            roleName: null,
+          }),
+    );
+    fetchWarehousesMock.mockResolvedValue([{ ...baseRow, name: "WH_ORG_2" }]);
+    const client = createTestQueryClient();
+
+    const view = render(shellForOrganization("org-1", client));
+    fireEvent.click(await screen.findByRole("button", { name: /agree/i }));
+
+    view.rerender(shellForOrganization("org-2", client));
+    expect(await screen.findByRole("switch", { name: "WH_ORG_2" }))
+      .toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        fetchStatusMock.mock.calls.filter(([orgId]) => orgId === "org-2"),
+      ).toHaveLength(1),
+    );
+
+    // The stale agreement resolves against org-1 — org-2's scope must not be
+    // invalidated, so its status and warehouses are each still fetched once.
+    resolveAgreement?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(
+      fetchStatusMock.mock.calls.filter(([orgId]) => orgId === "org-2"),
+    ).toHaveLength(1);
+    expect(
+      fetchWarehousesMock.mock.calls.filter(([orgId]) => orgId === "org-2"),
+    ).toHaveLength(1);
   });
 
   it("serves cached status and warehouses on remount without refetching", async () => {
