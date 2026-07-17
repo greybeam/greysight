@@ -102,6 +102,7 @@ class SupabaseConnectionFetcher:
         supabase_url: str,
         service_role_key: str,
         timeout_seconds: float = 10.0,
+        timeout: httpx.Timeout | float | None = None,
         transport: httpx.BaseTransport | None = None,
         client: httpx.Client | None = None,
     ) -> None:
@@ -110,6 +111,13 @@ class SupabaseConnectionFetcher:
         self._secret_rpc_url = f"{base}/rest/v1/rpc/get_organization_snowflake_secret"
         self._service_role_key = service_role_key
         self._timeout_seconds = timeout_seconds
+        # Per-request timeout policy applied on the injected (pooled) path. The
+        # API supplies this so a scalar timeout can't silently override the
+        # pooled client's pool-acquisition cap; standalone callers may pass a
+        # plain float. Defaults to ``timeout_seconds`` (a scalar) when unset.
+        self._request_timeout: httpx.Timeout | float = (
+            timeout if timeout is not None else timeout_seconds
+        )
         self._transport = transport
         self._client = client
 
@@ -127,7 +135,7 @@ class SupabaseConnectionFetcher:
         # injected client must not have its pool-wide timeout mutated, so pass the
         # per-request timeout only on the injected path.
         timeout_kwargs = (
-            {"timeout": self._timeout_seconds} if self._client is not None else {}
+            {"timeout": self._request_timeout} if self._client is not None else {}
         )
         meta_response = client.get(
             self._table_url,

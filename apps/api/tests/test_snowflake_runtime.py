@@ -1,7 +1,11 @@
 import httpx
 
 from app.config import Settings
-from app.services.http_pool import get_sync_client
+from app.services.http_pool import (
+    DEFAULT_TIMEOUT_SECONDS,
+    POOL_TIMEOUT_SECONDS,
+    get_sync_client,
+)
 from app.services.snowflake_runtime import get_connection_fetcher
 from tests.conftest import installed_sync_pool
 
@@ -48,3 +52,22 @@ def test_connection_fetcher_uses_pooled_sync_client() -> None:
         assert row.account == "acct"
         # The pooled client was reused, not closed by the fetcher.
         assert sync_client.is_closed is False
+
+
+def test_connection_fetcher_preserves_pool_acquisition_cap() -> None:
+    settings = Settings(
+        auth_required=True,
+        supabase_url="https://example.supabase.co",
+        supabase_service_role_key="svc",
+    )
+
+    with installed_sync_pool(_handler):
+        fetcher = get_connection_fetcher(settings)
+        # The runtime must wire request_timeout(...) so a scalar timeout can't
+        # override the pooled client's pool-acquisition cap on injected lookups.
+        timeout = fetcher._request_timeout  # type: ignore[attr-defined]
+        assert isinstance(timeout, httpx.Timeout)
+        assert timeout.connect == DEFAULT_TIMEOUT_SECONDS
+        assert timeout.read == DEFAULT_TIMEOUT_SECONDS
+        assert timeout.write == DEFAULT_TIMEOUT_SECONDS
+        assert timeout.pool == POOL_TIMEOUT_SECONDS

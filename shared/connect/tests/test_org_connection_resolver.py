@@ -496,6 +496,52 @@ def test_fetcher_reuses_injected_client_across_sequential_lookups() -> None:
     assert seen_headers == ["Bearer svc"] * 4
 
 
+class _TimeoutRecordingClient:
+    """Wraps a real httpx.Client and records the ``timeout`` kwarg per request."""
+
+    def __init__(self, inner: httpx.Client) -> None:
+        self._inner = inner
+        self.timeouts: list[object] = []
+
+    def get(self, *args, **kwargs):
+        self.timeouts.append(kwargs.get("timeout"))
+        return self._inner.get(*args, **kwargs)
+
+    def post(self, *args, **kwargs):
+        self.timeouts.append(kwargs.get("timeout"))
+        return self._inner.post(*args, **kwargs)
+
+    def close(self) -> None:
+        self._inner.close()
+
+
+def test_fetcher_uses_injected_timeout_object_on_requests() -> None:
+    inner = httpx.Client(transport=_transport(_connection_handler))
+    recording = _TimeoutRecordingClient(inner)
+    injected_timeout = httpx.Timeout(10.0, pool=1.0)
+    fetcher = SupabaseConnectionFetcher(
+        supabase_url="https://example.supabase.co",
+        service_role_key="svc",
+        timeout=injected_timeout,
+        client=recording,  # type: ignore[arg-type]
+    )
+
+    assert fetcher("org-1") is not None
+
+    # Every request on the injected path carries the full timeout policy so the
+    # pooled client's pool-acquisition cap is preserved (not overridden by a
+    # scalar timeout).
+    assert recording.timeouts == [injected_timeout, injected_timeout]
+    for timeout in recording.timeouts:
+        assert isinstance(timeout, httpx.Timeout)
+        assert timeout.connect == 10.0
+        assert timeout.read == 10.0
+        assert timeout.write == 10.0
+        assert timeout.pool == 1.0
+
+    inner.close()
+
+
 def test_fetcher_raises_on_multiple_secret_rows() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/organization_snowflake_connections"):
