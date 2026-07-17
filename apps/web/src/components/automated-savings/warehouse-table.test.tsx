@@ -1,8 +1,15 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
+import { QueryClient, useQuery } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as automatedSavingsApi from "../../lib/automated-savings-api";
 import { DashboardApiError } from "../../lib/dashboard-errors";
+import { queryKeys } from "../../lib/query-keys";
+import { QueryIdentityProvider } from "../../lib/query-identity";
+import {
+  createTestQueryClient,
+  QueryTestProvider,
+} from "../../lib/query-test-utils";
 import { WarehouseTable } from "./warehouse-table";
 
 // The shared vitest setup registers no automatic DOM cleanup, so unmount each
@@ -18,9 +25,49 @@ const base = {
   autoSuspend: 300, quiescing: 0, enabled: true, status: "idle" as const,
 };
 
+const WH_KEY = queryKeys.autoSavings.warehouses("test-user", "org-1");
+
+type TestIdentity = {
+  userId?: string;
+  activeOrganizationId?: string | null;
+  identityEpoch?: number;
+};
+
+// The warehouse toggle now reads/writes the shared query cache and guards those
+// writes on the current query identity, so every render needs a QueryClient and
+// a live QueryIdentityProvider ref (the provider stays mounted across identity
+// switches, matching how OrgShell owns identity in production).
+function Providers({
+  children,
+  client = createTestQueryClient(),
+  identity = { userId: "test-user", activeOrganizationId: "org-1" },
+}: {
+  children: ReactNode;
+  client?: QueryClient;
+  identity?: TestIdentity;
+}) {
+  return (
+    <QueryTestProvider client={client} identity={identity}>
+      <QueryIdentityProvider>{children}</QueryIdentityProvider>
+    </QueryTestProvider>
+  );
+}
+
+function renderTable(ui: ReactNode, client?: QueryClient) {
+  return render(<Providers client={client}>{ui}</Providers>);
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 describe("WarehouseTable", () => {
   it("disables the toggle when AUTO_RESUME is off", () => {
-    render(<WarehouseTable orgId="org-1" isAdmin warehouses={[{ ...base, autoResumeOk: false, enabled: false }]} onChange={() => {}} />);
+    renderTable(<WarehouseTable orgId="org-1" isAdmin warehouses={[{ ...base, autoResumeOk: false, enabled: false }]} onChange={() => {}} />);
     const rowSwitch = screen.getByRole("switch", { name: /WH1/i });
     expect(rowSwitch).toBeDisabled();
     expect(document.getElementById(rowSwitch.getAttribute("aria-describedby") ?? ""))
@@ -28,7 +75,7 @@ describe("WarehouseTable", () => {
   });
 
   it.each([[300, "300s"], [null, "—"]] as const)("renders AUTO_SUSPEND %s as plain text", (autoSuspend, display) => {
-    render(
+    renderTable(
       <WarehouseTable
         orgId="org-1"
         isAdmin
@@ -40,7 +87,7 @@ describe("WarehouseTable", () => {
   });
 
   it("disables the toggle and shows unsupported for non-STANDARD warehouses", () => {
-    render(<WarehouseTable orgId="org-1" isAdmin warehouses={[{ ...base, type: "SNOWPARK-OPTIMIZED", enabled: false }]} onChange={() => {}} />);
+    renderTable(<WarehouseTable orgId="org-1" isAdmin warehouses={[{ ...base, type: "SNOWPARK-OPTIMIZED", enabled: false }]} onChange={() => {}} />);
     const rowSwitch = screen.getByRole("switch", { name: /WH1/i });
     expect(rowSwitch).toBeDisabled();
     expect(document.getElementById(rowSwitch.getAttribute("aria-describedby") ?? ""))
@@ -49,12 +96,12 @@ describe("WarehouseTable", () => {
   });
 
   it("disables the toggle for non-admins", () => {
-    render(<WarehouseTable orgId="org-1" isAdmin={false} warehouses={[base]} onChange={() => {}} />);
+    renderTable(<WarehouseTable orgId="org-1" isAdmin={false} warehouses={[base]} onChange={() => {}} />);
     expect(screen.getByRole("switch", { name: /WH1/i })).toBeDisabled();
   });
 
   it("presents a backend transition even when enrollment was disabled mid-transition", () => {
-    render(
+    renderTable(
       <WarehouseTable
         orgId="org-1"
         isAdmin
@@ -82,7 +129,7 @@ describe("WarehouseTable", () => {
     const warehouse = { ...base, ...unsafeState, enabled: true };
     const toggleSpy = vi.spyOn(automatedSavingsApi, "toggleWarehouse").mockResolvedValue(undefined);
     const onChange = vi.fn();
-    render(
+    renderTable(
       <WarehouseTable
         orgId="org-1"
         isAdmin
@@ -103,7 +150,7 @@ describe("WarehouseTable", () => {
     });
   });
 
-  it("refreshes the authoritative row after first enrollment", async () => {
+  it("writes the authoritative warehouse list to the cache after first enrollment", async () => {
     const unenrolled: automatedSavingsApi.WarehouseRow = {
       ...base,
       enabled: false,
@@ -115,27 +162,42 @@ describe("WarehouseTable", () => {
     };
     vi.spyOn(automatedSavingsApi, "toggleWarehouse").mockResolvedValue(undefined);
     vi.spyOn(automatedSavingsApi, "fetchWarehouses").mockResolvedValue([enrolled]);
+    const client = createTestQueryClient();
 
-    function Harness() {
-      const [row, setRow] = useState(unenrolled);
+    // A cache-connected harness: the table reads its rows from the warehouses
+    // query and the authoritative post-enrollment write lands in that cache, so
+    // the transitioning status appears without any explicit onChange plumbing.
+    function CacheTable() {
+      const { data } = useQuery({
+        queryKey: WH_KEY,
+        queryFn: () => Promise.resolve([unenrolled]),
+        initialData: [unenrolled],
+      });
       return (
         <WarehouseTable
           orgId="org-1"
           isAdmin
           accessToken="tok"
-          warehouses={[row]}
-          onChange={setRow}
+          warehouses={data ?? []}
+          onChange={(row) =>
+            client.setQueryData<automatedSavingsApi.WarehouseRow[]>(
+              WH_KEY,
+              (prev) =>
+                (prev ?? []).map((r) => (r.name === row.name ? row : r)),
+            )
+          }
         />
       );
     }
 
-    render(<Harness />);
+    renderTable(<CacheTable />, client);
     fireEvent.click(screen.getByRole("switch", { name: /WH1/i }));
 
     expect(await screen.findByText("Transitioning")).toBeInTheDocument();
     expect(automatedSavingsApi.fetchWarehouses).toHaveBeenCalledWith("org-1", {
       accessToken: "tok",
     });
+    expect(client.getQueryData(WH_KEY)).toEqual([enrolled]);
   });
 
   it.each([
@@ -178,7 +240,7 @@ describe("WarehouseTable", () => {
         );
       }
 
-      render(<Harness />);
+      renderTable(<Harness />);
       const rowSwitch = screen.getByRole("switch", { name: /WH1/i });
       fireEvent.click(rowSwitch);
 
@@ -190,6 +252,101 @@ describe("WarehouseTable", () => {
     },
   );
 
+  it("drops the post-enrollment authoritative cache write after an org switch", async () => {
+    const client = createTestQueryClient();
+    const unenrolled = { ...base, enabled: false };
+    const whFetch = deferred<automatedSavingsApi.WarehouseRow[]>();
+    vi.spyOn(automatedSavingsApi, "toggleWarehouse").mockResolvedValue(undefined);
+    vi.spyOn(automatedSavingsApi, "fetchWarehouses").mockReturnValue(
+      whFetch.promise,
+    );
+
+    const view = render(
+      <Providers client={client}>
+        <WarehouseTable
+          orgId="org-1"
+          isAdmin
+          accessToken="tok"
+          warehouses={[unenrolled]}
+          onChange={() => {}}
+        />
+      </Providers>,
+    );
+    fireEvent.click(screen.getByRole("switch", { name: /WH1/i }));
+
+    // The workspace switches before the authoritative fetch resolves.
+    view.rerender(
+      <Providers
+        client={client}
+        identity={{ userId: "test-user", activeOrganizationId: "org-2" }}
+      >
+        <WarehouseTable
+          orgId="org-2"
+          isAdmin
+          accessToken="tok"
+          warehouses={[]}
+          onChange={() => {}}
+        />
+      </Providers>,
+    );
+
+    whFetch.resolve([{ ...unenrolled, enabled: true, status: "transitioning" }]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The stale org-1 result must not be written to the old org's cache.
+    expect(client.getQueryData(WH_KEY)).toBeUndefined();
+  });
+
+  it("drops the post-enrollment authoritative cache write after an account switch", async () => {
+    const client = createTestQueryClient();
+    const unenrolled = { ...base, enabled: false };
+    const whFetch = deferred<automatedSavingsApi.WarehouseRow[]>();
+    vi.spyOn(automatedSavingsApi, "toggleWarehouse").mockResolvedValue(undefined);
+    vi.spyOn(automatedSavingsApi, "fetchWarehouses").mockReturnValue(
+      whFetch.promise,
+    );
+
+    const view = render(
+      <Providers client={client}>
+        <WarehouseTable
+          orgId="org-1"
+          isAdmin
+          accessToken="tok"
+          warehouses={[unenrolled]}
+          onChange={() => {}}
+        />
+      </Providers>,
+    );
+    fireEvent.click(screen.getByRole("switch", { name: /WH1/i }));
+
+    // The signed-in identity is re-issued (epoch bump) before the fetch resolves.
+    view.rerender(
+      <Providers
+        client={client}
+        identity={{
+          userId: "test-user",
+          activeOrganizationId: "org-1",
+          identityEpoch: 1,
+        }}
+      >
+        <WarehouseTable
+          orgId="org-1"
+          isAdmin
+          accessToken="tok"
+          warehouses={[unenrolled]}
+          onChange={() => {}}
+        />
+      </Providers>,
+    );
+
+    whFetch.resolve([{ ...unenrolled, enabled: true, status: "transitioning" }]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(client.getQueryData(WH_KEY)).toBeUndefined();
+  });
+
   it("surfaces a toggle failure's user-safe message without changing enrollment", async () => {
     vi.spyOn(automatedSavingsApi, "toggleWarehouse").mockRejectedValue(
       new DashboardApiError(
@@ -198,7 +355,7 @@ describe("WarehouseTable", () => {
       ),
     );
     const onChange = vi.fn();
-    render(<WarehouseTable orgId="org-1" isAdmin accessToken="tok" warehouses={[base]} onChange={onChange} />);
+    renderTable(<WarehouseTable orgId="org-1" isAdmin accessToken="tok" warehouses={[base]} onChange={onChange} />);
 
     fireEvent.click(screen.getByRole("switch", { name: /WH1/i }));
 
@@ -213,7 +370,7 @@ describe("WarehouseTable", () => {
       new Error("Auto Savings API request failed with 502"),
     );
     const onChange = vi.fn();
-    render(<WarehouseTable orgId="org-1" isAdmin accessToken="tok" warehouses={[base]} onChange={onChange} />);
+    renderTable(<WarehouseTable orgId="org-1" isAdmin accessToken="tok" warehouses={[base]} onChange={onChange} />);
 
     fireEvent.click(screen.getByRole("switch", { name: /WH1/i }));
 
@@ -228,7 +385,7 @@ describe("WarehouseTable", () => {
     const toggleSpy = vi.spyOn(automatedSavingsApi, "toggleWarehouse").mockImplementation(
       () => new Promise<void>((resolve) => { resolveToggle = resolve; }),
     );
-    render(<WarehouseTable orgId="org-1" isAdmin warehouses={[base]} onChange={() => {}} />);
+    renderTable(<WarehouseTable orgId="org-1" isAdmin warehouses={[base]} onChange={() => {}} />);
     const rowSwitch = screen.getByRole("switch", { name: /WH1/i });
 
     fireEvent.click(rowSwitch);

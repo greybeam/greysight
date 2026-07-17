@@ -223,9 +223,24 @@ export function AutomatedSavingsShell() {
         accessToken: accessTokenRef.current,
       });
       if (!identity.isCurrent(captured)) return;
-      queryClient.setQueryData<AutomatedSavingsStatus>(statusKey, (current) =>
-        current?.agreed ? { ...current, globalEnabled: nextEnabled } : current,
-      );
+      // Re-read both status and warehouses from the server rather than faking
+      // the new global_enabled locally: a global flip can change warehouse
+      // operational status, so the authoritative refetch keeps the whole scope
+      // consistent instead of splitting truth across an optimistic patch.
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.autoSavings.status(
+            captured.userId,
+            captured.orgId,
+          ),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.autoSavings.warehouses(
+            captured.userId,
+            captured.orgId,
+          ),
+        }),
+      ]);
     } catch {
       if (identity.isCurrent(captured)) {
         setControlError("Couldn’t update Auto Savings. Please try again.");
@@ -253,13 +268,21 @@ export function AutomatedSavingsShell() {
   }
 
   async function handleAgreementComplete() {
-    const captured = identitySnapshot;
+    const captured = identity.capture();
     if (!orgId || !identity.isCurrent(captured)) return;
-    const result = await statusQuery.refetch();
+    // Invalidating the whole auto-savings scope refetches the actively observed
+    // status query (one status GET) and marks warehouses stale; the warehouse
+    // query performs its single initial fetch when the refreshed agreed status
+    // flips its `enabled` on. Reading the refreshed status from the cache — not
+    // a second statusQuery.refetch() — avoids a duplicate status GET.
+    await queryClient.invalidateQueries({
+      queryKey: queryKeys.autoSavings.scope(captured.userId, captured.orgId),
+    });
     if (!identity.isCurrent(captured)) return;
-    // Warehouses refetch automatically once the newly-agreed status enables that
-    // query; access is manual, so refresh it explicitly after agreement.
-    if (result.data?.agreed) void accessQuery.refetch();
+    const refreshed =
+      queryClient.getQueryData<AutomatedSavingsStatus>(statusKey);
+    // Access is a manual check, so refresh it explicitly after agreement.
+    if (refreshed?.agreed) void accessQuery.refetch();
   }
 
   function handleRowChange(row: WarehouseRow) {

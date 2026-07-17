@@ -1,6 +1,7 @@
 "use client";
 
 import { useId, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Badge,
   Table,
@@ -16,6 +17,8 @@ import {
   toggleWarehouse,
   type WarehouseRow,
 } from "../../lib/automated-savings-api";
+import { queryKeys } from "../../lib/query-keys";
+import { useQueryIdentity } from "../../lib/query-identity";
 import { DashboardApiError } from "../../lib/dashboard-errors";
 import { Switch } from "../ui/switch";
 import { Tooltip } from "../ui/tooltip";
@@ -173,6 +176,8 @@ function WarehouseRowView({
   onRefresh,
 }: WarehouseRowViewProps) {
   const disabledReasonId = useId();
+  const queryClient = useQueryClient();
+  const queryIdentity = useQueryIdentity();
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [refreshFailed, setRefreshFailed] = useState(false);
@@ -189,6 +194,10 @@ function WarehouseRowView({
 
   async function handleToggle() {
     if (toggleDisabled) return;
+    // Capture identity at the start of the mutation so a late-arriving
+    // authoritative result (below) is dropped if the org/account switches
+    // out from under us while the request is in flight.
+    const captured = queryIdentity.capture();
     const nextEnabled = !warehouse.enabled;
     setBusy(true);
     setActionError(null);
@@ -196,28 +205,55 @@ function WarehouseRowView({
     try {
       await toggleWarehouse(orgId, warehouse.name, nextEnabled, { accessToken });
     } catch (error) {
-      setActionError(toUserMessage(error));
-      setBusy(false);
+      if (queryIdentity.isCurrent(captured)) {
+        setActionError(toUserMessage(error));
+        setBusy(false);
+      }
       return;
     }
 
+    if (!queryIdentity.isCurrent(captured)) return;
+    // Optimistic row feedback; the authoritative query result (a full-list
+    // write on enrollment, or an invalidation refetch on disable) follows.
     onChange({ ...warehouse, enabled: nextEnabled });
+
+    const warehousesKey = queryKeys.autoSavings.warehouses(
+      captured.userId,
+      orgId,
+    );
+    const statusKey = queryKeys.autoSavings.status(captured.userId, orgId);
+
     if (nextEnabled) {
+      // First enrollment hydrates authoritative warehouse details (e.g. a
+      // transitioning status) directly into the cache rather than invalidating
+      // the warehouses query, so the just-written truth is not immediately
+      // clobbered by a refetch.
       try {
         const rows = await fetchWarehouses(orgId, { accessToken });
         const authoritative = rows.find((row) => row.name === warehouse.name);
         if (!authoritative) {
           throw new Error("The enrolled warehouse could not be refreshed.");
         }
-        onChange(authoritative);
+        if (!queryIdentity.isCurrent(captured)) return;
+        queryClient.setQueryData(warehousesKey, rows);
       } catch {
-        setRefreshFailed(true);
-        setActionError(
-          "Enrollment was saved, but its details could not be refreshed.",
-        );
+        if (queryIdentity.isCurrent(captured)) {
+          setRefreshFailed(true);
+          setActionError(
+            "Enrollment was saved, but its details could not be refreshed.",
+          );
+        }
       }
+      if (queryIdentity.isCurrent(captured)) {
+        await queryClient.invalidateQueries({ queryKey: statusKey });
+      }
+    } else if (queryIdentity.isCurrent(captured)) {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: warehousesKey }),
+        queryClient.invalidateQueries({ queryKey: statusKey }),
+      ]);
     }
-    setBusy(false);
+    if (queryIdentity.isCurrent(captured)) setBusy(false);
   }
 
   async function handleRefresh() {

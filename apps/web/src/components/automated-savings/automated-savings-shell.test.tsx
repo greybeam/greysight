@@ -342,13 +342,23 @@ describe("AutomatedSavingsShell", () => {
     // The server's global_enabled is false even though the (only) row happens
     // to be enabled — the switch must track status.globalEnabled, not the
     // per-row state, and reflect it on initial render.
-    fetchStatusMock.mockResolvedValue({
-      agreed: true,
-      globalEnabled: false,
-      grantPresent: true,
-      grantCheckedAt: null,
-      roleName: null,
-    });
+    // Initial status is global-off; after the switch persists, the shell
+    // invalidates the scope and the authoritative refetch returns global-on.
+    fetchStatusMock
+      .mockResolvedValueOnce({
+        agreed: true,
+        globalEnabled: false,
+        grantPresent: true,
+        grantCheckedAt: null,
+        roleName: null,
+      })
+      .mockResolvedValue({
+        agreed: true,
+        globalEnabled: true,
+        grantPresent: true,
+        grantCheckedAt: null,
+        roleName: null,
+      });
     fetchWarehousesMock.mockResolvedValue([{ ...baseRow, enabled: true }]);
     setGlobalSwitchMock.mockResolvedValue(undefined);
 
@@ -377,6 +387,66 @@ describe("AutomatedSavingsShell", () => {
     const rowSwitchAfter = await screen.findByRole("switch", { name: "WH1" });
     expect(rowSwitchAfter).toBeChecked();
     expect(toggleWarehouseMock).not.toHaveBeenCalled();
+  });
+
+  it("invalidates status and warehouses after the global switch persists", async () => {
+    fetchStatusMock.mockResolvedValue({
+      agreed: true,
+      globalEnabled: false,
+      grantPresent: true,
+      grantCheckedAt: null,
+      roleName: null,
+    });
+    fetchWarehousesMock.mockResolvedValue([{ ...baseRow, enabled: true }]);
+    setGlobalSwitchMock.mockResolvedValue(undefined);
+
+    renderShell();
+
+    const globalSwitch = await screen.findByRole("switch", {
+      name: /enabled for all warehouses/i,
+    });
+    await waitFor(() => expect(fetchStatusMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(fetchWarehousesMock).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(globalSwitch);
+
+    // Both scoped reads refetch from the server rather than trusting an
+    // optimistic local patch of global_enabled.
+    await waitFor(() => expect(setGlobalSwitchMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(fetchStatusMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(fetchWarehousesMock).toHaveBeenCalledTimes(2));
+  });
+
+  it("invalidates warehouses and status after disabling a warehouse", async () => {
+    fetchStatusMock.mockResolvedValue({
+      agreed: true,
+      globalEnabled: true,
+      grantPresent: true,
+      grantCheckedAt: null,
+      roleName: null,
+    });
+    fetchWarehousesMock.mockResolvedValue([baseRow]);
+    toggleWarehouseMock.mockResolvedValue(undefined);
+
+    renderShell();
+
+    const rowSwitch = await screen.findByRole("switch", { name: "WH1" });
+    await waitFor(() => expect(fetchWarehousesMock).toHaveBeenCalledTimes(1));
+    const statusCallsBefore = fetchStatusMock.mock.calls.length;
+
+    fireEvent.click(rowSwitch);
+
+    await waitFor(() =>
+      expect(toggleWarehouseMock).toHaveBeenCalledWith("org-1", "WH1", false, {
+        accessToken: "tok",
+      }),
+    );
+    await waitFor(() => expect(fetchWarehousesMock).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(fetchStatusMock.mock.calls.length).toBeGreaterThan(
+        statusCallsBefore,
+      ),
+    );
   });
 
   it("reports a global-switch failure without changing authoritative state", async () => {
