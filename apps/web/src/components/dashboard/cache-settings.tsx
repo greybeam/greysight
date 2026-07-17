@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useAccountChrome } from "../../lib/account-context";
 import {
@@ -8,7 +9,11 @@ import {
   CacheSettingsValidationError,
   fetchCacheSettings,
   updateCacheSettings,
+  type CacheSettings as CacheSettingsData,
 } from "../../lib/cache-settings-api";
+import { queryKeys } from "../../lib/query-keys";
+import { useQueryIdentity } from "../../lib/query-identity";
+import { useLatestRef } from "../../lib/use-latest-ref";
 
 const GENERIC_ERROR = "Something went wrong. Please try again.";
 const SAVED_MESSAGE = "Cache settings saved.";
@@ -35,8 +40,9 @@ export default function CacheSettings({
   triggerRole = "button",
 }: CacheSettingsProps = {}) {
   const account = useAccountChrome();
+  const queryClient = useQueryClient();
+  const identity = useQueryIdentity();
   const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
   const [pending, setPending] = useState(false);
   const [cacheEnabled, setCacheEnabled] = useState(true);
   const [ttlSeconds, setTtlSeconds] = useState(DEFAULT_TTL_SECONDS);
@@ -60,40 +66,63 @@ export default function CacheSettings({
   const isAdmin =
     active != null && (active.role === "owner" || active.role === "admin");
 
-  // Load the current settings each time the surface opens so the controls
-  // reflect the persisted state rather than stale local defaults.
+  // Read the access token at call time rather than keying the query on it:
+  // Supabase rotates it roughly hourly and a rotation must not invalidate the
+  // cached settings entry.
+  const accessTokenRef = useLatestRef(account?.accessToken ?? null);
+
+  const userId = identity.snapshot.userId;
+
+  // Load the current settings when the surface is open for an active org. On
+  // reopen within staleTime the cached entry paints without another GET; a
+  // background refetch never blanks the already-cached controls.
+  const settingsQuery = useQuery({
+    queryKey: queryKeys.dashboard.settings(userId, active?.id ?? "__no-org__"),
+    queryFn: () =>
+      fetchCacheSettings(active!.id, { accessToken: accessTokenRef.current }),
+    enabled: open && Boolean(active),
+  });
+
+  // Synchronize the form fields only when a new settings payload lands, so a
+  // background refetch that returns the same reference never clobbers in-flight
+  // edits, and cached controls are never reset to defaults during refetch.
+  const syncedRef = useRef<CacheSettingsData | null>(null);
+  const settingsData = settingsQuery.data;
   useEffect(() => {
-    if (!open || !active) return;
-    let isActive = true;
-    // Reset the surface to its loading state before the async fetch resolves so
-    // stale settings/messages are never shown on reopen. This is derived-state
-    // synchronization with the settings API, not a cascading render loop.
+    // Depend on `open` too: the cached settingsData reference is unchanged across
+    // a close/reopen, so a settingsData-only effect would never re-seed the form
+    // after the close-reset below nulls syncedRef. Re-running on reopen restores
+    // the saved/cached values without a fresh GET.
+    if (!open || !settingsData || settingsData === syncedRef.current) return;
+    syncedRef.current = settingsData;
+    setCacheEnabled(settingsData.cache_enabled);
+    setTtlSeconds(settingsData.cache_ttl_seconds);
+  }, [open, settingsData]);
+
+  // Clear transient messages whenever the surface opens so a stale error or the
+  // previous save confirmation is never shown on reopen.
+  useEffect(() => {
+    if (!open) {
+      // The dialog content unmounts on close but this component stays mounted,
+      // so clear the sync marker: the next open re-seeds the form from cached
+      // query data instead of preserving unsaved edits from the prior session.
+      // No GET is triggered — the cached settings entry paints directly.
+      syncedRef.current = null;
+      return;
+    }
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setLoading(true);
     setError(null);
     setSuccess(null);
-    void (async () => {
-      try {
-        const settings = await fetchCacheSettings(active.id, {
-          accessToken: account?.accessToken ?? null,
-        });
-        if (!isActive) return;
-        setCacheEnabled(settings.cache_enabled);
-        setTtlSeconds(settings.cache_ttl_seconds);
-      } catch {
-        if (isActive) setError(GENERIC_ERROR);
-      } finally {
-        if (isActive) setLoading(false);
-      }
-    })();
-    return () => {
-      isActive = false;
-    };
-  }, [open, active, account?.accessToken]);
+  }, [open]);
 
   if (!account || !active || !isAdmin) {
     return null;
   }
+
+  // The initial load is the only time controls should be disabled for fetching:
+  // once cached data exists, a background refetch leaves the controls usable.
+  const loading = settingsQuery.isLoading;
+  const displayError = error ?? (settingsQuery.isError ? GENERIC_ERROR : null);
 
   const heading = active.accountLocator
     ? `Cache settings for ${active.name} (${active.accountLocator})`
@@ -105,16 +134,42 @@ export default function CacheSettings({
     setError(null);
     setSuccess(null);
     setPending(true);
+    // Capture identity at the start so a late-arriving result is dropped if the
+    // org/account switches out from under us while the PATCH is in flight.
+    const captured = identity.capture();
+    // The surface may target a non-active org (account-switcher renders one
+    // CacheSettings per org), so cache writes must key on the edited org rather
+    // than the active-org identity snapshot. The identity guard below stays a
+    // pure stale-result check.
+    const targetOrgId = active.id;
     try {
       const updated = await updateCacheSettings(
         active.id,
         { cache_enabled: cacheEnabled, cache_ttl_seconds: ttlSeconds },
-        { accessToken: account?.accessToken ?? null },
+        { accessToken: accessTokenRef.current },
       );
+      // Drop a late-arriving result entirely when the org/account switched out
+      // from under us: painting the just-saved values or the success message
+      // would leak the previous org's settings onto the newly active surface,
+      // and no settings cache entry must be written for either scope.
+      if (!identity.isCurrent(captured)) return;
       setCacheEnabled(updated.cache_enabled);
       setTtlSeconds(updated.cache_ttl_seconds);
       setSuccess(SAVED_MESSAGE);
+      // Write the freshly saved settings into the cache so a reopen needs no
+      // GET, then invalidate discovery so the next rendered run follows the
+      // new cache policy.
+      queryClient.setQueryData(
+        queryKeys.dashboard.settings(captured.userId, targetOrgId),
+        updated,
+      );
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.dashboard.cachedRun(captured.userId, targetOrgId),
+      });
     } catch (err: unknown) {
+      // Same identity guard as the success path: a failure from a stale request
+      // must not surface its error on the newly active org's surface.
+      if (!identity.isCurrent(captured)) return;
       if (
         err instanceof CacheSettingsValidationError ||
         err instanceof CacheSettingsForbiddenError
@@ -199,9 +254,9 @@ export default function CacheSettings({
               {pending ? "Saving" : "Save"}
             </button>
           </form>
-          {error ? (
+          {displayError ? (
             <p className="mt-2 text-sm font-medium text-red-400" role="alert">
-              {error}
+              {displayError}
             </p>
           ) : null}
           {success ? (

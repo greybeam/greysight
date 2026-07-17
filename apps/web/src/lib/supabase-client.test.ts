@@ -30,7 +30,7 @@ describe("supabase-client", () => {
           data: {
             session: {
               access_token: "access-token",
-              user: { email: "owner@example.com" },
+              user: { id: "user-1", email: "owner@example.com" },
             },
           },
           error: null,
@@ -56,7 +56,7 @@ describe("supabase-client", () => {
     expect(await authClient?.getSession()).toEqual({
       session: {
         accessToken: "access-token",
-        user: { email: "owner@example.com", appMetadata: null },
+        user: { id: "user-1", email: "owner@example.com", appMetadata: null },
       },
       error: null,
     });

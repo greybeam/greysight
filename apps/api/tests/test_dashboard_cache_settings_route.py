@@ -13,7 +13,27 @@ from app.services.dashboard_cache_settings import (
     SupabaseCacheSettingsStore,
     configure_cache_settings_store,
 )
+from app.services.http_pool import get_sync_client
+from tests.conftest import installed_sync_pool
 from app.services.membership_directory import Organization
+
+
+def test_cache_settings_store_reuses_pooled_sync_client_without_closing() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=[])
+
+    with installed_sync_pool(handler) as sync_client:
+        store = SupabaseCacheSettingsStore(
+            supabase_url="https://example.supabase.co",
+            service_role_key="svc",
+        )
+        assert store.get("org-1") is None
+        assert get_sync_client() is sync_client
+        assert not sync_client.is_closed
+        assert len(requests) == 1
 
 
 @pytest.fixture(autouse=True)

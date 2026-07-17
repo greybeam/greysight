@@ -1,6 +1,8 @@
 import httpx
 import pytest
 
+from app.services.http_pool import get_sync_client
+from tests.conftest import installed_sync_pool
 from app.services.org_invitations import (
     AlreadyMemberError,
     InviteProvisioningError,
@@ -9,6 +11,35 @@ from app.services.org_invitations import (
     UnauthorizedInviteError,
     invite_member_to_org,
 )
+
+
+def test_member_rpc_and_user_inviter_reuse_pooled_sync_client_without_closing() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/auth/v1/invite"):
+            return httpx.Response(200, json={"id": "u1"})
+        return httpx.Response(200, json="added")
+
+    with installed_sync_pool(handler) as sync_client:
+        rpc = SupabaseMemberRpc(
+            supabase_url="https://example.supabase.co",
+            service_role_key="svc",
+        )
+        assert rpc("actor-1", "org-1", "new@acme.com") == "added"
+        assert get_sync_client() is sync_client
+        assert not sync_client.is_closed
+        assert len(requests) == 1
+
+        inviter = SupabaseUserInviter(
+            supabase_url="https://example.supabase.co",
+            service_role_key="svc",
+        )
+        inviter.invite("new@acme.com")
+        assert get_sync_client() is sync_client
+        assert not sync_client.is_closed
+        assert len(requests) == 2
 
 
 class FakeInviter:

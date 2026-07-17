@@ -2,6 +2,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -19,6 +20,13 @@ from app.routes.organizations import router as organizations_router
 from app.routes.session import router as session_router
 from app.routes.snowflake import router as snowflake_router
 from app.services import query_concurrency
+from app.services.http_pool import (
+    HTTP_LIMITS,
+    clear_clients,
+    client_timeout,
+    disable_cookie_persistence,
+    install_clients,
+)
 from app.services.automated_savings_store import (
     SupabaseAutomatedSavingsStore,
     configure_automated_savings_store,
@@ -178,9 +186,27 @@ async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
     tear it down on shutdown so queued Snowflake query work does not outlive
     the process (e.g. on reload).
     """
-    query_concurrency.configure(settings.query_concurrency)
-    yield
-    query_concurrency.shutdown(cancel_futures=True)
+    auth_client = disable_cookie_persistence(
+        httpx.AsyncClient(limits=HTTP_LIMITS, timeout=client_timeout())
+    )
+    async_client = disable_cookie_persistence(
+        httpx.AsyncClient(limits=HTTP_LIMITS, timeout=client_timeout())
+    )
+    sync_client = disable_cookie_persistence(
+        httpx.Client(limits=HTTP_LIMITS, timeout=client_timeout())
+    )
+    install_clients(
+        auth=auth_client, async_client=async_client, sync_client=sync_client
+    )
+    try:
+        query_concurrency.configure(settings.query_concurrency)
+        yield
+    finally:
+        clear_clients()
+        await auth_client.aclose()
+        await async_client.aclose()
+        sync_client.close()
+        query_concurrency.shutdown(cancel_futures=True)
 
 
 app = FastAPI(title="Greysight API", lifespan=_lifespan)

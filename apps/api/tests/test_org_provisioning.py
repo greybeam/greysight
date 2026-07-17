@@ -1,11 +1,45 @@
 import httpx
 import pytest
 
+from app.services.http_pool import get_sync_client
+from tests.conftest import installed_sync_pool
 from app.services.org_provisioning import (
     DuplicateSnowflakeAccountError,
     OrgProvisioningError,
+    SupabaseOrgDisconnector,
     SupabaseOrgProvisioner,
 )
+
+
+def test_provisioner_and_disconnector_reuse_pooled_sync_client_without_closing() -> (
+    None
+):
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/disconnect_organization_snowflake"):
+            return httpx.Response(204)
+        return httpx.Response(200, json="org-123")
+
+    with installed_sync_pool(handler) as sync_client:
+        provisioner = SupabaseOrgProvisioner(
+            supabase_url="https://example.supabase.co",
+            service_role_key="svc",
+        )
+        assert _provision(provisioner) == "org-123"
+        assert get_sync_client() is sync_client
+        assert not sync_client.is_closed
+        assert len(requests) == 1
+
+        disconnector = SupabaseOrgDisconnector(
+            supabase_url="https://example.supabase.co",
+            service_role_key="svc",
+        )
+        disconnector("org-1")
+        assert get_sync_client() is sync_client
+        assert not sync_client.is_closed
+        assert len(requests) == 2
 
 
 def _provision(provisioner: SupabaseOrgProvisioner) -> str:

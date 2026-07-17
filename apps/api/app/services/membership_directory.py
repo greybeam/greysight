@@ -3,6 +3,8 @@ from dataclasses import dataclass
 
 import httpx
 
+from app.services.http_pool import get_async_client, request_timeout
+
 MAX_MEMBERSHIPS = 200
 
 
@@ -19,6 +21,23 @@ class Organization:
 
 class MembershipLookupError(Exception):
     """Raised when org memberships cannot be determined; callers fail closed."""
+
+
+class MembershipLookupUnavailable(MembershipLookupError):
+    """Raised when the upstream membership service is unreachable.
+
+    Distinguishes transient transport failures (which callers should surface as
+    HTTP 503) from malformed responses or bad data (which stay 401).
+    """
+
+
+def _is_upstream_unavailable(status_code: int) -> bool:
+    """True for statuses that signal an upstream failure rather than bad input.
+
+    HTTP 429 (rate limited) and any 5xx are transient infrastructure problems,
+    so callers should surface them as 503 rather than as an auth rejection.
+    """
+    return status_code == 429 or 500 <= status_code <= 599
 
 
 MembershipLookup = Callable[
@@ -43,36 +62,53 @@ class SupabaseServiceRoleMembershipLookup:
         self._max_memberships = max_memberships
 
     async def __call__(self, user_id: str) -> tuple[Organization, ...]:
+        params = {
+            "user_id": f"eq.{user_id}",
+            "select": (
+                "role,organization_id,organizations"
+                "(id,name,organization_snowflake_connections"
+                "(account,account_locator,status))"
+            ),
+            # Deterministic order: without it PostgREST returns rows in
+            # arbitrary physical order, so the frontend's implicit active-org
+            # fallback (organizations[0]) flips between refreshes — bouncing
+            # users between orgs (and back to the automated-savings opt-in gate
+            # for an un-agreed org).
+            "order": "organization_id.asc",
+            "limit": str(self._max_memberships + 1),
+        }
+        headers = {
+            "apikey": self._service_role_key,
+            "authorization": f"Bearer {self._service_role_key}",
+        }
+        timeout = request_timeout(self._timeout_seconds)
         try:
-            async with httpx.AsyncClient(
-                timeout=self._timeout_seconds,
-                transport=self._transport,
-            ) as client:
+            if self._transport is not None:
+                # Test-only transport override: short-lived client so it never
+                # touches the shared, credential-neutral pool.
+                async with httpx.AsyncClient(
+                    timeout=timeout,
+                    transport=self._transport,
+                ) as client:
+                    response = await client.get(
+                        self._url, params=params, headers=headers
+                    )
+            else:
+                client = get_async_client()
                 response = await client.get(
-                    self._url,
-                    params={
-                        "user_id": f"eq.{user_id}",
-                        "select": (
-                            "role,organization_id,organizations"
-                            "(id,name,organization_snowflake_connections"
-                            "(account,account_locator,status))"
-                        ),
-                        # Deterministic order: without it PostgREST returns rows
-                        # in arbitrary physical order, so the frontend's implicit
-                        # active-org fallback (organizations[0]) flips between
-                        # refreshes — bouncing users between orgs (and back to
-                        # the automated-savings opt-in gate for an un-agreed org).
-                        "order": "organization_id.asc",
-                        "limit": str(self._max_memberships + 1),
-                    },
-                    headers={
-                        "apikey": self._service_role_key,
-                        "authorization": f"Bearer {self._service_role_key}",
-                    },
+                    self._url, params=params, headers=headers, timeout=timeout
                 )
+        except httpx.TransportError as exc:
+            # Upstream unreachable: distinguish from bad data so callers can
+            # surface HTTP 503 instead of failing closed as an auth error.
+            raise MembershipLookupUnavailable() from exc
         except httpx.HTTPError as exc:
             raise MembershipLookupError() from exc
 
+        if _is_upstream_unavailable(response.status_code):
+            # 429/5xx are infrastructure failures (rate limiting, upstream
+            # outage), not bad data: surface as unavailable so callers can 503.
+            raise MembershipLookupUnavailable()
         if response.status_code != 200:
             raise MembershipLookupError()
 

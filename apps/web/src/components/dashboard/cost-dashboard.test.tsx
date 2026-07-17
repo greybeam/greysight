@@ -6,23 +6,60 @@ import {
   screen,
   waitFor,
   within,
+  type RenderOptions,
 } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { QueryClient, notifyManager } from "@tanstack/react-query";
+import type { ReactElement, ReactNode } from "react";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+
+// React Query batches observer notifications through a setTimeout(0) scheduler by
+// default, which fake timers freeze. Flush notifications synchronously so the
+// fake-timer reveal tests observe query results without advancing timers. Scope
+// the override to this suite and restore the default scheduler afterwards so the
+// altered batching does not leak into other suites sharing the worker.
+const DEFAULT_NOTIFY_SCHEDULER = (callback: () => void) => setTimeout(callback, 0);
+beforeAll(() => {
+  notifyManager.setScheduler((callback) => callback());
+});
+afterAll(() => {
+  notifyManager.setScheduler(DEFAULT_NOTIFY_SCHEDULER);
+});
 
 import {
   type DashboardViewRangeRequest,
   fetchCachedDashboardRun,
   fetchDashboardView,
   fetchDemoDashboardView,
+  pollDashboardSource,
   pollUntilTerminal,
   startDashboardRun,
+  triggerDashboardSource,
 } from "../../lib/dashboard-api";
 import demoDashboardView from "../../lib/demo-dashboard-view";
 import {
   FETCH_WINDOW_DAYS,
+  type AIDetailViewModel,
   type DashboardRun,
   type DashboardView,
 } from "../../lib/dashboard-contracts";
+import { queryKeys } from "../../lib/query-keys";
+import {
+  DEMO_ORG_ID,
+  DEMO_USER_ID,
+} from "../../lib/query-identity";
+import {
+  QueryTestProvider,
+  createTestQueryClient,
+} from "../../lib/query-test-utils";
 import CostDashboard from "./cost-dashboard";
 import { REVEAL_STEP_MS } from "./use-section-statuses";
 
@@ -30,9 +67,56 @@ vi.mock("../../lib/dashboard-api", () => ({
   fetchCachedDashboardRun: vi.fn(),
   fetchDashboardView: vi.fn(),
   fetchDemoDashboardView: vi.fn(),
+  fetchDemoDashboardSource: vi.fn(),
+  pollDashboardSource: vi.fn(),
+  triggerDashboardSource: vi.fn(),
   pollUntilTerminal: vi.fn(),
   startDashboardRun: vi.fn(),
 }));
+
+// Wrap every dashboard render in a QueryClientProvider so the component's
+// useQuery/useQueryClient hooks resolve. A fresh client per render keeps tests
+// isolated unless a persistent client is passed for remount/cross-consumer cases.
+type TestIdentity = {
+  userId?: string;
+  identityEpoch?: number;
+  activeOrganizationId?: string;
+};
+
+function makeWrapper(client: QueryClient, identity?: TestIdentity) {
+  return function Wrapper({ children }: { children: ReactNode }) {
+    return (
+      <QueryTestProvider client={client} identity={identity}>
+        {children}
+      </QueryTestProvider>
+    );
+  };
+}
+
+// Mirrors the OrgShell production client: results stay fresh for 60s so a
+// remount within staleTime paints from the cache without refetching.
+function createPersistentQueryClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, gcTime: Infinity, staleTime: 60_000 },
+    },
+  });
+}
+
+function renderDashboard(
+  ui: ReactElement,
+  options: {
+    client?: QueryClient;
+    identity?: TestIdentity;
+  } & Omit<RenderOptions, "wrapper"> = {},
+) {
+  const { client, identity, ...rest } = options;
+  const queryClient = client ?? createTestQueryClient();
+  return {
+    client: queryClient,
+    ...render(ui, { wrapper: makeWrapper(queryClient, identity), ...rest }),
+  };
+}
 
 // Drives the progressive `/view` poll the component runs for Snowflake runs:
 // fetch once, surface the result via `onResult`, then resolve with it as the
@@ -94,6 +178,12 @@ function demoViewForRange(
 }
 
 describe("CostDashboard", () => {
+  beforeEach(() => {
+    // Default the Snowflake discovery lookup to a 204 miss so authenticated
+    // renders land in the idle state unless a test opts into a cache hit.
+    vi.mocked(fetchCachedDashboardRun).mockResolvedValue(null);
+  });
+
   afterEach(() => {
     cleanup();
     vi.resetAllMocks();
@@ -102,7 +192,7 @@ describe("CostDashboard", () => {
   it("loads demo prepared view and prefetches relative windows", async () => {
     vi.mocked(fetchDemoDashboardView).mockResolvedValue(demoDashboardView);
 
-    render(<CostDashboard demoMode />);
+    renderDashboard(<CostDashboard demoMode />);
 
     await screen.findByText("Total Spend in Last 30 Days");
     expect(fetchDemoDashboardView).toHaveBeenCalledWith({ windowDays: 30 });
@@ -115,7 +205,7 @@ describe("CostDashboard", () => {
       demoViewForRange(range),
     );
 
-    render(<CostDashboard demoMode />);
+    renderDashboard(<CostDashboard demoMode />);
 
     await screen.findByLabelText("Start date");
     await waitFor(() => expect(fetchDemoDashboardView).toHaveBeenCalledTimes(3));
@@ -134,7 +224,7 @@ describe("CostDashboard", () => {
       demoViewForRange(range),
     );
 
-    render(<CostDashboard demoMode />);
+    renderDashboard(<CostDashboard demoMode />);
 
     await screen.findByLabelText("Start date");
     fireEvent.change(screen.getByLabelText("Start date"), {
@@ -167,7 +257,7 @@ describe("CostDashboard", () => {
       return demoViewForRange(range);
     });
 
-    render(<CostDashboard demoMode data={demoDashboardView} />);
+    renderDashboard(<CostDashboard demoMode data={demoDashboardView} />);
 
     const runButton = screen.getByRole("button", { name: "Run analysis" });
     expect(runButton).not.toBeDisabled();
@@ -206,7 +296,7 @@ describe("CostDashboard", () => {
         source: "snowflake" as const,
       },
     };
-    const { rerender } = render(
+    const { rerender } = renderDashboard(
       <CostDashboard
         demoMode={false}
         data={orgAView}
@@ -256,7 +346,7 @@ describe("CostDashboard", () => {
       return demoViewForRange(range);
     });
 
-    render(<CostDashboard demoMode />);
+    renderDashboard(<CostDashboard demoMode />);
 
     await screen.findByLabelText("Start date");
     fireEvent.change(screen.getByLabelText("Start date"), {
@@ -328,7 +418,7 @@ describe("CostDashboard", () => {
       return demoViewForRange(range);
     });
 
-    render(<CostDashboard demoMode />);
+    renderDashboard(<CostDashboard demoMode />);
 
     await screen.findByLabelText("Start date");
     fireEvent.change(screen.getByLabelText("Start date"), {
@@ -398,7 +488,7 @@ describe("CostDashboard", () => {
       return demoViewForRange(range);
     });
 
-    render(<CostDashboard demoMode />);
+    renderDashboard(<CostDashboard demoMode />);
 
     await screen.findByLabelText("Start date");
     fireEvent.change(screen.getByLabelText("Start date"), {
@@ -465,7 +555,7 @@ describe("CostDashboard", () => {
       return demoDashboardView;
     });
 
-    render(<CostDashboard demoMode />);
+    renderDashboard(<CostDashboard demoMode />);
 
     await screen.findByLabelText("Start date");
     fireEvent.change(screen.getByLabelText("Start date"), {
@@ -501,7 +591,7 @@ describe("CostDashboard", () => {
       return demoViewForRange(range);
     });
 
-    render(<CostDashboard demoMode />);
+    renderDashboard(<CostDashboard demoMode />);
 
     await screen.findByLabelText("Start date");
     fireEvent.change(screen.getByLabelText("Start date"), {
@@ -527,7 +617,7 @@ describe("CostDashboard", () => {
       },
     });
 
-    render(<CostDashboard demoMode />);
+    renderDashboard(<CostDashboard demoMode />);
 
     expect(
       await screen.findByText(/Mixed currencies are not supported/),
@@ -540,7 +630,7 @@ describe("CostDashboard", () => {
       new Promise(() => undefined),
     );
 
-    render(<CostDashboard demoMode />);
+    renderDashboard(<CostDashboard demoMode />);
 
     // While loading the button swaps its label for the running spinner state.
     expect(screen.getByRole("button", { name: /Running/ })).toBeDisabled();
@@ -567,7 +657,7 @@ describe("CostDashboard", () => {
     vi.mocked(startDashboardRun).mockResolvedValue(queuedRun);
     vi.mocked(pollUntilTerminal).mockReturnValue(new Promise(() => undefined));
 
-    render(
+    renderDashboard(
       <CostDashboard
         demoMode={false}
         runtime={{
@@ -631,7 +721,7 @@ describe("CostDashboard", () => {
     vi.mocked(fetchDashboardView).mockResolvedValue(completedView);
     mockPollResolvesWith(completedView);
 
-    render(
+    renderDashboard(
       <CostDashboard
         demoMode={false}
         runtime={{
@@ -698,7 +788,7 @@ describe("CostDashboard", () => {
       },
     );
 
-    render(
+    renderDashboard(
       <CostDashboard
         demoMode={false}
         runtime={{
@@ -772,7 +862,7 @@ describe("CostDashboard", () => {
     vi.mocked(fetchDashboardView).mockResolvedValue(completedView);
     mockPollResolvesWith(completedView);
 
-    render(
+    renderDashboard(
       <CostDashboard
         demoMode={false}
         runtime={{
@@ -838,7 +928,7 @@ describe("CostDashboard", () => {
     }));
     mockPollResolvesWith(completedView);
 
-    render(
+    renderDashboard(
       <CostDashboard
         demoMode={false}
         runtime={{
@@ -925,7 +1015,7 @@ describe("CostDashboard", () => {
         },
       );
 
-      render(
+      renderDashboard(
         <CostDashboard
           demoMode={false}
           runtime={{
@@ -971,7 +1061,7 @@ describe("CostDashboard", () => {
     vi.mocked(startDashboardRun).mockResolvedValue(queuedRun);
     vi.mocked(pollUntilTerminal).mockReturnValue(new Promise(() => undefined));
 
-    render(
+    renderDashboard(
       <CostDashboard
         demoMode={false}
         runtime={{
@@ -1011,7 +1101,7 @@ describe("CostDashboard", () => {
       // Keep the poll pending so the re-run stays in flight.
       vi.mocked(pollUntilTerminal).mockReturnValue(new Promise(() => undefined));
 
-      render(
+      renderDashboard(
         <CostDashboard
           demoMode={false}
           data={priorView}
@@ -1088,7 +1178,7 @@ describe("CostDashboard", () => {
     vi.mocked(startDashboardRun).mockResolvedValue(queuedRun);
     vi.mocked(pollUntilTerminal).mockReturnValue(new Promise(() => undefined));
 
-    render(
+    renderDashboard(
       <CostDashboard
         demoMode={false}
         data={unsupportedView}
@@ -1123,7 +1213,7 @@ describe("CostDashboard", () => {
     try {
       vi.mocked(fetchDemoDashboardView).mockResolvedValue(demoDashboardView);
 
-      render(<CostDashboard demoMode />);
+      renderDashboard(<CostDashboard demoMode />);
 
       // Flush the initial fetch microtasks.
       await act(async () => {
@@ -1169,7 +1259,7 @@ describe("CostDashboard", () => {
     );
     try {
       vi.mocked(fetchDemoDashboardView).mockResolvedValue(demoDashboardView);
-      render(<CostDashboard demoMode />);
+      renderDashboard(<CostDashboard demoMode />);
 
       // Flush only the fetch microtasks; do NOT advance any timers.
       await act(async () => {
@@ -1194,7 +1284,7 @@ describe("CostDashboard", () => {
   it("shows an error state instead of skeletons when the initial run fails", async () => {
     vi.mocked(fetchDemoDashboardView).mockRejectedValue(new Error("boom"));
 
-    render(<CostDashboard demoMode />);
+    renderDashboard(<CostDashboard demoMode />);
 
     // On an initial-run failure with no view to fall back on, the message is
     // surfaced by SectionEmptyState inside the "Dashboard content" region.
@@ -1224,7 +1314,7 @@ describe("CostDashboard", () => {
       });
       vi.mocked(fetchDashboardView).mockResolvedValue(cachedView);
 
-      render(
+      renderDashboard(
         <CostDashboard
           demoMode={false}
           runtime={{
@@ -1264,7 +1354,7 @@ describe("CostDashboard", () => {
         },
       }));
 
-      render(
+      renderDashboard(
         <CostDashboard
           demoMode={false}
           runtime={{
@@ -1305,7 +1395,7 @@ describe("CostDashboard", () => {
       vi.mocked(startDashboardRun).mockResolvedValue(freshRun);
       mockPollResolvesWith(freshCompleted);
 
-      render(
+      renderDashboard(
         <CostDashboard
           demoMode={false}
           runtime={{
@@ -1351,7 +1441,7 @@ describe("CostDashboard", () => {
       vi.mocked(fetchDashboardView).mockResolvedValue(freshCompleted);
       mockPollResolvesWith(freshCompleted);
 
-      render(
+      renderDashboard(
         <CostDashboard
           demoMode={false}
           runtime={{
@@ -1392,7 +1482,7 @@ describe("CostDashboard", () => {
     it("falls back to the idle state on a 204 cache miss (no auto-run)", async () => {
       vi.mocked(fetchCachedDashboardRun).mockResolvedValue(null);
 
-      render(
+      renderDashboard(
         <CostDashboard
           demoMode={false}
           runtime={{
@@ -1407,6 +1497,615 @@ describe("CostDashboard", () => {
       expect(screen.queryByText(/Using cached view as of/)).not.toBeInTheDocument();
       expect(startDashboardRun).not.toHaveBeenCalled();
       expect(fetchDashboardView).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("query cache integration", () => {
+    const USER_ID = "test-user";
+    const ORG_ID = "org-cache";
+    const runtime = {
+      accessToken: "tok",
+      organizationId: ORG_ID,
+      organizationName: "Acme",
+    };
+    const identity = { activeOrganizationId: ORG_ID };
+    const cachedRun: DashboardRun = {
+      ...demoDashboardView.run,
+      id: "cached-run-1",
+      source: "snowflake",
+      status: "completed",
+    };
+    const cachedView: DashboardView = {
+      ...demoDashboardView,
+      run: cachedRun,
+    };
+    const aiDetailFixture: AIDetailViewModel = {
+      dailySeries: [],
+      consumptionTypeNames: [],
+      rankedConsumptionTypes: [],
+      consumptionBars: [],
+      isEmpty: true,
+      partial: false,
+      skippedBranches: [],
+    };
+
+    it("renders the previous view on remount within staleTime without repeating cached-run/view requests", async () => {
+      vi.mocked(fetchCachedDashboardRun).mockResolvedValue({
+        run: cachedRun,
+        cachedAsOf: "2026-07-06T14:30:00Z",
+      });
+      vi.mocked(fetchDashboardView).mockResolvedValue(cachedView);
+
+      const client = createPersistentQueryClient();
+      const first = renderDashboard(
+        <CostDashboard demoMode={false} runtime={runtime} />,
+        { client, identity },
+      );
+
+      await screen.findByText(/Using cached view as of/);
+      // Wait for the relative-window prefetches so all requests have settled.
+      await waitFor(() => expect(fetchDashboardView).toHaveBeenCalledTimes(3));
+      const cachedRunCalls = vi.mocked(fetchCachedDashboardRun).mock.calls.length;
+      const viewCalls = vi.mocked(fetchDashboardView).mock.calls.length;
+
+      first.unmount();
+
+      renderDashboard(<CostDashboard demoMode={false} runtime={runtime} />, {
+        client,
+        identity,
+      });
+
+      // The remount paints from the cache: the cached view and indicator return
+      // without any additional discovery or view requests.
+      await screen.findByText(/Using cached view as of/);
+      expect(
+        await screen.findByText("Total Spend in Last 30 Days"),
+      ).toBeInTheDocument();
+      expect(fetchCachedDashboardRun).toHaveBeenCalledTimes(cachedRunCalls);
+      expect(fetchDashboardView).toHaveBeenCalledTimes(viewCalls);
+    });
+
+    it("issues one request when simultaneous consumers read the same default view", async () => {
+      vi.mocked(fetchCachedDashboardRun).mockResolvedValue({
+        run: cachedRun,
+        cachedAsOf: "2026-07-06T14:30:00Z",
+      });
+      vi.mocked(fetchDashboardView).mockResolvedValue(cachedView);
+
+      const client = createPersistentQueryClient();
+      renderDashboard(
+        <>
+          <CostDashboard demoMode={false} runtime={runtime} />
+          <CostDashboard demoMode={false} runtime={runtime} />
+        </>,
+        { client, identity },
+      );
+
+      const indicators = await screen.findAllByText(/Using cached view as of/);
+      expect(indicators).toHaveLength(2);
+
+      // Both consumers share one discovery request and one default-view request.
+      expect(fetchCachedDashboardRun).toHaveBeenCalledTimes(1);
+      const defaultViewCalls = vi
+        .mocked(fetchDashboardView)
+        .mock.calls.filter(([, request]) => request?.windowDays === 30);
+      expect(defaultViewCalls).toHaveLength(1);
+    });
+
+    it("retrieves the same DashboardView from the cache for requested and server-resolved ranges", async () => {
+      vi.mocked(fetchDemoDashboardView).mockImplementation(async (range) => {
+        if (range?.startDate === "2026-06-01") {
+          // The server resolves the requested end date one day earlier.
+          return {
+            ...demoDashboardView,
+            range: {
+              mode: "custom" as const,
+              windowDays: null,
+              startDate: "2026-06-01",
+              endDate: "2026-06-07",
+            },
+          };
+        }
+        return demoViewForRange(range);
+      });
+
+      const { client } = renderDashboard(<CostDashboard demoMode />);
+
+      await screen.findByLabelText("Start date");
+      fireEvent.change(screen.getByLabelText("Start date"), {
+        target: { value: "2026-06-01" },
+      });
+      fireEvent.change(screen.getByLabelText("End date"), {
+        target: { value: "2026-06-08" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Apply date range" }));
+
+      await waitFor(() =>
+        expect(screen.getByLabelText("End date")).toHaveValue("2026-06-07"),
+      );
+
+      const requestedKey = queryKeys.dashboard.view(
+        DEMO_USER_ID,
+        DEMO_ORG_ID,
+        "demo-run",
+        { startDate: "2026-06-01", endDate: "2026-06-08" },
+      );
+      const resolvedKey = queryKeys.dashboard.view(
+        DEMO_USER_ID,
+        DEMO_ORG_ID,
+        "demo-run",
+        { startDate: "2026-06-01", endDate: "2026-06-07" },
+      );
+      const requested = client.getQueryData<DashboardView>(requestedKey);
+      const resolved = client.getQueryData<DashboardView>(resolvedKey);
+      expect(requested).toBeDefined();
+      expect(resolved).toBe(requested);
+    });
+
+    it("makes a terminal pollUntilTerminal result view-addressable without a follow-up fetch", async () => {
+      const completedRun: DashboardRun = {
+        ...demoDashboardView.run,
+        id: "run-terminal-cache",
+        source: "snowflake",
+        status: "completed",
+      };
+      const completedView: DashboardView = {
+        ...demoDashboardView,
+        run: completedRun,
+      };
+      vi.mocked(startDashboardRun).mockResolvedValue({
+        ...completedRun,
+        status: "running",
+      });
+      vi.mocked(fetchDashboardView).mockResolvedValue(completedView);
+      mockPollResolvesWith(completedView);
+
+      const { client } = renderDashboard(
+        <CostDashboard demoMode={false} runtime={runtime} />,
+        { client: createPersistentQueryClient(), identity },
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+
+      await screen.findByText("Total Spend in Last 30 Days");
+      await waitFor(() => expect(fetchDashboardView).toHaveBeenCalledTimes(3));
+
+      // The terminal view is readable straight from the view key — no follow-up
+      // fetch of the default range beyond the single poll fetch.
+      const viewKey = queryKeys.dashboard.view(
+        USER_ID,
+        ORG_ID,
+        "run-terminal-cache",
+        { windowDays: 30 },
+      );
+      expect(client.getQueryData<DashboardView>(viewKey)).toBe(completedView);
+      const defaultViewCalls = vi
+        .mocked(fetchDashboardView)
+        .mock.calls.filter(([, request]) => request?.windowDays === 30);
+      expect(defaultViewCalls).toHaveLength(1);
+    });
+
+    it("stores a terminal pollDashboardSource result only under source(...), never under view(...)", async () => {
+      const dataView: DashboardView = {
+        ...demoDashboardView,
+        run: {
+          ...demoDashboardView.run,
+          id: "run-source",
+          source: "snowflake",
+          status: "completed",
+        },
+      };
+      vi.mocked(triggerDashboardSource).mockResolvedValue(undefined);
+      vi.mocked(pollDashboardSource).mockResolvedValue({
+        status: "completed",
+        userSafeMessage: null,
+        view: aiDetailFixture,
+      });
+
+      const { client } = renderDashboard(
+        <CostDashboard demoMode={false} data={dataView} runtime={runtime} />,
+        { identity },
+      );
+
+      await waitFor(() => expect(pollDashboardSource).toHaveBeenCalled());
+
+      const request = {
+        windowDays: dataView.range.windowDays ?? 30,
+      };
+      const sourceKey = queryKeys.dashboard.source(
+        USER_ID,
+        ORG_ID,
+        "run-source",
+        "ai_consumption_daily",
+        request,
+      );
+      await waitFor(() =>
+        expect(client.getQueryData<AIDetailViewModel>(sourceKey)).toBe(
+          aiDetailFixture,
+        ),
+      );
+
+      // The AI detail view model must never leak into a dashboard view key.
+      const entriesHoldingDetail = client
+        .getQueryCache()
+        .getAll()
+        .filter((query) => query.state.data === aiDetailFixture);
+      expect(entriesHoldingDetail).toHaveLength(1);
+      expect(entriesHoldingDetail[0].queryKey).toEqual(sourceKey);
+    });
+
+    it("drops a poll that resolves after an identity switch so it cannot repopulate old keys", async () => {
+      vi.mocked(startDashboardRun).mockResolvedValue({
+        ...cachedRun,
+        id: "run-stale-identity",
+        status: "running",
+      });
+      const completedView: DashboardView = {
+        ...demoDashboardView,
+        run: {
+          ...demoDashboardView.run,
+          id: "run-stale-identity",
+          source: "snowflake",
+          status: "completed",
+        },
+      };
+      const pendingPoll = createDeferred<DashboardView>();
+      vi.mocked(pollUntilTerminal<DashboardView>).mockReturnValue(
+        pendingPoll.promise,
+      );
+
+      const client = createPersistentQueryClient();
+      const view = render(
+        <QueryTestProvider
+          client={client}
+          identity={{ activeOrganizationId: ORG_ID, identityEpoch: 0 }}
+        >
+          <CostDashboard demoMode={false} runtime={runtime} />
+        </QueryTestProvider>,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+      await waitFor(() => expect(startDashboardRun).toHaveBeenCalledTimes(1));
+
+      // The identity epoch bumps (sign-out / account switch / re-auth) while the
+      // poll is still in flight.
+      view.rerender(
+        <QueryTestProvider
+          client={client}
+          identity={{ activeOrganizationId: ORG_ID, identityEpoch: 1 }}
+        >
+          <CostDashboard demoMode={false} runtime={runtime} />
+        </QueryTestProvider>,
+      );
+
+      await act(async () => {
+        pendingPoll.resolve(completedView);
+        await pendingPoll.promise;
+      });
+
+      // The stale poll result must not populate view or discovery keys.
+      const viewKey = queryKeys.dashboard.view(
+        USER_ID,
+        ORG_ID,
+        "run-stale-identity",
+        { windowDays: 30 },
+      );
+      expect(client.getQueryData(viewKey)).toBeUndefined();
+      const discoveryEntry = client.getQueryData<{ run: DashboardRun }>(
+        queryKeys.dashboard.cachedRun(USER_ID, ORG_ID),
+      );
+      expect(discoveryEntry?.run.id).not.toBe("run-stale-identity");
+      // No prefetches were issued for the dropped run either.
+      expect(fetchDashboardView).not.toHaveBeenCalledWith(
+        "run-stale-identity",
+        { windowDays: 7 },
+        expect.anything(),
+      );
+    });
+
+    it("drops an in-flight range fetch after an identity switch so TanStack cannot repopulate the old key", async () => {
+      const dataView: DashboardView = {
+        ...demoDashboardView,
+        run: {
+          ...demoDashboardView.run,
+          id: "run-range-guard",
+          source: "snowflake",
+          status: "completed",
+        },
+      };
+      const pending = createDeferred<DashboardView>();
+      vi.mocked(fetchDashboardView).mockImplementation(async (_runId, request) => {
+        if (request?.windowDays === 7) return pending.promise;
+        return dataView;
+      });
+
+      const client = createPersistentQueryClient();
+      const view = render(
+        <QueryTestProvider
+          client={client}
+          identity={{ activeOrganizationId: ORG_ID, identityEpoch: 0 }}
+        >
+          <CostDashboard demoMode={false} data={dataView} runtime={runtime} />
+        </QueryTestProvider>,
+      );
+
+      // Switch to the 7-day window: loadRange runs a fetchQuery whose queryFn is
+      // held pending, so it is still in flight during the identity switch.
+      fireEvent.click(screen.getByRole("button", { name: "7 days" }));
+      await waitFor(() =>
+        expect(fetchDashboardView).toHaveBeenCalledWith(
+          "run-range-guard",
+          { windowDays: 7 },
+          expect.anything(),
+        ),
+      );
+
+      // Identity epoch bumps (sign-out / account switch) while the range fetch
+      // is still in flight. The cache is NOT cleared here: the queryFn's
+      // throwIfIdentityChanged guard must be the only thing preventing TanStack
+      // from repopulating the stale 7-day key.
+      view.rerender(
+        <QueryTestProvider
+          client={client}
+          identity={{ activeOrganizationId: ORG_ID, identityEpoch: 1 }}
+        >
+          <CostDashboard demoMode={false} data={dataView} runtime={runtime} />
+        </QueryTestProvider>,
+      );
+
+      await act(async () => {
+        pending.resolve(dataView);
+        await pending.promise;
+      });
+
+      // The queryFn throws on the stale identity, so TanStack must not store the
+      // result under the now-cleared 7-day key.
+      const key = queryKeys.dashboard.view(USER_ID, ORG_ID, "run-range-guard", {
+        windowDays: 7,
+      });
+      expect(client.getQueryData(key)).toBeUndefined();
+    });
+
+    it("does not paint a range fetch rejection that settles after an identity switch", async () => {
+      const dataView: DashboardView = {
+        ...demoDashboardView,
+        run: {
+          ...demoDashboardView.run,
+          id: "run-range-reject",
+          source: "snowflake",
+          status: "completed",
+        },
+      };
+      const pending = createDeferred<DashboardView>();
+      vi.mocked(fetchDashboardView).mockImplementation(async (_runId, request) => {
+        if (request?.windowDays === 7) return pending.promise;
+        return dataView;
+      });
+
+      const client = createPersistentQueryClient();
+      const view = render(
+        <QueryTestProvider
+          client={client}
+          identity={{ activeOrganizationId: ORG_ID, identityEpoch: 0 }}
+        >
+          <CostDashboard demoMode={false} data={dataView} runtime={runtime} />
+        </QueryTestProvider>,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "7 days" }));
+      await waitFor(() =>
+        expect(fetchDashboardView).toHaveBeenCalledWith(
+          "run-range-reject",
+          { windowDays: 7 },
+          expect.anything(),
+        ),
+      );
+
+      view.rerender(
+        <QueryTestProvider
+          client={client}
+          identity={{ activeOrganizationId: ORG_ID, identityEpoch: 1 }}
+        >
+          <CostDashboard demoMode={false} data={dataView} runtime={runtime} />
+        </QueryTestProvider>,
+      );
+
+      await act(async () => {
+        pending.reject(new Error("range failure"));
+        await pending.promise.catch(() => undefined);
+      });
+
+      // The identity-guarded catch must not surface the range error for a
+      // request that belonged to the previous identity.
+      expect(
+        screen.queryByText("Could not load selected date range."),
+      ).not.toBeInTheDocument();
+    });
+
+    it("does not paint a dashboard failure when the default-view fetch is cancelled by an identity switch", async () => {
+      vi.mocked(fetchCachedDashboardRun).mockResolvedValue({
+        run: cachedRun,
+        cachedAsOf: "2026-07-06T14:30:00Z",
+      });
+      // Hold the default-view fetch in flight so the identity switch lands while
+      // it is still pending; its queryFn will then throw the identity-change
+      // cancellation once it resolves under the new identity.
+      const pending = createDeferred<DashboardView>();
+      vi.mocked(fetchDashboardView).mockReturnValue(pending.promise);
+
+      const client = createPersistentQueryClient();
+      const view = render(
+        <QueryTestProvider
+          client={client}
+          identity={{ activeOrganizationId: ORG_ID, identityEpoch: 0 }}
+        >
+          <CostDashboard demoMode={false} runtime={runtime} />
+        </QueryTestProvider>,
+      );
+
+      // The discovery hit drives the dependent default-view fetch.
+      await waitFor(() =>
+        expect(fetchDashboardView).toHaveBeenCalledWith(
+          "cached-run-1",
+          { windowDays: 30 },
+          expect.anything(),
+        ),
+      );
+
+      // Identity epoch bumps (sign-out / account switch) while the default-view
+      // fetch is still in flight.
+      view.rerender(
+        <QueryTestProvider
+          client={client}
+          identity={{ activeOrganizationId: ORG_ID, identityEpoch: 1 }}
+        >
+          <CostDashboard demoMode={false} runtime={runtime} />
+        </QueryTestProvider>,
+      );
+
+      await act(async () => {
+        pending.resolve(cachedView);
+        await pending.promise;
+      });
+
+      // The queryFn throws an IdentityChangedError, which the default-view path
+      // must treat as a benign cancellation — never a user-visible failed state.
+      expect(
+        screen.queryByText("Could not load dashboard data."),
+      ).not.toBeInTheDocument();
+    });
+
+    it("does not paint a Snowflake run failure that rejects after an identity switch", async () => {
+      // startDashboardRun is held in flight so the identity switch lands before
+      // it settles. An org/user switch does NOT bump the run generation nor
+      // cancel this promise, so the catch must guard on identity — otherwise a
+      // genuine rejection paints a failed dashboard onto the new identity.
+      const pending = createDeferred<DashboardRun>();
+      vi.mocked(startDashboardRun).mockReturnValue(pending.promise);
+
+      const client = createPersistentQueryClient();
+      const view = render(
+        <QueryTestProvider
+          client={client}
+          identity={{ activeOrganizationId: ORG_ID, identityEpoch: 0 }}
+        >
+          <CostDashboard demoMode={false} runtime={runtime} />
+        </QueryTestProvider>,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+      await waitFor(() => expect(startDashboardRun).toHaveBeenCalled());
+
+      // Identity epoch bumps (sign-out / account / org switch) while the run
+      // request is still in flight.
+      view.rerender(
+        <QueryTestProvider
+          client={client}
+          identity={{ activeOrganizationId: ORG_ID, identityEpoch: 1 }}
+        >
+          <CostDashboard demoMode={false} runtime={runtime} />
+        </QueryTestProvider>,
+      );
+
+      await act(async () => {
+        pending.reject(new Error("run failure"));
+        await pending.promise.catch(() => undefined);
+      });
+
+      // The identity-guarded catch must not surface the failure for a run that
+      // belonged to the previous identity.
+      expect(
+        screen.queryByText("Could not load dashboard data."),
+      ).not.toBeInTheDocument();
+    });
+
+    it("caches demo views under the demo sentinel scope even inside authenticated chrome", async () => {
+      vi.mocked(fetchDemoDashboardView).mockImplementation(async (range) =>
+        demoViewForRange(range),
+      );
+
+      const client = createPersistentQueryClient();
+      render(
+        <QueryTestProvider
+          client={client}
+          identity={{ userId: "auth-user", activeOrganizationId: "auth-org" }}
+        >
+          <CostDashboard demoMode />
+        </QueryTestProvider>,
+      );
+
+      await screen.findByText("Total Spend in Last 30 Days");
+
+      // The demo view lands under the fixed demo sentinels…
+      const demoKey = queryKeys.dashboard.view(
+        DEMO_USER_ID,
+        DEMO_ORG_ID,
+        "demo-run",
+        { windowDays: 30 },
+      );
+      expect(client.getQueryData<DashboardView>(demoKey)).toBeDefined();
+      // …and never under the surrounding authenticated chrome identity, so demo
+      // reads (which use the demo sentinels) can find every write.
+      const authKey = queryKeys.dashboard.view(
+        "auth-user",
+        "auth-org",
+        "demo-run",
+        { windowDays: 30 },
+      );
+      expect(client.getQueryData(authKey)).toBeUndefined();
+    });
+
+    it("clears cachedAsOf on a fresh run and updates discovery on completion without another /cached request", async () => {
+      vi.mocked(fetchCachedDashboardRun).mockResolvedValue({
+        run: cachedRun,
+        cachedAsOf: "2026-07-06T14:30:00Z",
+      });
+      vi.mocked(fetchDashboardView).mockResolvedValue(cachedView);
+
+      const freshCompletedRun: DashboardRun = {
+        ...demoDashboardView.run,
+        id: "fresh-run-2",
+        source: "snowflake",
+        status: "completed",
+      };
+      const freshView: DashboardView = {
+        ...demoDashboardView,
+        run: freshCompletedRun,
+      };
+      vi.mocked(startDashboardRun).mockResolvedValue({
+        ...freshCompletedRun,
+        status: "running",
+      });
+      mockPollResolvesWith(freshView);
+
+      const { client } = renderDashboard(
+        <CostDashboard demoMode={false} runtime={runtime} />,
+        { client: createPersistentQueryClient(), identity },
+      );
+
+      await screen.findByText(/Using cached view as of/);
+      vi.mocked(fetchDashboardView).mockResolvedValue(freshView);
+
+      fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+
+      // The cached indicator clears the moment the fresh run starts.
+      await waitFor(() =>
+        expect(
+          screen.queryByText(/Using cached view as of/),
+        ).not.toBeInTheDocument(),
+      );
+
+      // Terminal completion populates discovery directly from the run…
+      await waitFor(() => {
+        const discovery = client.getQueryData<{
+          run: DashboardRun;
+          cachedAsOf: string;
+        }>(queryKeys.dashboard.cachedRun(USER_ID, ORG_ID));
+        expect(discovery?.run.id).toBe("fresh-run-2");
+        expect(discovery?.cachedAsOf).toBe(freshCompletedRun.completed_at);
+      });
+      // …without a second /dashboard-runs/cached round-trip.
+      expect(fetchCachedDashboardRun).toHaveBeenCalledTimes(1);
     });
   });
 });

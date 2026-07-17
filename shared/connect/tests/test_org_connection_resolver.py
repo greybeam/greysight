@@ -401,6 +401,147 @@ def test_resolver_threads_account_locator() -> None:
     assert config.account_locator == "XY12345"
 
 
+class _RecordingClient:
+    """Wraps a real httpx.Client to record use and forbid close()."""
+
+    def __init__(self, inner: httpx.Client) -> None:
+        self._inner = inner
+        self.get_calls = 0
+        self.post_calls = 0
+        self.closed = False
+
+    def get(self, *args, **kwargs):
+        self.get_calls += 1
+        return self._inner.get(*args, **kwargs)
+
+    def post(self, *args, **kwargs):
+        self.post_calls += 1
+        return self._inner.post(*args, **kwargs)
+
+    def close(self) -> None:
+        self.closed = True
+        self._inner.close()
+
+
+def _connection_handler(request: httpx.Request) -> httpx.Response:
+    if request.url.path.endswith("/organization_snowflake_connections"):
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "account": "acct",
+                    "snowflake_user": "u",
+                    "role": "r",
+                    "warehouse": "w",
+                    "database": None,
+                    "schema": None,
+                    "status": "active",
+                    "secret_id": "sec-1",
+                }
+            ],
+        )
+    if request.url.path.endswith("/rpc/get_organization_snowflake_secret"):
+        return httpx.Response(
+            200,
+            json=[{"private_key_pem": "PEMDATA", "passphrase": None}],
+        )
+    return httpx.Response(404)
+
+
+def test_fetcher_uses_injected_client_without_closing_it() -> None:
+    inner = httpx.Client(transport=_transport(_connection_handler))
+    recording = _RecordingClient(inner)
+    fetcher = SupabaseConnectionFetcher(
+        supabase_url="https://example.supabase.co",
+        service_role_key="svc",
+        client=recording,  # type: ignore[arg-type]
+    )
+
+    row = fetcher("org-1")
+
+    assert row is not None
+    assert row.account == "acct"
+    assert row.private_key_pem == "PEMDATA"
+    # The injected client did the work and was NOT closed by the fetcher.
+    assert recording.get_calls == 1
+    assert recording.post_calls == 1
+    assert recording.closed is False
+
+    inner.close()
+
+
+def test_fetcher_reuses_injected_client_across_sequential_lookups() -> None:
+    seen_headers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_headers.append(request.headers.get("authorization", ""))
+        return _connection_handler(request)
+
+    inner = httpx.Client(transport=_transport(handler))
+    recording = _RecordingClient(inner)
+    fetcher = SupabaseConnectionFetcher(
+        supabase_url="https://example.supabase.co",
+        service_role_key="svc",
+        client=recording,  # type: ignore[arg-type]
+    )
+
+    assert fetcher("org-1") is not None
+    assert fetcher("org-2") is not None
+
+    # Same client object serviced both lookups (2 GET + 2 POST).
+    assert recording.get_calls == 2
+    assert recording.post_calls == 2
+    assert recording.closed is False
+    # Per-request auth headers are still supplied.
+    assert seen_headers == ["Bearer svc"] * 4
+
+
+class _TimeoutRecordingClient:
+    """Wraps a real httpx.Client and records the ``timeout`` kwarg per request."""
+
+    def __init__(self, inner: httpx.Client) -> None:
+        self._inner = inner
+        self.timeouts: list[object] = []
+
+    def get(self, *args, **kwargs):
+        self.timeouts.append(kwargs.get("timeout"))
+        return self._inner.get(*args, **kwargs)
+
+    def post(self, *args, **kwargs):
+        self.timeouts.append(kwargs.get("timeout"))
+        return self._inner.post(*args, **kwargs)
+
+    def close(self) -> None:
+        self._inner.close()
+
+
+def test_fetcher_uses_injected_timeout_object_on_requests() -> None:
+    inner = httpx.Client(transport=_transport(_connection_handler))
+    recording = _TimeoutRecordingClient(inner)
+    injected_timeout = httpx.Timeout(10.0, pool=1.0)
+    fetcher = SupabaseConnectionFetcher(
+        supabase_url="https://example.supabase.co",
+        service_role_key="svc",
+        timeout=injected_timeout,
+        client=recording,  # type: ignore[arg-type]
+    )
+
+    assert fetcher("org-1") is not None
+
+    # Every request on the injected path carries the full timeout policy so the
+    # pooled client's pool-acquisition cap is preserved (not overridden by a
+    # scalar timeout).
+    assert recording.timeouts == [injected_timeout, injected_timeout]
+    for timeout in recording.timeouts:
+        assert isinstance(timeout, httpx.Timeout)
+        assert timeout.connect == 10.0
+        assert timeout.read == 10.0
+        assert timeout.write == 10.0
+        assert timeout.pool == 1.0
+
+    inner.close()
+
+
 def test_fetcher_raises_on_multiple_secret_rows() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/organization_snowflake_connections"):

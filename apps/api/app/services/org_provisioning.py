@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import httpx
 
+from app.services.pooled_requests import send_pooled_request
+
 
 class OrgProvisioningError(RuntimeError):
     """Raised when org provisioning fails."""
@@ -50,20 +52,27 @@ class SupabaseOrgProvisioner:
         self._timeout_seconds = timeout_seconds
         self._transport = transport
 
+    def _send(self, method: str, url: str, **kwargs: object) -> httpx.Response:
+        return send_pooled_request(
+            method,
+            url,
+            transport=self._transport,
+            timeout_seconds=self._timeout_seconds,
+            **kwargs,
+        )
+
     def __call__(self, **params: str) -> str:
         try:
-            with httpx.Client(
-                timeout=self._timeout_seconds, transport=self._transport
-            ) as client:
-                response = client.post(
-                    self._url,
-                    json=params,
-                    headers={
-                        "apikey": self._service_role_key,
-                        "authorization": f"Bearer {self._service_role_key}",
-                        "content-type": "application/json",
-                    },
-                )
+            response = self._send(
+                "POST",
+                self._url,
+                json=params,
+                headers={
+                    "apikey": self._service_role_key,
+                    "authorization": f"Bearer {self._service_role_key}",
+                    "content-type": "application/json",
+                },
+            )
         except httpx.HTTPError:
             # Use `from None` so the httpx exception chain — whose traceback
             # frames hold `params` (p_private_key_pem / p_passphrase) — is not
@@ -98,20 +107,27 @@ class SupabaseOrgDisconnector:
         self._timeout_seconds = timeout_seconds
         self._transport = transport
 
+    def _send(self, method: str, url: str, **kwargs: object) -> httpx.Response:
+        return send_pooled_request(
+            method,
+            url,
+            transport=self._transport,
+            timeout_seconds=self._timeout_seconds,
+            **kwargs,
+        )
+
     def __call__(self, organization_id: str) -> None:
         try:
-            with httpx.Client(
-                timeout=self._timeout_seconds, transport=self._transport
-            ) as client:
-                response = client.post(
-                    self._url,
-                    json={"target_organization_id": organization_id},
-                    headers={
-                        "apikey": self._service_role_key,
-                        "authorization": f"Bearer {self._service_role_key}",
-                        "content-type": "application/json",
-                    },
-                )
+            response = self._send(
+                "POST",
+                self._url,
+                json={"target_organization_id": organization_id},
+                headers={
+                    "apikey": self._service_role_key,
+                    "authorization": f"Bearer {self._service_role_key}",
+                    "content-type": "application/json",
+                },
+            )
         except httpx.HTTPError:
             raise OrgProvisioningError(
                 "Could not disconnect the organization."

@@ -1,3 +1,4 @@
+import { QueryClient } from "@tanstack/react-query";
 import {
   act,
   cleanup,
@@ -9,6 +10,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { SuspensionEventsPage } from "../../lib/automated-savings-api";
+import { QueryTestProvider } from "../../lib/query-test-utils";
 import { SuspensionEventsTable } from "./suspension-events-table";
 
 const fetchSuspensionEvents = vi.hoisted(() => vi.fn());
@@ -16,10 +18,38 @@ vi.mock("../../lib/automated-savings-api", () => ({
   fetchSuspensionEvents,
 }));
 
+// A client that never expires or garbage-collects entries, so revisiting a page
+// within staleTime and remounting exercise the shared cache, not a refetch.
+function persistentClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, gcTime: Infinity, staleTime: Infinity },
+    },
+  });
+}
+
+function renderTable(
+  client: QueryClient = persistentClient(),
+  props: { orgId?: string; accessToken?: string | null } = {},
+) {
+  return render(
+    <QueryTestProvider
+      client={client}
+      identity={{ userId: "test-user", identityEpoch: 0, activeOrganizationId: "org-1" }}
+    >
+      <SuspensionEventsTable
+        orgId={props.orgId ?? "org-1"}
+        accessToken={props.accessToken ?? "token"}
+      />
+    </QueryTestProvider>,
+  );
+}
+
 // The shared vitest setup registers no automatic DOM cleanup, so unmount each
 // render explicitly (project convention, see opt-in-gate.test.tsx).
 afterEach(() => {
   cleanup();
+  fetchSuspensionEvents.mockReset();
   vi.restoreAllMocks();
 });
 
@@ -48,7 +78,7 @@ describe("SuspensionEventsTable pagination", () => {
         () => new Promise((resolve) => (resolveSecondPage = resolve)),
       );
 
-    render(<SuspensionEventsTable orgId="org-1" accessToken="token" />);
+    renderTable();
     await screen.findByText("WH_1");
     const next = await screen.findByRole("button", { name: "Next page" });
 
@@ -71,10 +101,42 @@ describe("SuspensionEventsTable pagination", () => {
   it("hides the pager on a lone page and shows it once there is a next page", async () => {
     fetchSuspensionEvents.mockResolvedValueOnce(page(["1"], null));
 
-    render(<SuspensionEventsTable orgId="org-1" accessToken="token" />);
+    renderTable();
     await screen.findByText("WH_1");
     expect(
       screen.queryByRole("button", { name: "Next page" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("does not refetch a page revisited within staleTime", async () => {
+    fetchSuspensionEvents
+      .mockResolvedValueOnce(page(["1"], "cursor-1"))
+      .mockResolvedValueOnce(page(["2"], null));
+
+    renderTable();
+    await screen.findByText("WH_1");
+    fireEvent.click(await screen.findByRole("button", { name: "Next page" }));
+    await screen.findByText("WH_2");
+    expect(fetchSuspensionEvents).toHaveBeenCalledTimes(2);
+
+    // Back to page 1: its cursor (null) is already cached, so no new request.
+    fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
+    await screen.findByText("WH_1");
+    expect(fetchSuspensionEvents).toHaveBeenCalledTimes(2);
+  });
+
+  it("serves cached events on remount without refetching", async () => {
+    fetchSuspensionEvents.mockResolvedValue(page(["1"], null));
+    const client = persistentClient();
+
+    const first = renderTable(client);
+    await screen.findByText("WH_1");
+    expect(fetchSuspensionEvents).toHaveBeenCalledTimes(1);
+    first.unmount();
+
+    renderTable(client);
+    // Cached rows paint immediately on remount, with no second request.
+    expect(screen.getByText("WH_1")).toBeInTheDocument();
+    expect(fetchSuspensionEvents).toHaveBeenCalledTimes(1);
   });
 });

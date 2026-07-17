@@ -169,10 +169,17 @@ engineering manager and does not write implementation code itself.
 
 ## Docs
 
+Docs under `docs/` are **living documentation**. When you change architecture,
+an invariant, a dev workflow, or a convention, update the affected doc in the
+**same branch** as the code change — not just the PR description. New
+architectural decisions worth remembering get captured in `docs/`, not left in
+review threads.
+
 - `docs/local-development.md` — full env setup (Supabase keys, env wiring); read when Quick Reference isn't enough.
 - `docs/snowflake-setup.md` — provisioning the Snowflake role, warehouse, and key pair for live mode.
 - `docs/security-model.md` — auth, org membership, and RLS rationale; read before touching `auth.py` or migrations.
 - `docs/deployment.md` — hosting and deploy steps.
 - `docs/dependency-compatibility.md` — version pinning constraints; read before bumping dependencies.
 - `docs/automated-savings.md` — Automated Savings worker: direct-suspend runbook, cloud-services cost note, current `AUTO_SAVINGS_*` env knobs, sharding, and the `MANAGE WAREHOUSES` opt-in grant.
+- `docs/query-cache-architecture.md` — session-scoped browser query cache (identity contract, `transitioning` guard, key registry) and backend httpx connection-pool invariants; keep in sync when the cache or pool changes.
 - `docs/specs/` — implementation plans and specs for in-flight work.

@@ -1,8 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { AccountChromeProvider } from "../../lib/account-context";
+import {
+  DEMO_ORG_ID,
+  DEMO_USER_ID,
+  QueryIdentityProvider,
+  type QueryIdentitySnapshot,
+} from "../../lib/query-identity";
 import {
   readActiveOrganizationId,
   writeActiveOrganizationId,
@@ -74,6 +81,84 @@ export default function OrgShell({
   const [addAccountOpen, setAddAccountOpen] = useState(false);
   const accessToken = session?.accessToken ?? null;
 
+  // OrgShell owns a single QueryClient for the whole authenticated tree so the
+  // cache lives and dies with this shell's identity, not with any child.
+  const [queryClient] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: {
+            staleTime: 60_000,
+            gcTime: 30 * 60_000,
+            retry: false,
+            refetchOnWindowFocus: false,
+          },
+        },
+      }),
+  );
+
+  // Identity epoch bumps on every user transition. `observedUserIdRef` starts
+  // `undefined` (nothing observed yet) so the first real/null resolution counts
+  // as a transition exactly once; repeated identical callbacks are ignored.
+  const [identityEpoch, setIdentityEpoch] = useState(0);
+  const identityEpochRef = useRef(0);
+  const observedUserIdRef = useRef<string | null | undefined>(undefined);
+  const identityRef = useRef<QueryIdentitySnapshot>({
+    userId: DEMO_USER_ID,
+    orgId: DEMO_ORG_ID,
+    epoch: 0,
+  });
+
+  // Track the latest token so stale in-flight membership requests can be
+  // discarded. Declared before transitionUser so a transition can synchronously
+  // invalidate it, dropping a previous user's in-flight membership request.
+  const latestTokenRef = useRef<string | null>(accessToken);
+
+  // Centralize user transitions: cancel in-flight queries, wipe the cache, and
+  // bump the epoch whenever the signed-in user id actually changes (including
+  // null <-> user). A no-op when the user id is unchanged, so repeated null/user
+  // callbacks never double-bump the epoch or needlessly clear the cache.
+  const transitionUser = useCallback(
+    (nextUserId: string | null) => {
+      if (observedUserIdRef.current === nextUserId) return;
+      observedUserIdRef.current = nextUserId;
+      void queryClient.cancelQueries();
+      queryClient.clear();
+      // Synchronously invalidate the latest-token ref so a PREVIOUS user's
+      // membership request still in flight is discarded on resolution, even if
+      // the access-token effect has not yet run to record the new token (e.g.
+      // the new session reuses the same access token, so that effect never
+      // re-runs). Null can never equal a real token, so loadMemberships's guard
+      // rejects the stale result rather than pairing the new user with the old
+      // user's organizations.
+      latestTokenRef.current = null;
+      identityEpochRef.current += 1;
+      // Replace the WHOLE live snapshot synchronously and mark it transitioning.
+      // Until the NEW user's memberships resolve, no coherent identity exists:
+      // the userId is known but the org is not. Marking the snapshot
+      // `transitioning` makes it uncapturable (sameQueryIdentity always returns
+      // false), so a write captured in the pre-commit window can neither
+      // repopulate the just-cleared cache with the previous user's data (stale
+      // userId), nor land a demo-org-scoped entry for a real user, nor pair the
+      // new user with the previous user's org. The render-time refresh clears
+      // the marker once the new user's real org is established.
+      identityRef.current = {
+        userId: nextUserId ?? DEMO_USER_ID,
+        orgId: DEMO_ORG_ID,
+        epoch: identityEpochRef.current,
+        transitioning: true,
+      };
+      // Reset membership/active-org state that belonged to the PREVIOUS user so
+      // the next render can't derive `activeOrganization` from the old user's
+      // memberships and pair it with the new user. The accessToken effect
+      // reloads memberships for the new session.
+      setMembership({ status: "idle" });
+      setActiveOrgId(null);
+      setIdentityEpoch(identityEpochRef.current);
+    },
+    [queryClient],
+  );
+
   // When no client prop is supplied, defer createBrowserAuthClient() to a
   // post-mount effect. Until it runs, both the server render and the client's
   // first paint show the deterministic "Loading authentication" placeholder,
@@ -90,10 +175,8 @@ export default function OrgShell({
     if (client) setLoadingSession(true);
   }, [authRequired, providedAuthClient]);
 
-  // Track the latest token so stale in-flight membership requests can be
-  // discarded, and store callback props in refs so changing callback identity
-  // never retriggers the membership effect.
-  const latestTokenRef = useRef<string | null>(accessToken);
+  // Store callback props in refs so changing callback identity never retriggers
+  // the membership effect.
   const onAccessTokenChangeRef = useRef(onAccessTokenChange);
   const onOrganizationChangeRef = useRef(onOrganizationChange);
 
@@ -106,14 +189,22 @@ export default function OrgShell({
     if (!authRequired || !authClient) return;
 
     let active = true;
+    // Once any auth-state callback has fired, its session is authoritative. A
+    // slower initial getSession() resolving afterwards could otherwise transition
+    // back to a stale user (e.g. B signs in while A's getSession is pending),
+    // so the late initial result is ignored.
+    let authEventSeen = false;
     void authClient.getSession().then((result) => {
-      if (!active) return;
+      if (!active || authEventSeen) return;
+      transitionUser(result.session?.user?.id ?? null);
       setSession(result.session);
       setLoadingSession(false);
     });
 
     const subscription = authClient.onAuthStateChange((nextSession) => {
       if (!active) return;
+      authEventSeen = true;
+      transitionUser(nextSession?.user?.id ?? null);
       setSession(nextSession);
       setLoadingSession(false);
     });
@@ -122,7 +213,7 @@ export default function OrgShell({
       active = false;
       subscription.unsubscribe();
     };
-  }, [authClient, authRequired]);
+  }, [authClient, authRequired, transitionUser]);
 
   useEffect(() => {
     onAccessTokenChangeRef.current?.(accessToken);
@@ -130,15 +221,22 @@ export default function OrgShell({
 
   const loadMemberships = useCallback(
     async (token: string) => {
+      // Capture the identity epoch at request start. A user transition bumps the
+      // epoch, so a previous user's in-flight request is discarded on resolution
+      // even when the new user reuses the SAME access token (the token guard
+      // alone can't tell same-token users apart).
+      const requestEpoch = identityEpochRef.current;
+      const isStale = () =>
+        latestTokenRef.current !== token ||
+        identityEpochRef.current !== requestEpoch;
       setMembership({ status: "loading" });
       try {
         const organizations = await fetchMemberships(token);
-        // Discard results for a token that is no longer current (stale-token
-        // race: a later sign-in superseded this request).
-        if (latestTokenRef.current !== token) return;
+        // Discard results superseded by a later sign-in / user transition.
+        if (isStale()) return;
         setMembership({ status: "resolved", organizations });
       } catch {
-        if (latestTokenRef.current !== token) return;
+        if (isStale()) return;
         setMembership({ status: "error" });
       }
     },
@@ -159,7 +257,13 @@ export default function OrgShell({
       return;
     }
     void loadMemberships(accessToken);
-  }, [accessToken, authRequired, loadMemberships]);
+    // identityEpoch is a dependency so a user transition ALWAYS reloads
+    // memberships for the new session — even when user B reuses user A's exact
+    // access token (the token string is unchanged, so this effect would not
+    // otherwise re-run). transitionUser bumps identityEpoch and nulls
+    // latestTokenRef; re-running here re-records the current token and starts
+    // B's load, while loadMemberships's guard still discards A's stale result.
+  }, [accessToken, authRequired, loadMemberships, identityEpoch]);
 
   const organizations =
     membership.status === "resolved" ? membership.organizations : [];
@@ -197,6 +301,10 @@ export default function OrgShell({
   }, [membership, activeOrgId]);
 
   const setActiveOrganization = useCallback((id: string) => {
+    // Update the live snapshot's orgId synchronously so a guarded write for the
+    // previous org captured before this switch is dropped even though the epoch
+    // is unchanged and React has not yet committed the activeOrgId state change.
+    identityRef.current = { ...identityRef.current, orgId: id };
     setActiveOrgId(id);
     writeActiveOrganizationId(id);
   }, []);
@@ -215,11 +323,51 @@ export default function OrgShell({
     // existing effects, the membership reset to idle, the latest-token ref
     // reset, onAccessTokenChange(null), and onOrganizationChange(null) — so the
     // component cannot keep rendering as signed-in if that callback is delayed
-    // or never fires.
+    // or never fires. A failed sign-out (handled above) never reaches here, so
+    // it leaves the cache and identity intact.
+    transitionUser(null);
     setSession(null);
     onOrganizationChangeRef.current?.(null);
-  }, [authClient]);
+  }, [authClient, transitionUser]);
 
+  // Refresh the shared identity snapshot on every render so late async callbacks
+  // (via QueryIdentityProvider) read the current user/org/epoch. Auth-off mode
+  // uses the fixed demo sentinel; authenticated renders carry the real identity.
+  if (!authRequired) {
+    // eslint-disable-next-line react-hooks/refs -- render-time identity refresh required for race safety
+    identityRef.current = { userId: DEMO_USER_ID, orgId: DEMO_ORG_ID, epoch: 0 };
+  } else if (session?.user?.id) {
+    if (membership.status === "resolved") {
+      // Memberships for THIS session have resolved: a coherent identity (real
+      // user + its own active org) exists, so clear the transitioning marker.
+      // eslint-disable-next-line react-hooks/refs -- render-time identity refresh required for race safety
+      identityRef.current = {
+        userId: session.user.id,
+        orgId: activeOrganization?.id ?? DEMO_ORG_ID,
+        epoch: identityEpoch,
+      };
+    } else {
+      // Session is known but memberships have not resolved yet (initial load or
+      // mid user-transition). The active org can't be trusted — it may still be
+      // derived from a previous user — so keep the snapshot uncapturable.
+      // eslint-disable-next-line react-hooks/refs -- render-time identity refresh required for race safety
+      identityRef.current = {
+        userId: session.user.id,
+        orgId: DEMO_ORG_ID,
+        epoch: identityEpoch,
+        transitioning: true,
+      };
+    }
+  } else {
+    // eslint-disable-next-line react-hooks/refs -- render-time identity refresh required for race safety
+    identityRef.current = {
+      userId: DEMO_USER_ID,
+      orgId: DEMO_ORG_ID,
+      epoch: identityEpoch,
+    };
+  }
+
+  const content = (() => {
   if (!authRequired) {
     return (
       <div className="min-h-screen bg-slate-50">
@@ -345,6 +493,8 @@ export default function OrgShell({
   return (
     <AccountChromeProvider
       value={{
+        userId: session.user?.id ?? DEMO_USER_ID,
+        identityEpoch,
         email: session.user?.email ?? "Authenticated user",
         onSignOut: handleSignOut,
         signOutError,
@@ -396,5 +546,14 @@ export default function OrgShell({
         </div>
       ) : null}
     </AccountChromeProvider>
+  );
+  })();
+
+  return (
+    <QueryClientProvider client={queryClient}>
+      <QueryIdentityProvider identityRef={identityRef}>
+        {content}
+      </QueryIdentityProvider>
+    </QueryClientProvider>
   );
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { usePrefersReducedMotion } from "../../lib/use-prefers-reduced-motion";
 import { dashboardFailure } from "../../lib/dashboard-errors";
@@ -17,12 +18,21 @@ import {
 } from "../../lib/dashboard-api";
 import {
   FETCH_WINDOW_DAYS,
+  type AIDetailViewModel,
   type DashboardRun,
   type DashboardRunStatus,
   type DashboardView,
   type DashboardViewRange,
   type DashboardViewSectionStatuses,
 } from "../../lib/dashboard-contracts";
+import { queryKeys } from "../../lib/query-keys";
+import { useLatestRef } from "../../lib/use-latest-ref";
+import {
+  DEMO_ORG_ID,
+  DEMO_USER_ID,
+  useQueryIdentity,
+  type QueryIdentitySnapshot,
+} from "../../lib/query-identity";
 import DashboardHeader, {
   type DashboardModeLabel,
 } from "./dashboard-header";
@@ -67,14 +77,18 @@ type LoadState = {
   view?: DashboardView;
 };
 
-type ViewFetcher = (
-  range: DashboardViewRangeRequest,
-) => Promise<DashboardView>;
-
 const DEFAULT_VIEW_RANGE = {
   windowDays: 30,
 } as const satisfies DashboardViewRangeRequest;
 const DEFAULT_WINDOW_DAYS = DEFAULT_VIEW_RANGE.windowDays;
+
+// Fixed run id emitted by the demo dataset generator
+// (`apps/api/app/services/demo_data.py`). Used to scope demo view/source cache
+// keys before the demo request resolves, and asserted as a cross-layer invariant
+// once the demo view lands.
+const DEMO_RUN_ID = "demo-run";
+
+const AI_SOURCE_ID = "ai_consumption_daily";
 
 // Run statuses that end the progressive `/view` poll. Mirrors the lifecycle
 // terminal set used by `pollDashboardRun` in dashboard-api.
@@ -120,19 +134,6 @@ function sectionFailureMessage(
   );
 }
 
-function rangeKey(runId: string, range: DashboardViewRangeRequest): string {
-  if (isCustomRangeRequest(range)) {
-    return `${runId}:custom:${range.startDate}:${range.endDate}`;
-  }
-  return `${runId}:relative:${range.windowDays ?? DEFAULT_WINDOW_DAYS}`;
-}
-
-function isCustomRangeRequest(
-  range: DashboardViewRangeRequest,
-): range is { windowDays?: never; startDate: string; endDate: string } {
-  return range.startDate !== undefined && range.endDate !== undefined;
-}
-
 function requestFromViewRange(
   range: DashboardViewRange,
 ): DashboardViewRangeRequest {
@@ -154,6 +155,24 @@ function readinessForView(
     (status) => status === "ready",
   );
   return allSectionsReady ? undefined : dashboardView.sectionStatuses;
+}
+
+// Thrown by `throwIfIdentityChanged` when the query identity changed mid-fetch.
+// This is a benign cancellation, NOT a load failure: an identity transition
+// (sign-out / account / org switch) already clears and repaints the surface, so
+// any user-visible error handler must treat it as a no-op rather than painting a
+// failed dashboard state via `dashboardFailure`. Discovery/cache-guard paths
+// already drop it silently; this marker lets the default-view and demo error
+// paths distinguish it from a genuine transport/API failure.
+class IdentityChangedError extends Error {
+  constructor() {
+    super("Query identity changed before the result could be stored");
+    this.name = "IdentityChangedError";
+  }
+}
+
+function isIdentityChangedError(error: unknown): boolean {
+  return error instanceof IdentityChangedError;
 }
 
 export default function CostDashboard({
@@ -182,24 +201,44 @@ function CostDashboardContent({
   runtime,
   shouldUseDemo,
 }: CostDashboardProps & { shouldUseDemo: boolean }) {
-  const cacheRef = useRef<Map<string, DashboardView>>(
-    data
-      ? new Map([[rangeKey(data.run.id, requestFromViewRange(data.range)), data]])
-      : new Map(),
-  );
+  const queryClient = useQueryClient();
+  const identity = useQueryIdentity();
+  // useQueryIdentity() returns a fresh object each render; keep a ref so async
+  // callbacks/effects read the live identity without re-subscribing on identity
+  // reference churn.
+  const identityRef = useRef(identity);
+  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern: async callbacks read live identity without re-subscribing
+  identityRef.current = identity;
+
+  // Cache scope. Demo data always lives under the fixed demo sentinels so it can
+  // never collide with a real user's org data; authenticated Snowflake data is
+  // scoped to the signed-in user and the active organization.
+  const userId = shouldUseDemo ? DEMO_USER_ID : identity.snapshot.userId;
+  const orgId = shouldUseDemo
+    ? DEMO_ORG_ID
+    : runtime?.organizationId ?? identity.snapshot.orgId;
+
+  // Read the access token at call time rather than keying queries on it: Supabase
+  // rotates it roughly hourly, and a rotation must not invalidate cache entries.
+  const accessTokenRef = useLatestRef(runtime?.accessToken ?? null);
+
   const rangeRequestSeqRef = useRef(0);
   const aiSeqRef = useRef(0);
   const runGenerationRef = useRef(0);
+  const demoSeededRef = useRef(false);
   const [activeRange, setActiveRange] = useState<DashboardViewRange | null>(
     data?.range ?? null,
   );
   const [startDate, setStartDate] = useState(data?.range.startDate ?? "");
   const [endDate, setEndDate] = useState(data?.range.endDate ?? "");
   const [runInFlight, setRunInFlight] = useState(false);
+  // A user-started fresh run (or its dismissal of cache discovery) has taken
+  // over, so the initial discovery/default-view queries must never repopulate
+  // the on-screen state again.
+  const [discoveryDismissed, setDiscoveryDismissed] = useState(false);
   // Why the dashboard is currently loading, so the loading indicator can show
   // the right copy: "cache" for the mount cache-load/hydration, "fresh" for a
-  // user-started Run analysis. Null when idle/loaded. Set alongside runInFlight
-  // and cleared when the load settles.
+  // user-started Run analysis. Null when idle/loaded.
   const [loadingReason, setLoadingReason] = useState<"cache" | "fresh" | null>(
     null,
   );
@@ -218,24 +257,106 @@ function CostDashboardContent({
     status: "loading",
   });
   // ISO8601 timestamp when the on-screen view was served from the cache, or null
-  // for fresh/demo runs. Set only by the cached initial-load path; cleared when
-  // the user starts a fresh run. Window switches keep it, since they re-fetch the
-  // same cached run's `/view` (the backend re-derives windows from cached data).
+  // for fresh/demo runs.
   const [cachedAsOf, setCachedAsOf] = useState<string | null>(null);
 
-  const cacheView = useCallback(
-    (
-      runId: string,
-      request: DashboardViewRangeRequest,
-      dashboardView: DashboardView,
-    ) => {
-      cacheRef.current.set(rangeKey(runId, request), dashboardView);
-      cacheRef.current.set(
-        rangeKey(runId, requestFromViewRange(dashboardView.range)),
-        dashboardView,
-      );
+  // Throw from a query function when identity has changed since it started, so
+  // TanStack (which only stores successful results) never writes an in-flight
+  // result under a now-stale scoped key after an identity transition cleared the
+  // cache. Callers capture identity when the queryFn begins and call this right
+  // before returning the result.
+  const throwIfIdentityChanged = useCallback(
+    (captured: QueryIdentitySnapshot) => {
+      if (!identityRef.current.isCurrent(captured)) {
+        throw new IdentityChangedError();
+      }
     },
     [],
+  );
+
+  // Shared identity-guarded view fetch: capture identity, fetch (the demo source
+  // in demo mode, the Snowflake run's view otherwise), then drop the result via
+  // the identity guard if identity changed mid-flight. Used by range fetches,
+  // relative-window prefetch, and the initial default-view read.
+  const fetchViewForQuery = useCallback(
+    async (runId: string, request: DashboardViewRangeRequest) => {
+      const captured = identityRef.current.capture();
+      const view = shouldUseDemo
+        ? await fetchDemoDashboardView(request)
+        : await fetchDashboardView(runId, request, {
+            accessToken: accessTokenRef.current,
+          });
+      throwIfIdentityChanged(captured);
+      return view;
+    },
+    [accessTokenRef, shouldUseDemo, throwIfIdentityChanged],
+  );
+
+  // Demo-view fetch that additionally asserts the backend-emitted run id matches
+  // DEMO_RUN_ID — a cross-layer invariant checked before the identity guard,
+  // exactly as the inline demo queries did.
+  const fetchDemoViewForQuery = useCallback(
+    async (request: DashboardViewRangeRequest) => {
+      const captured = identityRef.current.capture();
+      const view = await fetchDemoDashboardView(request);
+      if (view.run.id !== DEMO_RUN_ID) {
+        throw new Error("Demo dashboard run id does not match DEMO_RUN_ID");
+      }
+      throwIfIdentityChanged(captured);
+      return view;
+    },
+    [throwIfIdentityChanged],
+  );
+
+  // Write a resolved view under both the requested-range key and the
+  // server-resolved-range key, so a later read by either range retrieves it. The
+  // identity guard drops writes that resolved after a sign-out / account / org
+  // switch, so a stale poll can never repopulate old keys. Keys always use the
+  // component-scoped userId/orgId (the DEMO sentinels in demo mode, the signed-in
+  // scope otherwise) so writes land in the SAME scope the reads use — never the
+  // surrounding chrome identity when demo mode renders inside authenticated
+  // chrome.
+  const cacheView = useCallback(
+    (
+      captured: QueryIdentitySnapshot,
+      runId: string,
+      requested: DashboardViewRangeRequest,
+      view: DashboardView,
+    ) => {
+      if (!identityRef.current.isCurrent(captured)) return false;
+      queryClient.setQueryData(
+        queryKeys.dashboard.view(userId, orgId, runId, requested),
+        view,
+      );
+      queryClient.setQueryData(
+        queryKeys.dashboard.view(
+          userId,
+          orgId,
+          runId,
+          requestFromViewRange(view.range),
+        ),
+        view,
+      );
+      return true;
+    },
+    [queryClient, userId, orgId],
+  );
+
+  const readCachedView = useCallback(
+    (runId: string, request: DashboardViewRangeRequest) =>
+      queryClient.getQueryData<DashboardView>(
+        queryKeys.dashboard.view(userId, orgId, runId, request),
+      ),
+    [queryClient, userId, orgId],
+  );
+
+  const fetchViewForRequest = useCallback(
+    (runId: string, request: DashboardViewRangeRequest) =>
+      queryClient.fetchQuery({
+        queryKey: queryKeys.dashboard.view(userId, orgId, runId, request),
+        queryFn: () => fetchViewForQuery(runId, request),
+      }),
+    [queryClient, userId, orgId, fetchViewForQuery],
   );
 
   const applyDashboardView = useCallback((dashboardView: DashboardView) => {
@@ -251,42 +372,64 @@ function CostDashboardContent({
     setEndDate(dashboardView.range.endDate);
   }, []);
 
+  // Prefetch every non-default relative window into the query cache. Already
+  // present keys are skipped so a re-run cannot re-issue window requests that are
+  // already cached (the query client would otherwise refetch them as stale).
   const prefetchRelativeWindows = useCallback(
-    (runId: string, fetchView: ViewFetcher) => {
+    (runId: string) => {
       for (const windowDays of WINDOW_DAYS) {
-        if (windowDays === DEFAULT_VIEW_RANGE.windowDays) {
+        if (windowDays === DEFAULT_WINDOW_DAYS) {
           continue;
         }
-
         const request: DashboardViewRangeRequest = { windowDays };
-        if (cacheRef.current.has(rangeKey(runId, request))) {
+        const key = queryKeys.dashboard.view(userId, orgId, runId, request);
+        if (queryClient.getQueryData(key) !== undefined) {
           continue;
         }
-
-        void fetchView(request)
-          .then((dashboardView) => {
-            cacheView(runId, request, dashboardView);
-          })
-          .catch(() => undefined);
+        void queryClient.prefetchQuery({
+          queryKey: key,
+          queryFn: () => fetchViewForQuery(runId, request),
+        });
       }
     },
-    [cacheView],
+    [queryClient, userId, orgId, fetchViewForQuery],
   );
 
   const loadDemoRun = useCallback(async () => {
+    const captured = identityRef.current.capture();
     setRevealGeneration((value) => value + 1);
     runGenerationRef.current += 1;
+    const runGeneration = runGenerationRef.current;
     setRunInFlight(true);
     setLoadingReason("fresh");
     setSectionReadiness(undefined);
     setLoadState((current) => ({ ...current, status: "loading" }));
     try {
-      const dashboardView = await fetchDemoDashboardView(DEFAULT_VIEW_RANGE);
-      runGenerationRef.current += 1;
-      cacheView(dashboardView.run.id, DEFAULT_VIEW_RANGE, dashboardView);
+      const dashboardView = await queryClient.fetchQuery({
+        queryKey: queryKeys.dashboard.view(
+          userId,
+          orgId,
+          DEMO_RUN_ID,
+          DEFAULT_VIEW_RANGE,
+        ),
+        queryFn: () => fetchDemoViewForQuery(DEFAULT_VIEW_RANGE),
+      });
+      if (
+        runGeneration !== runGenerationRef.current ||
+        !identityRef.current.isCurrent(captured)
+      ) {
+        return;
+      }
+      cacheView(captured, DEMO_RUN_ID, DEFAULT_VIEW_RANGE, dashboardView);
       applyDashboardView(dashboardView);
-      prefetchRelativeWindows(dashboardView.run.id, fetchDemoDashboardView);
+      prefetchRelativeWindows(DEMO_RUN_ID);
     } catch (error) {
+      if (
+        runGeneration !== runGenerationRef.current ||
+        !identityRef.current.isCurrent(captured)
+      ) {
+        return;
+      }
       if (data) {
         setLoadState({ status: data.run.status, view: data });
         setActiveRange(data.range);
@@ -296,10 +439,21 @@ function CostDashboardContent({
       }
       setLoadState({ status: "failed", ...dashboardFailure(error) });
     } finally {
-      setRunInFlight(false);
-      setLoadingReason(null);
+      if (runGeneration === runGenerationRef.current) {
+        setRunInFlight(false);
+        setLoadingReason(null);
+      }
     }
-  }, [applyDashboardView, cacheView, data, prefetchRelativeWindows]);
+  }, [
+    applyDashboardView,
+    cacheView,
+    data,
+    fetchDemoViewForQuery,
+    orgId,
+    prefetchRelativeWindows,
+    queryClient,
+    userId,
+  ]);
 
   const loadSnowflakeRun = useCallback(async () => {
     if (!runtime) {
@@ -310,7 +464,8 @@ function CostDashboardContent({
       return;
     }
 
-    const options = { accessToken: runtime.accessToken };
+    const captured = identityRef.current.capture();
+    const options = { accessToken: accessTokenRef.current };
     setRevealGeneration((value) => value + 1);
     runGenerationRef.current += 1;
     const runGeneration = runGenerationRef.current;
@@ -327,9 +482,20 @@ function CostDashboardContent({
         },
         options,
       );
-      if (runGeneration !== runGenerationRef.current) {
+      if (
+        runGeneration !== runGenerationRef.current ||
+        !identityRef.current.isCurrent(captured)
+      ) {
         return;
       }
+      // A fresh run supersedes the previously discovered cached run: discard its
+      // discovery entry so nothing points at a stale run id.
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.dashboard.cachedRun(
+          captured.userId,
+          captured.orgId,
+        ),
+      });
       const failure = runFailure(run);
       setLoadState((current) => ({
         ...current,
@@ -356,8 +522,12 @@ function CostDashboardContent({
           intervalMs: 1_500,
           maxAttempts: 120,
           onResult: (view) => {
-            // Ignore partial views from a superseded run before any state write.
-            if (runGeneration !== runGenerationRef.current) {
+            // Ignore partial views from a superseded run or a stale identity
+            // (sign-out / account / org switch) before any state write.
+            if (
+              runGeneration !== runGenerationRef.current ||
+              !identityRef.current.isCurrent(captured)
+            ) {
               return;
             }
             // Skip terminal views here — the post-await block applies the final
@@ -378,7 +548,10 @@ function CostDashboardContent({
         },
       );
 
-      if (runGeneration !== runGenerationRef.current) {
+      if (
+        runGeneration !== runGenerationRef.current ||
+        !identityRef.current.isCurrent(captured)
+      ) {
         return;
       }
       if (finalView.run.status !== "completed") {
@@ -387,24 +560,42 @@ function CostDashboardContent({
         // statuses as the source of truth. Crucially, do NOT clear
         // sectionReadiness — that would drop to the timed-stagger reveal and
         // misleadingly mark every section ready for a run that did not finish.
+        // These terminal states never populate discovery.
         setSectionReadiness(finalView.sectionStatuses);
         applyDashboardView(finalView);
         return;
       }
 
+      if (!finalView.run.completed_at) {
+        throw new Error("Completed dashboard run is missing completed_at");
+      }
+
       // Completed: keep the server's section statuses as the source of truth
       // when any section is still unavailable/pending, otherwise drop back to
-      // the standard timed reveal. readinessForView() returns undefined only
-      // when every section is ready, so unavailable sections are never falsely
-      // revealed as ready.
+      // the standard timed reveal.
       setSectionReadiness(readinessForView(finalView));
-      cacheView(finalView.run.id, DEFAULT_VIEW_RANGE, finalView);
+      if (cacheView(captured, finalView.run.id, DEFAULT_VIEW_RANGE, finalView)) {
+        // The completed run is still live and view-addressable, so it is the
+        // correct session discovery target — no snapshot round-trip needed for
+        // navigation within this QueryClient session.
+        queryClient.setQueryData(
+          queryKeys.dashboard.cachedRun(captured.userId, captured.orgId),
+          { run: finalView.run, cachedAsOf: finalView.run.completed_at },
+        );
+      }
       applyDashboardView(finalView);
-      prefetchRelativeWindows(finalView.run.id, (range) =>
-        fetchDashboardView(finalView.run.id, range, options),
-      );
+      prefetchRelativeWindows(finalView.run.id);
     } catch (error) {
-      if (runGeneration !== runGenerationRef.current) {
+      // A superseded run or a stale identity (sign-out / account / org switch)
+      // must never paint a failed dashboard onto the new identity. An org/user
+      // switch does not bump the run generation, so also guard on isCurrent and
+      // treat an identity-change cancellation as benign — the transition owns
+      // the repaint.
+      if (
+        runGeneration !== runGenerationRef.current ||
+        !identityRef.current.isCurrent(captured) ||
+        isIdentityChangedError(error)
+      ) {
         return;
       }
       setLoadState({ status: "failed", ...dashboardFailure(error) });
@@ -414,13 +605,20 @@ function CostDashboardContent({
         setLoadingReason(null);
       }
     }
-  }, [applyDashboardView, cacheView, prefetchRelativeWindows, runtime]);
+  }, [
+    accessTokenRef,
+    applyDashboardView,
+    cacheView,
+    prefetchRelativeWindows,
+    queryClient,
+    runtime,
+  ]);
 
   const startRun = useCallback(async () => {
-    // A fresh run replaces any cached view, so clear the cached indicator before
-    // the run starts and mark the loading reason as a fresh analysis so the
-    // indicator shows "Running fresh analysis…" rather than the cache copy.
+    // A fresh run replaces any cached view, so clear the cached indicator and
+    // dismiss the initial discovery queries before the run starts.
     setCachedAsOf(null);
+    setDiscoveryDismissed(true);
     setLoadingReason("fresh");
     if (shouldUseDemo) {
       await loadDemoRun();
@@ -430,134 +628,211 @@ function CostDashboardContent({
     await loadSnowflakeRun();
   }, [loadDemoRun, loadSnowflakeRun, shouldUseDemo]);
 
+  // Seed the query cache with a caller-supplied `data` view once, under its
+  // actual run id, so subsequent reads/remounts hit the cache.
   useEffect(() => {
-    if (data || !shouldUseDemo) {
+    if (!data || demoSeededRef.current) {
       return;
     }
-    let isActive = true;
+    demoSeededRef.current = true;
+    queryClient.setQueryData(
+      queryKeys.dashboard.view(
+        userId,
+        orgId,
+        data.run.id,
+        requestFromViewRange(data.range),
+      ),
+      data,
+    );
+  }, [data, orgId, queryClient, userId]);
 
-    async function fetchInitialDemoView() {
-      setRevealGeneration((value) => value + 1);
-      setRunInFlight(true);
-      setLoadingReason("fresh");
-      setSectionReadiness(undefined);
-      try {
-        const dashboardView = await fetchDemoDashboardView(DEFAULT_VIEW_RANGE);
-        if (isActive) {
-          cacheView(dashboardView.run.id, DEFAULT_VIEW_RANGE, dashboardView);
-          applyDashboardView(dashboardView);
-          prefetchRelativeWindows(dashboardView.run.id, fetchDemoDashboardView);
-        }
-      } catch (error) {
-        if (isActive) {
-          setLoadState({ status: "failed", ...dashboardFailure(error) });
-        }
-      } finally {
-        if (isActive) {
-          setRunInFlight(false);
-          setLoadingReason(null);
-        }
-      }
+  // Initial demo view: keyed under the demo sentinels + fixed DEMO_RUN_ID so a
+  // remount within staleTime reuses it without another request. The queryFn
+  // asserts the backend-emitted run id matches DEMO_RUN_ID as a cross-layer
+  // invariant.
+  const demoInitial = useQuery({
+    queryKey: queryKeys.dashboard.view(
+      DEMO_USER_ID,
+      DEMO_ORG_ID,
+      DEMO_RUN_ID,
+      DEFAULT_VIEW_RANGE,
+    ),
+    queryFn: () => fetchDemoViewForQuery(DEFAULT_VIEW_RANGE),
+    enabled: shouldUseDemo && !data && !discoveryDismissed,
+  });
+
+  // Initial Snowflake discovery: look for a cached run for the active org. A hit
+  // drives the dependent default-view read below; a 204 miss or transport error
+  // leaves the idle CTA in place (non-blocking).
+  const discovery = useQuery({
+    queryKey: queryKeys.dashboard.cachedRun(userId, orgId),
+    queryFn: async () => {
+      const captured = identityRef.current.capture();
+      const result = await fetchCachedDashboardRun(orgId, {
+        accessToken: accessTokenRef.current,
+      });
+      throwIfIdentityChanged(captured);
+      return result;
+    },
+    enabled: Boolean(runtime && !shouldUseDemo && !data && !discoveryDismissed),
+  });
+  const discoveredRunId = discovery.data?.run.id ?? null;
+
+  const defaultView = useQuery({
+    queryKey: queryKeys.dashboard.view(
+      userId,
+      orgId,
+      discoveredRunId ?? "__no-run__",
+      DEFAULT_VIEW_RANGE,
+    ),
+    queryFn: () => fetchViewForQuery(discoveredRunId!, DEFAULT_VIEW_RANGE),
+    enabled: Boolean(
+      runtime &&
+        !shouldUseDemo &&
+        !data &&
+        !discoveryDismissed &&
+        discoveredRunId,
+    ),
+  });
+
+  // Apply the initial demo view once it resolves. Prefetch + dual-key aliasing
+  // happen here; the network call itself is owned by the query above.
+  const demoData = demoInitial.data;
+  const demoIsError = demoInitial.isError;
+  const demoError = demoInitial.error;
+  useEffect(() => {
+    if (!shouldUseDemo || data || discoveryDismissed) {
+      return;
     }
-
-    void fetchInitialDemoView();
-
-    return () => {
-      isActive = false;
-    };
+    // Guard every state write against a mid-flight identity transition. During a
+    // transition the captured snapshot is uncapturable (transitioning flag), so
+    // isCurrent() is false and we skip the writes — the transition already
+    // clears/repaints the surface. Genuine demo rendering (no transition) keeps
+    // its captured snapshot current, so writes proceed as before. cacheView keys
+    // still use the component-scoped demo sentinels regardless of chrome.
+    const captured = identityRef.current.capture();
+    if (demoData) {
+      if (!identityRef.current.isCurrent(captured)) {
+        return;
+      }
+      cacheView(captured, DEMO_RUN_ID, DEFAULT_VIEW_RANGE, demoData);
+      applyDashboardView(demoData);
+      prefetchRelativeWindows(DEMO_RUN_ID);
+      setRunInFlight(false);
+      setLoadingReason(null);
+      return;
+    }
+    if (demoIsError) {
+      // An identity-change cancellation is benign: the transition owns the
+      // repaint, so never paint a failed dashboard state for it.
+      if (isIdentityChangedError(demoError)) {
+        return;
+      }
+      if (!identityRef.current.isCurrent(captured)) {
+        return;
+      }
+      setLoadState({ status: "failed", ...dashboardFailure(demoError) });
+      setRunInFlight(false);
+      setLoadingReason(null);
+      return;
+    }
+    // Still fetching the initial demo view: show the fresh-analysis skeletons.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- loading UI must react to async query state; not derivable during render
+    setRunInFlight(true);
+    setLoadingReason("fresh");
+    setSectionReadiness(undefined);
   }, [
     applyDashboardView,
     cacheView,
     data,
+    demoData,
+    demoError,
+    demoIsError,
+    discoveryDismissed,
     prefetchRelativeWindows,
     shouldUseDemo,
   ]);
 
-  // On the initial Snowflake mount, look for a cached run before doing anything
-  // else. On a hit, render its `/view` (no Snowflake query) and show the cached
-  // indicator; on a 204 miss, fall back to the existing behavior (no auto-run —
-  // the user starts a run via "Run analysis").
+  // Bump the reveal generation once when the initial demo load begins so the
+  // stagger reveal runs for it.
+  const demoRevealStartedRef = useRef(false);
   useEffect(() => {
-    if (data || shouldUseDemo || !runtime) {
+    if (shouldUseDemo && !data && !demoRevealStartedRef.current) {
+      demoRevealStartedRef.current = true;
+      setRevealGeneration((value) => value + 1);
+    }
+  }, [shouldUseDemo, data]);
+
+  // Apply Snowflake discovery + default-view results. On a hit, paint the cached
+  // view and show the cached indicator; on a 204 miss or transport error, keep
+  // the idle CTA (no auto-run).
+  const discoveryData = discovery.data;
+  const discoveryIsFetching = discovery.isFetching;
+  const discoveryIsError = discovery.isError;
+  const defaultViewData = defaultView.data;
+  const defaultViewIsError = defaultView.isError;
+  const defaultViewError = defaultView.error;
+  useEffect(() => {
+    if (shouldUseDemo || data || !runtime || discoveryDismissed) {
       return;
     }
-    let isActive = true;
-    const options = { accessToken: runtime.accessToken };
-
-    async function loadCachedRun() {
-      // Capture the run-generation token before the cache lookup goes in flight.
-      // `startRun` bumps this token when a user-initiated fresh run begins, so if
-      // the user clicks "Run analysis" while `fetchCachedDashboardRun` (or the
-      // subsequent `/view` fetch) is pending, the captured value no longer
-      // matches and this cached load aborts, touching nothing — the fresh run's
-      // state (and cleared cached indicator) wins. This complements the
-      // `isActive` unmount guard.
-      const runGeneration = runGenerationRef.current;
-      let cached: Awaited<ReturnType<typeof fetchCachedDashboardRun>> = null;
-      try {
-        cached = await fetchCachedDashboardRun(runtime!.organizationId, options);
-      } catch {
-        // A cache-lookup failure must not break the dashboard: leave the idle
-        // state untouched so the user can still start a fresh run.
-        return;
-      }
-      // On a 204 miss (or after unmount) do nothing — preserve the existing
-      // Snowflake idle behavior where the user starts a run via "Run analysis".
-      // Crucially, never touch runInFlight here, or a concurrent user-initiated
-      // run's in-flight state would be cleared. If a fresh run started while the
-      // lookup was pending, abort before any state write.
-      if (!isActive || !cached || runGeneration !== runGenerationRef.current) {
-        return;
-      }
-      const cachedRunId = cached.run.id;
-
-      setRunInFlight(true);
-      setLoadingReason("cache");
-      setSectionReadiness(undefined);
-      setLoadState((current) => ({ ...current, status: "loading" }));
-      try {
-        const dashboardView = await fetchDashboardView(
-          cachedRunId,
-          DEFAULT_VIEW_RANGE,
-          options,
-        );
-        if (!isActive || runGeneration !== runGenerationRef.current) {
-          return;
-        }
-        cacheView(dashboardView.run.id, DEFAULT_VIEW_RANGE, dashboardView);
-        setSectionReadiness(readinessForView(dashboardView));
-        applyDashboardView(dashboardView);
-        setCachedAsOf(cached.cachedAsOf);
-        prefetchRelativeWindows(dashboardView.run.id, (range) =>
-          fetchDashboardView(cachedRunId, range, options),
-        );
-      } catch (error) {
-        if (isActive && runGeneration === runGenerationRef.current) {
-          setLoadState({ status: "failed", ...dashboardFailure(error) });
-        }
-      } finally {
-        if (isActive && runGeneration === runGenerationRef.current) {
-          setRunInFlight(false);
-          setLoadingReason(null);
-        }
-      }
+    if (discoveryIsFetching) {
+      // Still discovering: leave the idle state untouched (no loading UI) so a
+      // concurrent Run analysis stays available and a miss stays idle.
+      return;
     }
-
-    void loadCachedRun();
-
-    return () => {
-      isActive = false;
-    };
+    if (discoveryIsError || discoveryData == null) {
+      // 204 miss or transport error: keep the idle CTA, never auto-run.
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- loading UI must react to async discovery result; not derivable during render
+      setRunInFlight(false);
+      setLoadingReason(null);
+      return;
+    }
+    // Cache hit.
+    if (defaultViewData) {
+      const captured = identityRef.current.capture();
+      const runId = discoveryData.run.id;
+      cacheView(captured, runId, DEFAULT_VIEW_RANGE, defaultViewData);
+      setSectionReadiness(readinessForView(defaultViewData));
+      applyDashboardView(defaultViewData);
+      setCachedAsOf(discoveryData.cachedAsOf);
+      prefetchRelativeWindows(runId);
+      setRunInFlight(false);
+      setLoadingReason(null);
+      return;
+    }
+    if (defaultViewIsError) {
+      // An identity-change cancellation is benign: the identity transition
+      // already clears/repaints the surface, so mapping it through
+      // dashboardFailure would paint a spurious user-visible failed dashboard.
+      // Treat it as a no-op.
+      if (isIdentityChangedError(defaultViewError)) {
+        return;
+      }
+      setLoadState({ status: "failed", ...dashboardFailure(defaultViewError) });
+      setRunInFlight(false);
+      setLoadingReason(null);
+      return;
+    }
+    // Hit, but the default view is still loading: show the cache-load skeletons.
+    setRunInFlight(true);
+    setLoadingReason("cache");
+    setSectionReadiness(undefined);
   }, [
     applyDashboardView,
     cacheView,
     data,
+    defaultViewData,
+    defaultViewError,
+    defaultViewIsError,
+    discoveryData,
+    discoveryDismissed,
+    discoveryIsError,
+    discoveryIsFetching,
     prefetchRelativeWindows,
     runtime,
     shouldUseDemo,
   ]);
-
-  const accessToken = runtime?.accessToken;
 
   const loadRange = useCallback(
     async (request: DashboardViewRangeRequest) => {
@@ -565,20 +840,22 @@ function CostDashboardContent({
       if (!currentView) {
         return;
       }
+      const runId = currentView.run.id;
 
       setRevealGeneration((value) => value + 1);
       setSectionReadiness(undefined);
       rangeRequestSeqRef.current += 1;
       const requestSeq = rangeRequestSeqRef.current;
       const runGeneration = runGenerationRef.current;
-      const cachedView = cacheRef.current.get(rangeKey(currentView.run.id, request));
-      if (cachedView) {
+      const captured = identityRef.current.capture();
+      const cached = readCachedView(runId, request);
+      if (cached) {
         // Reuse the cached view's per-section statuses so a completed Snowflake
         // run with unavailable sections stays protected when switching ranges,
         // rather than falling back to the timed all-ready reveal. Demo views
         // always use the standard reveal.
-        setSectionReadiness(shouldUseDemo ? undefined : readinessForView(cachedView));
-        applyDashboardView(cachedView);
+        setSectionReadiness(shouldUseDemo ? undefined : readinessForView(cached));
+        applyDashboardView(cached);
         return;
       }
 
@@ -591,18 +868,15 @@ function CostDashboardContent({
       }));
 
       try {
-        const dashboardView = shouldUseDemo
-          ? await fetchDemoDashboardView(request)
-          : await fetchDashboardView(currentView.run.id, request, {
-              accessToken,
-            });
-        if (runGeneration !== runGenerationRef.current) {
+        const dashboardView = await fetchViewForRequest(runId, request);
+        if (
+          runGeneration !== runGenerationRef.current ||
+          !identityRef.current.isCurrent(captured)
+        ) {
           return;
         }
-        cacheView(currentView.run.id, request, dashboardView);
+        cacheView(captured, runId, request, dashboardView);
         if (requestSeq === rangeRequestSeqRef.current) {
-          // Preserve non-all-ready section statuses for Snowflake range views so
-          // unavailable sections are not revealed as ready (see readinessForView).
           setSectionReadiness(
             shouldUseDemo ? undefined : readinessForView(dashboardView),
           );
@@ -611,7 +885,8 @@ function CostDashboardContent({
       } catch (error) {
         if (
           runGeneration === runGenerationRef.current &&
-          requestSeq === rangeRequestSeqRef.current
+          requestSeq === rangeRequestSeqRef.current &&
+          identityRef.current.isCurrent(captured)
         ) {
           const failure = dashboardFailure(error);
           setLoadState((current) => ({
@@ -630,8 +905,9 @@ function CostDashboardContent({
     [
       applyDashboardView,
       cacheView,
-      accessToken,
+      fetchViewForRequest,
       loadState.view,
+      readCachedView,
       shouldUseDemo,
     ],
   );
@@ -654,11 +930,6 @@ function CostDashboardContent({
   const reduceMotion = usePrefersReducedMotion();
   const dataReady =
     viewModel != null && loadState.status !== "loading" && !runInFlight;
-  // Pre-run Snowflake idle: real (non-demo) context, no run started yet in this
-  // session (revealGeneration still 0), no view present, nothing in flight, and
-  // the load state is still the initial pre-run "queued". In this state we show
-  // a static empty CTA instead of the animated skeletons so an idle dashboard is
-  // not mistaken for a loading one (issue #40).
   const isIdle =
     !shouldUseDemo &&
     viewModel == null &&
@@ -699,6 +970,24 @@ function CostDashboardContent({
     const { runId, request } = aiSource;
     aiSeqRef.current += 1;
     const seq = aiSeqRef.current;
+    const captured = identityRef.current.capture();
+    const sourceKey = queryKeys.dashboard.source(
+      userId,
+      orgId,
+      runId,
+      AI_SOURCE_ID,
+      request,
+    );
+
+    // A previously resolved source result is view-addressable from its own key:
+    // paint it and skip the trigger/poll entirely.
+    const cachedSource = queryClient.getQueryData<AIDetailViewModel>(sourceKey);
+    if (cachedSource) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setAiDetail({ status: "ready", viewModel: cachedSource });
+      return;
+    }
+
     // Intentional reset: when the active view/range changes, the AI detail must
     // immediately fall back to its loading skeleton before the async refetch
     // resolves. This is derived-state synchronization, not a cascading loop.
@@ -708,12 +997,14 @@ function CostDashboardContent({
     void (async () => {
       try {
         if (shouldUseDemo) {
-          const result = await fetchDemoDashboardSource(
-            "ai_consumption_daily",
-            request,
-          );
-          if (seq !== aiSeqRef.current) return;
+          const result = await fetchDemoDashboardSource(AI_SOURCE_ID, request);
+          // Identity may have switched (sign-out / account / org) while the
+          // request was in flight; check immediately before ANY cache or React
+          // state write so a stale result never repopulates the cache or paints.
+          if (seq !== aiSeqRef.current || !identityRef.current.isCurrent(captured))
+            return;
           if (result.view) {
+            queryClient.setQueryData(sourceKey, result.view);
             setAiDetail({ status: "ready", viewModel: result.view });
           } else {
             setAiDetail({
@@ -724,17 +1015,16 @@ function CostDashboardContent({
           }
           return;
         }
-        await triggerDashboardSource(runId, "ai_consumption_daily", {
-          accessToken,
+        await triggerDashboardSource(runId, AI_SOURCE_ID, {
+          accessToken: accessTokenRef.current,
         });
-        const result = await pollDashboardSource(
-          runId,
-          "ai_consumption_daily",
-          request,
-          { accessToken },
-        );
-        if (seq !== aiSeqRef.current) return;
+        const result = await pollDashboardSource(runId, AI_SOURCE_ID, request, {
+          accessToken: accessTokenRef.current,
+        });
+        if (seq !== aiSeqRef.current || !identityRef.current.isCurrent(captured))
+          return;
         if (result.status === "completed" && result.view) {
+          queryClient.setQueryData(sourceKey, result.view);
           setAiDetail({ status: "ready", viewModel: result.view });
         } else {
           setAiDetail({
@@ -745,12 +1035,12 @@ function CostDashboardContent({
           });
         }
       } catch (error) {
-        if (seq === aiSeqRef.current) {
+        if (seq === aiSeqRef.current && identityRef.current.isCurrent(captured)) {
           setAiDetail({ status: "error", ...dashboardFailure(error) });
         }
       }
     })();
-  }, [aiSource, shouldUseDemo, accessToken]);
+  }, [accessTokenRef, aiSource, orgId, queryClient, shouldUseDemo, userId]);
 
   const isFailedWithoutView =
     !viewModel &&
@@ -780,9 +1070,6 @@ function CostDashboardContent({
       loadState.status === "deleted")
       ? loadState.message ?? "Could not load dashboard data."
       : null;
-  // Copy for the in-flight loading indicator, keyed off why we are loading:
-  // a mount cache-load/hydration vs a user-started fresh analysis. Null when the
-  // reason is unset (no indicator).
   const loadingMessage =
     loadingReason === "cache"
       ? "Loading cached view…"

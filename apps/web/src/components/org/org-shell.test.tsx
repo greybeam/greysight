@@ -1,10 +1,17 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { fireEvent } from "@testing-library/react";
 import { useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import OrgShell from "./org-shell";
-import { useAccountChrome } from "../../lib/account-context";
+import { useAccountChrome, type AccountChrome } from "../../lib/account-context";
+import {
+  guardedSetQueryData,
+  useQueryIdentity,
+  type QueryIdentityValue,
+} from "../../lib/query-identity";
+import { queryKeys } from "../../lib/query-keys";
 import type { MembershipOrganization } from "../../lib/session-memberships";
 import type {
   AuthSession,
@@ -53,7 +60,7 @@ function authClient(
 
 const session: AuthSession = {
   accessToken: "access-token",
-  user: { email: "owner@example.com", appMetadata: null },
+  user: { id: "user-a", email: "owner@example.com", appMetadata: null },
 };
 
 afterEach(() => {
@@ -277,7 +284,7 @@ describe("OrgShell", () => {
     // Sign back in with token B before A resolves.
     onAuthStateChange?.({
       accessToken: "token-b",
-      user: { email: "owner@example.com", appMetadata: null },
+      user: { id: "user-a", email: "owner@example.com", appMetadata: null },
     });
 
     await screen.findByText("dashboard");
@@ -300,6 +307,142 @@ describe("OrgShell", () => {
       name: "Alpha",
       accountLocator: null,
     });
+  });
+
+  it("discards a previous-user membership result still in flight across a user transition", async () => {
+    // Finding: transitionUser must synchronously invalidate latestTokenRef.
+    // Here user-a's membership fetch is left pending, then the user transitions
+    // (the new session carries the SAME access token, so the access-token effect
+    // does not re-run and therefore never updates latestTokenRef on its own). If
+    // transitionUser does not invalidate the ref, user-a's late-resolving result
+    // passes the token guard and pairs the NEW user with user-a's org.
+    let onAuthStateChange: SessionChangeCallback | undefined;
+    const client = authClient(session, {
+      onAuthStateChange: vi.fn((callback: SessionChangeCallback) => {
+        onAuthStateChange = callback;
+        return { unsubscribe: vi.fn() };
+      }),
+    });
+
+    let resolveA: ((orgs: MembershipOrganization[]) => void) | undefined;
+    const fetchMemberships = vi.fn(
+      () =>
+        new Promise<MembershipOrganization[]>((resolve) => {
+          resolveA = resolve;
+        }),
+    );
+
+    const onOrganizationChange = vi.fn();
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell
+        authRequired
+        authClient={client}
+        fetchMemberships={fetchMemberships}
+        onOrganizationChange={onOrganizationChange}
+      >
+        <IdentityProbe grab={(v) => (latest = v)} />
+      </OrgShell>,
+    );
+
+    await waitFor(() => expect(resolveA).toBeDefined());
+
+    // Transition to a new user that reuses the same access token, so the
+    // access-token effect will not re-run to supersede the token ref.
+    const sameTokenNewUser: AuthSession = {
+      accessToken: "access-token",
+      user: { id: "user-b", email: "b@example.com", appMetadata: null },
+    };
+
+    // Let user-a's in-flight request resolve after the transition.
+    await act(async () => {
+      onAuthStateChange?.(sameTokenNewUser);
+      resolveA?.([
+        { id: "org-a", name: "Alpha", role: "member", accountLocator: null },
+      ]);
+    });
+
+    // The stale user-a result must be discarded: the new user is never paired
+    // with user-a's org, and the identity snapshot never settles on org-a.
+    expect(onOrganizationChange).not.toHaveBeenCalledWith(
+      expect.objectContaining({ id: "org-a" }),
+    );
+    expect(latest?.identity.snapshot.orgId).not.toBe("org-a");
+  });
+
+  it("reloads memberships after a user transition that reuses the same access token", async () => {
+    // Finding: when user B's session carries the SAME access token as user A,
+    // the access-token effect never re-runs (the token string is unchanged), so
+    // latestTokenRef stays null (invalidated by transitionUser) and B's
+    // membership load never starts — B is stuck transitioning. A user
+    // transition must always trigger a fresh membership load for the new
+    // session, while the stale-result guard still discards A's late result.
+    let onAuthStateChange: SessionChangeCallback | undefined;
+    const client = authClient(session, {
+      onAuthStateChange: vi.fn((callback: SessionChangeCallback) => {
+        onAuthStateChange = callback;
+        return { unsubscribe: vi.fn() };
+      }),
+    });
+
+    let resolveA: ((orgs: MembershipOrganization[]) => void) | undefined;
+    const fetchMemberships = vi.fn((_token: string, ...rest: unknown[]) => {
+      void rest;
+      // Distinguish the two calls by invocation order: the first is user-a's
+      // (left pending), the second is user-b's (resolves immediately). Both
+      // carry the same access token, so the token argument can't disambiguate.
+      if (fetchMemberships.mock.calls.length === 1) {
+        return new Promise<MembershipOrganization[]>((resolve) => {
+          resolveA = resolve;
+        });
+      }
+      return Promise.resolve<MembershipOrganization[]>([
+        { id: "org-b", name: "Bravo", role: "member", accountLocator: null },
+      ]);
+    });
+
+    const onOrganizationChange = vi.fn();
+    render(
+      <OrgShell
+        authRequired
+        authClient={client}
+        fetchMemberships={fetchMemberships}
+        onOrganizationChange={onOrganizationChange}
+      >
+        <p>dashboard</p>
+      </OrgShell>,
+    );
+
+    await waitFor(() => expect(resolveA).toBeDefined());
+
+    // Transition to user-b reusing the SAME access token.
+    const sameTokenNewUser: AuthSession = {
+      accessToken: "access-token",
+      user: { id: "user-b", email: "b@example.com", appMetadata: null },
+    };
+    act(() => onAuthStateChange?.(sameTokenNewUser));
+
+    // B's membership request must be issued and B's org must render.
+    await screen.findByText("dashboard");
+    await waitFor(() =>
+      expect(onOrganizationChange).toHaveBeenCalledWith({
+        id: "org-b",
+        name: "Bravo",
+        role: "member",
+        accountLocator: null,
+      }),
+    );
+
+    // A's stale in-flight result resolves last and must be discarded.
+    await act(async () => {
+      resolveA?.([
+        { id: "org-a", name: "Alpha", role: "member", accountLocator: null },
+      ]);
+    });
+
+    expect(onOrganizationChange).not.toHaveBeenCalledWith(
+      expect.objectContaining({ id: "org-a" }),
+    );
   });
 
   it("does not refetch when an inline onOrganizationChange changes identity", async () => {
@@ -532,5 +675,507 @@ describe("OrgShell", () => {
     // Give any (incorrect) close handler a chance to run.
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  // ---- Identity / cache-lifecycle probes ------------------------------------
+
+  type ProbeGrab = {
+    queryClient: QueryClient;
+    identity: QueryIdentityValue;
+    account: AccountChrome | null;
+  };
+
+  function IdentityProbe({ grab }: { grab: (v: ProbeGrab) => void }) {
+    const queryClient = useQueryClient();
+    const identity = useQueryIdentity();
+    const account = useAccountChrome();
+    grab({ queryClient, identity, account });
+    return <p data-testid="user-id">{account?.userId ?? "none"}</p>;
+  }
+
+  function withCapturedAuthCallback() {
+    let onAuthStateChange: SessionChangeCallback | undefined;
+    const client = authClient(session, {
+      onAuthStateChange: vi.fn((callback: SessionChangeCallback) => {
+        onAuthStateChange = callback;
+        return { unsubscribe: vi.fn() };
+      }),
+    });
+    return {
+      client,
+      trigger: (next: AuthSession | null) => onAuthStateChange?.(next),
+    };
+  }
+
+  const userB: AuthSession = {
+    accessToken: "token-b",
+    user: { id: "user-b", email: "b@example.com", appMetadata: null },
+  };
+
+  it("clears the cache and preserves identity when the user changes via the auth callback", async () => {
+    const { client, trigger } = withCapturedAuthCallback();
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell
+        authRequired
+        authClient={client}
+        fetchMemberships={vi
+          .fn()
+          .mockResolvedValue([{ id: "org-1", name: "Acme", accountLocator: null }])}
+      >
+        <IdentityProbe grab={(v) => (latest = v)} />
+      </OrgShell>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("user-id")).toHaveTextContent("user-a"),
+    );
+    const queryClient = latest!.queryClient;
+    // Seed data belonging to user A's org.
+    queryClient.setQueryData(
+      queryKeys.dashboard.scope("user-a", "org-1"),
+      { stale: true },
+    );
+    expect(queryClient.getQueryCache().getAll().length).toBeGreaterThan(0);
+
+    act(() => trigger(userB));
+
+    await waitFor(() =>
+      expect(queryClient.getQueryCache().getAll()).toHaveLength(0),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("user-id")).toHaveTextContent("user-b"),
+    );
+  });
+
+  it("drops a deferred write captured before the user changes", async () => {
+    const { client, trigger } = withCapturedAuthCallback();
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell
+        authRequired
+        authClient={client}
+        fetchMemberships={vi
+          .fn()
+          .mockResolvedValue([{ id: "org-1", name: "Acme", accountLocator: null }])}
+      >
+        <IdentityProbe grab={(v) => (latest = v)} />
+      </OrgShell>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("user-id")).toHaveTextContent("user-a"),
+    );
+    // Capture user A's identity as an in-flight poll would.
+    const captured = latest!.identity.capture();
+    const staleKey = queryKeys.dashboard.scope("user-a", "org-1");
+
+    // The user transitions to B before the deferred work resolves.
+    act(() => trigger(userB));
+    await waitFor(() =>
+      expect(screen.getByTestId("user-id")).toHaveTextContent("user-b"),
+    );
+
+    const wrote = guardedSetQueryData(
+      latest!.queryClient,
+      latest!.identity.ref,
+      captured,
+      staleKey,
+      { stale: true },
+    );
+
+    expect(wrote).toBe(false);
+    expect(latest!.queryClient.getQueryData(staleKey)).toBeUndefined();
+  });
+
+  it("drops a deferred write when the org changes even though the epoch is unchanged", async () => {
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell
+        authRequired
+        authClient={authClient(session)}
+        fetchMemberships={vi.fn().mockResolvedValue([
+          { id: "org-1", name: "Alpha", accountLocator: null },
+          { id: "org-2", name: "Bravo", accountLocator: null },
+        ])}
+      >
+        <IdentityProbe grab={(v) => (latest = v)} />
+      </OrgShell>,
+    );
+
+    await waitFor(() =>
+      expect(latest?.identity.snapshot.orgId).toBe("org-1"),
+    );
+    const capturedEpoch = latest!.identity.snapshot.epoch;
+    const captured = latest!.identity.capture();
+    const staleKey = queryKeys.dashboard.scope("user-a", "org-1");
+
+    // Switch the active org without any re-auth: the epoch stays fixed.
+    act(() => latest!.account?.setActiveOrganization("org-2"));
+    await waitFor(() =>
+      expect(latest?.identity.snapshot.orgId).toBe("org-2"),
+    );
+    expect(latest!.identity.snapshot.epoch).toBe(capturedEpoch);
+
+    const wrote = guardedSetQueryData(
+      latest!.queryClient,
+      latest!.identity.ref,
+      captured,
+      staleKey,
+      { stale: true },
+    );
+
+    expect(wrote).toBe(false);
+    expect(latest!.queryClient.getQueryData(staleKey)).toBeUndefined();
+  });
+
+  it("removeOrganizationQueries removes only the supplied org's entries", async () => {
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell
+        authRequired
+        authClient={authClient(session)}
+        fetchMemberships={vi.fn().mockResolvedValue([
+          { id: "org-1", name: "Alpha", accountLocator: null },
+          { id: "org-2", name: "Bravo", accountLocator: null },
+        ])}
+      >
+        <IdentityProbe grab={(v) => (latest = v)} />
+      </OrgShell>,
+    );
+
+    await waitFor(() =>
+      expect(latest?.identity.snapshot.orgId).toBe("org-1"),
+    );
+    const queryClient = latest!.queryClient;
+    const orgOneKey = queryKeys.dashboard.scope("user-a", "org-1");
+    const orgTwoKey = queryKeys.dashboard.scope("user-a", "org-2");
+    queryClient.setQueryData(orgOneKey, { org: 1 });
+    queryClient.setQueryData(orgTwoKey, { org: 2 });
+
+    act(() => latest!.identity.removeOrganizationQueries("org-1"));
+
+    expect(queryClient.getQueryData(orgOneKey)).toBeUndefined();
+    expect(queryClient.getQueryData(orgTwoKey)).toEqual({ org: 2 });
+  });
+
+  it("drops a deferred write attempted synchronously after a user transition, before render commits", async () => {
+    const { client, trigger } = withCapturedAuthCallback();
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell
+        authRequired
+        authClient={client}
+        fetchMemberships={vi
+          .fn()
+          .mockResolvedValue([{ id: "org-1", name: "Acme", accountLocator: null }])}
+      >
+        <IdentityProbe grab={(v) => (latest = v)} />
+      </OrgShell>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("user-id")).toHaveTextContent("user-a"),
+    );
+    const captured = latest!.identity.capture();
+    const staleKey = queryKeys.dashboard.scope("user-a", "org-1");
+
+    // Fire the transition WITHOUT act(): React has cleared the cache and bumped
+    // the epoch, but has not yet re-rendered/committed. A guarded write landing
+    // in this window must still be dropped because identityRef was updated
+    // synchronously inside transitionUser.
+    trigger(userB);
+    const wrote = guardedSetQueryData(
+      latest!.queryClient,
+      latest!.identity.ref,
+      captured,
+      staleKey,
+      { stale: true },
+    );
+
+    expect(wrote).toBe(false);
+    expect(latest!.queryClient.getQueryData(staleKey)).toBeUndefined();
+
+    // Let the scheduled render/effects settle to avoid act warnings.
+    await act(async () => {});
+  });
+
+  it("does not expose the previous user's identity in a capture taken after a transition, before render commits", async () => {
+    const { client, trigger } = withCapturedAuthCallback();
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell
+        authRequired
+        authClient={client}
+        fetchMemberships={vi
+          .fn()
+          .mockResolvedValue([{ id: "org-1", name: "Acme", accountLocator: null }])}
+      >
+        <IdentityProbe grab={(v) => (latest = v)} />
+      </OrgShell>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("user-id")).toHaveTextContent("user-a"),
+    );
+
+    // Fire the transition WITHOUT act(): the cache is cleared and the epoch is
+    // bumped, but React has not yet re-rendered/committed. A capture taken in
+    // this window must reflect the NEW user, never the prior user-a paired with
+    // the freshly-bumped epoch (the stale-userId + new-epoch combination the
+    // whole-snapshot reset prevents).
+    trigger(userB);
+    const captured = latest!.identity.capture();
+    expect(captured.userId).not.toBe("user-a");
+
+    // Once render commits to the new identity, a guarded write scoped to the
+    // OLD user must be dropped and never land in the just-cleared cache.
+    await act(async () => {});
+    const staleKey = queryKeys.dashboard.scope("user-a", "org-1");
+    const wrote = guardedSetQueryData(
+      latest!.queryClient,
+      latest!.identity.ref,
+      captured,
+      staleKey,
+      { stale: true },
+    );
+
+    expect(wrote).toBe(false);
+    expect(latest!.queryClient.getQueryData(staleKey)).toBeUndefined();
+  });
+
+  it("drops a deferred write attempted synchronously after an org switch, before render commits", async () => {
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell
+        authRequired
+        authClient={authClient(session)}
+        fetchMemberships={vi.fn().mockResolvedValue([
+          { id: "org-1", name: "Alpha", accountLocator: null },
+          { id: "org-2", name: "Bravo", accountLocator: null },
+        ])}
+      >
+        <IdentityProbe grab={(v) => (latest = v)} />
+      </OrgShell>,
+    );
+
+    await waitFor(() => expect(latest?.identity.snapshot.orgId).toBe("org-1"));
+    const captured = latest!.identity.capture();
+    const staleKey = queryKeys.dashboard.scope("user-a", "org-1");
+
+    // Switch org WITHOUT act(): activeOrgId state update is scheduled but not
+    // yet committed. The guarded write for the old org must still be dropped
+    // because identityRef.current.orgId was updated synchronously.
+    latest!.account?.setActiveOrganization("org-2");
+    const wrote = guardedSetQueryData(
+      latest!.queryClient,
+      latest!.identity.ref,
+      captured,
+      staleKey,
+      { stale: true },
+    );
+
+    expect(wrote).toBe(false);
+    expect(latest!.queryClient.getQueryData(staleKey)).toBeUndefined();
+
+    await act(async () => {});
+  });
+
+  it("ignores a late initial getSession result after an auth-state callback fired", async () => {
+    let resolveInitial:
+      | ((result: { session: AuthSession | null; error: null }) => void)
+      | undefined;
+    let onAuthStateChange: SessionChangeCallback | undefined;
+    const client = authClient(session, {
+      getSession: vi.fn(
+        () =>
+          new Promise<{ session: AuthSession | null; error: null }>(
+            (resolve) => {
+              resolveInitial = resolve;
+            },
+          ),
+      ),
+      onAuthStateChange: vi.fn((callback: SessionChangeCallback) => {
+        onAuthStateChange = callback;
+        return { unsubscribe: vi.fn() };
+      }),
+    });
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell
+        authRequired
+        authClient={client}
+        fetchMemberships={vi
+          .fn()
+          .mockResolvedValue([{ id: "org-1", name: "Acme", accountLocator: null }])}
+      >
+        <IdentityProbe grab={(v) => (latest = v)} />
+      </OrgShell>,
+    );
+
+    // Auth-state callback delivers user B while the initial getSession is
+    // still pending.
+    await waitFor(() => expect(onAuthStateChange).toBeDefined());
+    act(() => onAuthStateChange?.(userB));
+    await waitFor(() =>
+      expect(screen.getByTestId("user-id")).toHaveTextContent("user-b"),
+    );
+
+    const queryClient = latest!.queryClient;
+    const key = queryKeys.dashboard.scope("user-b", "org-1");
+    queryClient.setQueryData(key, { keep: true });
+
+    // The stale initial getSession resolves last with user A. It must be
+    // ignored: no transition back to A, no second cache clear.
+    await act(async () => {
+      resolveInitial?.({ session, error: null });
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId("user-id")).toHaveTextContent("user-b");
+    expect(queryClient.getQueryData(key)).toEqual({ keep: true });
+  });
+
+  it("drops a write captured pre-render under the captured snapshot's own demo-org key after a user transition", async () => {
+    // Finding 1: during a signed-in user->user transition the live ref is
+    // synchronously {newUser, DEMO_ORG_ID, newEpoch}. A capture in the
+    // pre-render window returns exactly that; if it passed the guard, a guarded
+    // write under scope(newUser, demo-org) would land a demo-scoped cache entry
+    // for a real user. The transitioning marker must make it uncapturable.
+    const { client, trigger } = withCapturedAuthCallback();
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell
+        authRequired
+        authClient={client}
+        fetchMemberships={vi
+          .fn()
+          .mockResolvedValue([{ id: "org-1", name: "Acme", accountLocator: null }])}
+      >
+        <IdentityProbe grab={(v) => (latest = v)} />
+      </OrgShell>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("user-id")).toHaveTextContent("user-a"),
+    );
+
+    // Transition WITHOUT act(): cache cleared + epoch bumped, no render commit.
+    trigger(userB);
+    const captured = latest!.identity.capture();
+    // The captured snapshot's OWN key (its userId + orgId) — the exact path
+    // finding 1 warns about.
+    const ownKey = queryKeys.dashboard.scope(captured.userId, captured.orgId);
+
+    const wrote = guardedSetQueryData(
+      latest!.queryClient,
+      latest!.identity.ref,
+      captured,
+      ownKey,
+      { stale: true },
+    );
+
+    expect(wrote).toBe(false);
+    expect(latest!.queryClient.getQueryData(ownKey)).toBeUndefined();
+
+    await act(async () => {});
+  });
+
+  it("never pairs the new user with the previous user's org before the new memberships load", async () => {
+    // Finding 3: the render-time refresh derives orgId from activeOrganization,
+    // which is computed from the PREVIOUS user's membership state. Without a
+    // reset, the first new-user render could pair {newUser, oldOrg} and let a
+    // guarded write for that combination land. transitionUser must reset stale
+    // membership and keep the snapshot transitioning until the new user's
+    // memberships resolve.
+    const { client, trigger } = withCapturedAuthCallback();
+    let resolveB: ((orgs: MembershipOrganization[]) => void) | undefined;
+    const fetchMemberships = vi.fn((token: string) => {
+      if (token === "access-token") {
+        return Promise.resolve<MembershipOrganization[]>([
+          { id: "org-1", name: "Acme", role: "member", accountLocator: null },
+        ]);
+      }
+      // user-b's memberships stay pending, holding the transition window open.
+      return new Promise<MembershipOrganization[]>((resolve) => {
+        resolveB = resolve;
+      });
+    });
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell authRequired authClient={client} fetchMemberships={fetchMemberships}>
+        <IdentityProbe grab={(v) => (latest = v)} />
+      </OrgShell>,
+    );
+
+    await waitFor(() => expect(latest?.identity.snapshot.orgId).toBe("org-1"));
+    const queryClient = latest!.queryClient;
+    const ref = latest!.identity.ref;
+
+    // Transition to user-b; its memberships never resolve during this window.
+    await act(async () => {
+      trigger(userB);
+    });
+
+    // A capture that would pair the new user with the OLD org must not pass the
+    // guard, and the live ref must not have settled to {user-b, org-1}.
+    const staleKey = queryKeys.dashboard.scope("user-b", "org-1");
+    const fabricated = {
+      userId: "user-b",
+      orgId: "org-1",
+      epoch: ref.current.epoch,
+    };
+    const wrote = guardedSetQueryData(
+      queryClient,
+      ref,
+      fabricated,
+      staleKey,
+      { stale: true },
+    );
+
+    expect(wrote).toBe(false);
+    expect(queryClient.getQueryData(staleKey)).toBeUndefined();
+    expect(ref.current.transitioning).toBe(true);
+
+    // Cleanup: let user-b's memberships resolve so pending effects settle.
+    resolveB?.([
+      { id: "org-9", name: "Nine", role: "member", accountLocator: null },
+    ]);
+    await act(async () => {});
+  });
+
+  it("does not clear the cache when a sign-out fails", async () => {
+    const signOut = vi
+      .fn()
+      .mockResolvedValue({ error: { message: "Sign out failed" } });
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell
+        authRequired
+        authClient={authClient(session, { signOut })}
+        fetchMemberships={vi
+          .fn()
+          .mockResolvedValue([{ id: "org-1", name: "Acme", accountLocator: null }])}
+      >
+        <IdentityProbe grab={(v) => (latest = v)} />
+        <AccountChromeProbe />
+      </OrgShell>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("user-id")).toHaveTextContent("user-a"),
+    );
+    const queryClient = latest!.queryClient;
+    queryClient.setQueryData(queryKeys.dashboard.scope("user-a", "org-1"), {
+      keep: true,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(signOut).toHaveBeenCalled());
+    await screen.findByText(/couldn’t sign you out/i);
+
+    // Failed sign-out must not clear the cache or the identity.
+    expect(queryClient.getQueryCache().getAll().length).toBeGreaterThan(0);
+    expect(screen.getByTestId("user-id")).toHaveTextContent("user-a");
   });
 });

@@ -1,3 +1,4 @@
+import { QueryClient } from "@tanstack/react-query";
 import {
   cleanup,
   fireEvent,
@@ -9,8 +10,31 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AccountChromeProvider } from "../../lib/account-context";
 import type { WarehouseRow } from "../../lib/automated-savings-api";
+import { queryKeys } from "../../lib/query-keys";
+import {
+  createTestQueryClient,
+  QueryTestProvider,
+} from "../../lib/query-test-utils";
 import { DashboardApiError } from "../../lib/dashboard-errors";
 import { AutomatedSavingsShell } from "./automated-savings-shell";
+
+// A client that never expires or garbage-collects entries, so remounts and
+// org switches exercise the shared cache rather than silently refetching.
+function persistentClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, gcTime: Infinity, staleTime: Infinity },
+    },
+  });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
 
 const fetchStatusMock = vi.fn();
 const fetchWarehousesMock = vi.fn();
@@ -45,6 +69,8 @@ vi.mock("../../lib/automated-savings-api", async () => {
 
 function shellAccountValue(activeOrganizationId: string) {
   return {
+    userId: "test-user",
+    identityEpoch: 0,
     email: "u@acme.com",
     onSignOut: () => {},
     signOutError: null,
@@ -59,18 +85,21 @@ function shellAccountValue(activeOrganizationId: string) {
   };
 }
 
-function shellForOrganization(activeOrganizationId: string) {
+function shellForOrganization(
+  activeOrganizationId: string,
+  client: QueryClient,
+) {
   return (
-    <AccountChromeProvider
-      value={shellAccountValue(activeOrganizationId)}
-    >
-      <AutomatedSavingsShell />
-    </AccountChromeProvider>
+    <QueryTestProvider client={client}>
+      <AccountChromeProvider value={shellAccountValue(activeOrganizationId)}>
+        <AutomatedSavingsShell />
+      </AccountChromeProvider>
+    </QueryTestProvider>
   );
 }
 
-function renderShell() {
-  return render(shellForOrganization("org-1"));
+function renderShell(client: QueryClient = createTestQueryClient()) {
+  return render(shellForOrganization("org-1", client));
 }
 
 const baseRow: WarehouseRow = {
@@ -252,7 +281,7 @@ describe("AutomatedSavingsShell", () => {
     });
     fetchWarehousesMock
       .mockResolvedValueOnce([{ ...baseRow, enabled: false }])
-      .mockResolvedValueOnce([{ ...baseRow, enabled: true }]);
+      .mockResolvedValue([{ ...baseRow, enabled: true }]);
     toggleWarehouseMock.mockResolvedValue(undefined);
 
     renderShell();
@@ -313,13 +342,23 @@ describe("AutomatedSavingsShell", () => {
     // The server's global_enabled is false even though the (only) row happens
     // to be enabled — the switch must track status.globalEnabled, not the
     // per-row state, and reflect it on initial render.
-    fetchStatusMock.mockResolvedValue({
-      agreed: true,
-      globalEnabled: false,
-      grantPresent: true,
-      grantCheckedAt: null,
-      roleName: null,
-    });
+    // Initial status is global-off; after the switch persists, the shell
+    // invalidates the scope and the authoritative refetch returns global-on.
+    fetchStatusMock
+      .mockResolvedValueOnce({
+        agreed: true,
+        globalEnabled: false,
+        grantPresent: true,
+        grantCheckedAt: null,
+        roleName: null,
+      })
+      .mockResolvedValue({
+        agreed: true,
+        globalEnabled: true,
+        grantPresent: true,
+        grantCheckedAt: null,
+        roleName: null,
+      });
     fetchWarehousesMock.mockResolvedValue([{ ...baseRow, enabled: true }]);
     setGlobalSwitchMock.mockResolvedValue(undefined);
 
@@ -348,6 +387,66 @@ describe("AutomatedSavingsShell", () => {
     const rowSwitchAfter = await screen.findByRole("switch", { name: "WH1" });
     expect(rowSwitchAfter).toBeChecked();
     expect(toggleWarehouseMock).not.toHaveBeenCalled();
+  });
+
+  it("invalidates status and warehouses after the global switch persists", async () => {
+    fetchStatusMock.mockResolvedValue({
+      agreed: true,
+      globalEnabled: false,
+      grantPresent: true,
+      grantCheckedAt: null,
+      roleName: null,
+    });
+    fetchWarehousesMock.mockResolvedValue([{ ...baseRow, enabled: true }]);
+    setGlobalSwitchMock.mockResolvedValue(undefined);
+
+    renderShell();
+
+    const globalSwitch = await screen.findByRole("switch", {
+      name: /enabled for all warehouses/i,
+    });
+    await waitFor(() => expect(fetchStatusMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(fetchWarehousesMock).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(globalSwitch);
+
+    // Both scoped reads refetch from the server rather than trusting an
+    // optimistic local patch of global_enabled.
+    await waitFor(() => expect(setGlobalSwitchMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(fetchStatusMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(fetchWarehousesMock).toHaveBeenCalledTimes(2));
+  });
+
+  it("invalidates warehouses and status after disabling a warehouse", async () => {
+    fetchStatusMock.mockResolvedValue({
+      agreed: true,
+      globalEnabled: true,
+      grantPresent: true,
+      grantCheckedAt: null,
+      roleName: null,
+    });
+    fetchWarehousesMock.mockResolvedValue([baseRow]);
+    toggleWarehouseMock.mockResolvedValue(undefined);
+
+    renderShell();
+
+    const rowSwitch = await screen.findByRole("switch", { name: "WH1" });
+    await waitFor(() => expect(fetchWarehousesMock).toHaveBeenCalledTimes(1));
+    const statusCallsBefore = fetchStatusMock.mock.calls.length;
+
+    fireEvent.click(rowSwitch);
+
+    await waitFor(() =>
+      expect(toggleWarehouseMock).toHaveBeenCalledWith("org-1", "WH1", false, {
+        accessToken: "tok",
+      }),
+    );
+    await waitFor(() => expect(fetchWarehousesMock).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(fetchStatusMock.mock.calls.length).toBeGreaterThan(
+        statusCallsBefore,
+      ),
+    );
   });
 
   it("reports a global-switch failure without changing authoritative state", async () => {
@@ -488,10 +587,11 @@ describe("AutomatedSavingsShell", () => {
       return new Promise((resolve) => { resolveOrgTwoStatus = resolve; });
     });
     fetchWarehousesMock.mockResolvedValue([{ ...baseRow, name: "WH_ORG_2" }]);
-    const view = renderShell();
+    const client = createTestQueryClient();
+    const view = render(shellForOrganization("org-1", client));
     fireEvent.click(await screen.findByRole("button", { name: /agree/i }));
 
-    view.rerender(shellForOrganization("org-2"));
+    view.rerender(shellForOrganization("org-2", client));
     await waitFor(() =>
       expect(fetchStatusMock).toHaveBeenCalledWith("org-2", { accessToken: "tok" }),
     );
@@ -508,5 +608,317 @@ describe("AutomatedSavingsShell", () => {
       .toBeInTheDocument();
     expect(fetchStatusMock.mock.calls.filter(([orgId]) => orgId === "org-1"))
       .toHaveLength(1);
+  });
+
+  it("drops the agreement completion when the org switches mid-request", async () => {
+    // Identity is captured when agree STARTS (org-1). Switching to org-2 while
+    // the request is in flight must drop the entire completion so the new org's
+    // scope is never invalidated/refetched off the stale agreement.
+    let resolveAgreement: (() => void) | undefined;
+    agreeMock.mockImplementation(
+      () => new Promise<void>((resolve) => { resolveAgreement = resolve; }),
+    );
+    fetchStatusMock.mockImplementation((orgId: string) =>
+      orgId === "org-1"
+        ? Promise.resolve({
+            agreed: false,
+            globalEnabled: false,
+            grantPresent: false,
+            grantCheckedAt: null,
+            roleName: null,
+          })
+        : Promise.resolve({
+            agreed: true,
+            globalEnabled: true,
+            grantPresent: true,
+            grantCheckedAt: null,
+            roleName: null,
+          }),
+    );
+    fetchWarehousesMock.mockResolvedValue([{ ...baseRow, name: "WH_ORG_2" }]);
+    const client = createTestQueryClient();
+
+    const view = render(shellForOrganization("org-1", client));
+    fireEvent.click(await screen.findByRole("button", { name: /agree/i }));
+
+    view.rerender(shellForOrganization("org-2", client));
+    expect(await screen.findByRole("switch", { name: "WH_ORG_2" }))
+      .toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        fetchStatusMock.mock.calls.filter(([orgId]) => orgId === "org-2"),
+      ).toHaveLength(1),
+    );
+
+    // The stale agreement resolves against org-1 — org-2's scope must not be
+    // invalidated, so its status and warehouses are each still fetched once.
+    resolveAgreement?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(
+      fetchStatusMock.mock.calls.filter(([orgId]) => orgId === "org-2"),
+    ).toHaveLength(1);
+    expect(
+      fetchWarehousesMock.mock.calls.filter(([orgId]) => orgId === "org-2"),
+    ).toHaveLength(1);
+  });
+
+  it("re-enables the opt-in gate after a stale agreement completes so the new org can agree", async () => {
+    // Identity is captured when agree STARTS (org-1). Switching to org-2 — which
+    // is ALSO unagreed, so the gate stays mounted — while the request is in
+    // flight must not leave the gate stuck "submitting" forever once org-1's
+    // stale agreement resolves; the new org must be able to agree on its own.
+    let resolveOrgOneAgree: (() => void) | undefined;
+    agreeMock.mockImplementation((orgId: string) =>
+      orgId === "org-1"
+        ? new Promise<void>((resolve) => {
+            resolveOrgOneAgree = resolve;
+          })
+        : Promise.resolve(),
+    );
+    fetchStatusMock.mockResolvedValue({
+      agreed: false,
+      globalEnabled: false,
+      grantPresent: false,
+      grantCheckedAt: null,
+      roleName: null,
+    });
+    fetchWarehousesMock.mockResolvedValue([baseRow]);
+    const client = createTestQueryClient();
+    // Pre-seed org-2's (also unagreed) status so switching to it paints the gate
+    // immediately — no intervening loading panel that would unmount the gate and
+    // mask the stuck-"submitting" bug. The gate stays mounted across the switch.
+    const unagreed = {
+      agreed: false,
+      globalEnabled: false,
+      grantPresent: false,
+      grantCheckedAt: null,
+      roleName: null,
+    };
+    client.setQueryData(
+      queryKeys.autoSavings.status("test-user", "org-2"),
+      unagreed,
+    );
+
+    const view = render(shellForOrganization("org-1", client));
+    fireEvent.click(await screen.findByRole("button", { name: /agree/i }));
+    expect(screen.getByRole("button", { name: /agree/i })).toBeDisabled();
+
+    view.rerender(shellForOrganization("org-2", client));
+    await waitFor(() =>
+      expect(fetchStatusMock).toHaveBeenCalledWith("org-2", {
+        accessToken: "tok",
+      }),
+    );
+    // Still the same mounted gate, still disabled from org-1's in-flight submit.
+    expect(screen.getByRole("button", { name: /agree/i })).toBeDisabled();
+
+    // The stale org-1 agreement resolves against a now-inactive identity — the
+    // gate must reset to idle so org-2's button is usable again.
+    resolveOrgOneAgree?.();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /agree/i }),
+      ).not.toBeDisabled(),
+    );
+
+    // org-2 can now submit its own agreement.
+    fireEvent.click(screen.getByRole("button", { name: /agree/i }));
+    await waitFor(() =>
+      expect(agreeMock).toHaveBeenCalledWith("org-2", { accessToken: "tok" }),
+    );
+  });
+
+  it("drops a stale agreement error on the new org's gate after an identity switch", async () => {
+    // Identity is captured when agree STARTS (org-1). Switching to org-2 — also
+    // unagreed, so the gate stays mounted — while the request is in flight must
+    // not paint org-1's failure message on org-2's gate once org-1's stale agree
+    // REJECTS; the new org's gate must show no error and stay usable.
+    let rejectOrgOneAgree: (() => void) | undefined;
+    agreeMock.mockImplementation((orgId: string) =>
+      orgId === "org-1"
+        ? new Promise<void>((_resolve, reject) => {
+            rejectOrgOneAgree = () => reject(new Error("boom"));
+          })
+        : Promise.resolve(),
+    );
+    fetchStatusMock.mockResolvedValue({
+      agreed: false,
+      globalEnabled: false,
+      grantPresent: false,
+      grantCheckedAt: null,
+      roleName: null,
+    });
+    fetchWarehousesMock.mockResolvedValue([baseRow]);
+    const client = createTestQueryClient();
+    // Pre-seed org-2's (also unagreed) status so switching to it paints the gate
+    // immediately — the gate stays mounted across the switch.
+    const unagreed = {
+      agreed: false,
+      globalEnabled: false,
+      grantPresent: false,
+      grantCheckedAt: null,
+      roleName: null,
+    };
+    client.setQueryData(
+      queryKeys.autoSavings.status("test-user", "org-2"),
+      unagreed,
+    );
+
+    const view = render(shellForOrganization("org-1", client));
+    fireEvent.click(await screen.findByRole("button", { name: /agree/i }));
+    expect(screen.getByRole("button", { name: /agree/i })).toBeDisabled();
+
+    view.rerender(shellForOrganization("org-2", client));
+    await waitFor(() =>
+      expect(fetchStatusMock).toHaveBeenCalledWith("org-2", {
+        accessToken: "tok",
+      }),
+    );
+
+    // The stale org-1 agreement REJECTS against a now-inactive identity — the
+    // gate must reset to idle, not surface org-1's error on org-2's gate.
+    rejectOrgOneAgree?.();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /agree/i }),
+      ).not.toBeDisabled(),
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("keeps the warehouse refresh error visible when a manual refresh fails", async () => {
+    // TanStack v5 refetch() resolves with an error-state result instead of
+    // rejecting; the shell's handleRefresh must pass throwOnError so a FAILED
+    // manual refresh rejects into WarehouseTable's catch and its error banner
+    // stays visible — rather than the refetch resolving and clearing the error
+    // as though the refresh had succeeded.
+    fetchStatusMock.mockResolvedValue({
+      agreed: true,
+      globalEnabled: true,
+      grantPresent: true,
+      grantCheckedAt: null,
+      roleName: null,
+    });
+    const unenrolled = { ...baseRow, enabled: false };
+    const enrolled = { ...baseRow, enabled: true, status: "transitioning" as const };
+    fetchWarehousesMock
+      .mockResolvedValueOnce([unenrolled]) // initial load
+      .mockRejectedValueOnce(new Error("hydrate failed")) // enrollment hydration → refreshFailed
+      .mockResolvedValueOnce([enrolled]) // post-enroll invalidation refetch
+      .mockRejectedValue(new Error("refresh failed")); // manual retry refresh
+    toggleWarehouseMock.mockResolvedValue(undefined);
+
+    renderShell();
+
+    const rowSwitch = await screen.findByRole("switch", { name: "WH1" });
+    fireEvent.click(rowSwitch);
+
+    // The enrollment hydration failed, surfacing the retry affordance.
+    const retryButton = await screen.findByRole("button", {
+      name: /retry refresh/i,
+    });
+
+    fireEvent.click(retryButton);
+
+    // The manual refresh rejects, so the error banner must persist rather than
+    // being cleared as a false success.
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        /could not be refreshed/i,
+      ),
+    );
+    expect(
+      screen.getByRole("button", { name: /retry refresh/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("serves cached status and warehouses on remount without refetching", async () => {
+    fetchStatusMock.mockResolvedValue({
+      agreed: true,
+      globalEnabled: true,
+      grantPresent: true,
+      grantCheckedAt: null,
+      roleName: null,
+    });
+    fetchWarehousesMock.mockResolvedValue([baseRow]);
+    const client = persistentClient();
+
+    const first = render(shellForOrganization("org-1", client));
+    await screen.findByRole("table", { name: /warehouses/i });
+    expect(fetchStatusMock).toHaveBeenCalledTimes(1);
+    expect(fetchWarehousesMock).toHaveBeenCalledTimes(1);
+    first.unmount();
+
+    render(shellForOrganization("org-1", client));
+    // Fresh cached data paints immediately — no "Loading configuration" panel —
+    // and neither reader fires a second request.
+    expect(
+      screen.getByRole("table", { name: /warehouses/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/loading configuration/i)).not.toBeInTheDocument();
+    expect(fetchStatusMock).toHaveBeenCalledTimes(1);
+    expect(fetchWarehousesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps cached config visible while a remount revalidates in the background", async () => {
+    const client = createTestQueryClient();
+    client.setQueryData(queryKeys.autoSavings.status("test-user", "org-1"), {
+      agreed: true,
+      globalEnabled: true,
+      grantPresent: true,
+      grantCheckedAt: null,
+      roleName: null,
+    });
+    client.setQueryData(queryKeys.autoSavings.warehouses("test-user", "org-1"), [
+      baseRow,
+    ]);
+    // Deferred so the revalidation never settles during the assertions: the
+    // cached UI must remain, not flip to a loading panel.
+    const statusDeferred = deferred<never>();
+    const warehousesDeferred = deferred<never>();
+    fetchStatusMock.mockReturnValue(statusDeferred.promise);
+    fetchWarehousesMock.mockReturnValue(warehousesDeferred.promise);
+
+    render(shellForOrganization("org-1", client));
+
+    expect(
+      screen.getByRole("table", { name: /warehouses/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/loading configuration/i)).not.toBeInTheDocument();
+  });
+
+  it("never shows the previous org's warehouses while the next org is unresolved", async () => {
+    const client = createTestQueryClient();
+    fetchStatusMock.mockResolvedValue({
+      agreed: true,
+      globalEnabled: true,
+      grantPresent: true,
+      grantCheckedAt: null,
+      roleName: null,
+    });
+    const orgTwoWarehouses = deferred<WarehouseRow[]>();
+    fetchWarehousesMock.mockImplementation((orgId: string) =>
+      orgId === "org-1"
+        ? Promise.resolve([{ ...baseRow, name: "WH_ORG_1" }])
+        : orgTwoWarehouses.promise,
+    );
+
+    const view = render(shellForOrganization("org-1", client));
+    await screen.findByRole("switch", { name: "WH_ORG_1" });
+
+    view.rerender(shellForOrganization("org-2", client));
+    // org-2's warehouses are still pending: the shell shows its loading panel,
+    // never the stale org-1 rows.
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("switch", { name: "WH_ORG_1" }),
+      ).not.toBeInTheDocument(),
+    );
+
+    orgTwoWarehouses.resolve([{ ...baseRow, name: "WH_ORG_2" }]);
+    expect(
+      await screen.findByRole("switch", { name: "WH_ORG_2" }),
+    ).toBeInTheDocument();
   });
 });

@@ -7,6 +7,8 @@ from typing import Any, Protocol
 
 import httpx
 
+from app.services.pooled_requests import send_pooled_request
+
 
 @dataclass(frozen=True)
 class CachedDashboardRun:
@@ -135,6 +137,15 @@ class SupabaseRunCacheStore:
             headers["prefer"] = prefer
         return headers
 
+    def _send(self, method: str, url: str, **kwargs: object) -> httpx.Response:
+        return send_pooled_request(
+            method,
+            url,
+            transport=self._transport,
+            timeout_seconds=self._timeout_seconds,
+            **kwargs,
+        )
+
     def upsert(self, cached_run: CachedDashboardRun) -> None:
         payload = {
             "organization_id": cached_run.organization_id,
@@ -151,17 +162,15 @@ class SupabaseRunCacheStore:
             "expires_at": cached_run.expires_at.isoformat(),
         }
         try:
-            with httpx.Client(
-                timeout=self._timeout_seconds, transport=self._transport
-            ) as client:
-                response = client.post(
-                    self._table_url,
-                    params={"on_conflict": "organization_id"},
-                    json=payload,
-                    headers=self._headers(
-                        prefer="resolution=merge-duplicates,return=minimal"
-                    ),
-                )
+            response = self._send(
+                "POST",
+                self._table_url,
+                params={"on_conflict": "organization_id"},
+                json=payload,
+                headers=self._headers(
+                    prefer="resolution=merge-duplicates,return=minimal"
+                ),
+            )
         except httpx.HTTPError as exc:
             raise RunCacheStoreError() from exc
         if response.status_code not in (200, 201, 204):
@@ -171,23 +180,21 @@ class SupabaseRunCacheStore:
         self, organization_id: str, *, now: datetime | None = None
     ) -> CachedDashboardRun | None:
         try:
-            with httpx.Client(
-                timeout=self._timeout_seconds, transport=self._transport
-            ) as client:
-                response = client.get(
-                    self._table_url,
-                    params={
-                        "organization_id": f"eq.{organization_id}",
-                        "select": (
-                            "organization_id,run_id,source,window_days,"
-                            "account_locator,summary,"
-                            "metadata,datasets,source_start_date,source_end_date,"
-                            "completed_at,expires_at"
-                        ),
-                        "limit": "1",
-                    },
-                    headers=self._headers(),
-                )
+            response = self._send(
+                "GET",
+                self._table_url,
+                params={
+                    "organization_id": f"eq.{organization_id}",
+                    "select": (
+                        "organization_id,run_id,source,window_days,"
+                        "account_locator,summary,"
+                        "metadata,datasets,source_start_date,source_end_date,"
+                        "completed_at,expires_at"
+                    ),
+                    "limit": "1",
+                },
+                headers=self._headers(),
+            )
         except httpx.HTTPError as exc:
             raise RunCacheStoreError() from exc
         if response.status_code != 200:
@@ -209,19 +216,17 @@ class SupabaseRunCacheStore:
         self, cached_run: CachedDashboardRun, datasets: dict[str, list[dict[str, Any]]]
     ) -> None:
         try:
-            with httpx.Client(
-                timeout=self._timeout_seconds, transport=self._transport
-            ) as client:
-                response = client.patch(
-                    self._table_url,
-                    params={
-                        "organization_id": f"eq.{cached_run.organization_id}",
-                        "run_id": f"eq.{cached_run.run_id}",
-                        "completed_at": f"eq.{cached_run.completed_at.isoformat()}",
-                    },
-                    json={"datasets": _json_ready(datasets)},
-                    headers=self._headers(prefer="return=minimal"),
-                )
+            response = self._send(
+                "PATCH",
+                self._table_url,
+                params={
+                    "organization_id": f"eq.{cached_run.organization_id}",
+                    "run_id": f"eq.{cached_run.run_id}",
+                    "completed_at": f"eq.{cached_run.completed_at.isoformat()}",
+                },
+                json={"datasets": _json_ready(datasets)},
+                headers=self._headers(prefer="return=minimal"),
+            )
         except httpx.HTTPError as exc:
             raise RunCacheStoreError() from exc
         if response.status_code not in (200, 204):
@@ -229,14 +234,12 @@ class SupabaseRunCacheStore:
 
     def delete(self, organization_id: str) -> None:
         try:
-            with httpx.Client(
-                timeout=self._timeout_seconds, transport=self._transport
-            ) as client:
-                response = client.delete(
-                    self._table_url,
-                    params={"organization_id": f"eq.{organization_id}"},
-                    headers=self._headers(),
-                )
+            response = self._send(
+                "DELETE",
+                self._table_url,
+                params={"organization_id": f"eq.{organization_id}"},
+                headers=self._headers(),
+            )
         except httpx.HTTPError as exc:
             raise RunCacheStoreError() from exc
         if response.status_code not in (200, 204):

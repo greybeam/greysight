@@ -112,6 +112,23 @@ For real Snowflake data, use `DATA_SOURCE=snowflake` and follow
 `docs/snowflake-setup.md`. Local demo mode does not require Snowflake
 credentials.
 
+## Troubleshooting
+
+### Port already in use across worktrees
+
+The dev servers bind hardcoded ports — web `3000`, API `8000` — so parallel git
+worktrees or Conductor workspaces cannot run `npm run dev` at the same time. If
+`npm run dev` prints `[Errno 48] Address already in use`, the API **did not
+start**, and the browser silently talks to whichever workspace's API server is
+already on `:8000`. The tell is 500s on `/api/session/memberships` (you are hitting
+another workspace's backend). Find and kill the squatter, then rerun:
+
+```bash
+lsof -nP -i :8000   # identify the process holding the port
+kill <pid>          # stop it
+npm run dev         # rerun from this workspace
+```
+
 ## Verification
 
 Useful local checks from the repository root:
