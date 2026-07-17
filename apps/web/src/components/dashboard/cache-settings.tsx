@@ -132,25 +132,28 @@ export default function CacheSettings({
         { cache_enabled: cacheEnabled, cache_ttl_seconds: ttlSeconds },
         { accessToken: accessTokenRef.current },
       );
+      // Drop a late-arriving result entirely when the org/account switched out
+      // from under us: painting the just-saved values or the success message
+      // would leak the previous org's settings onto the newly active surface,
+      // and no settings cache entry must be written for either scope.
+      if (!identity.isCurrent(captured)) return;
       setCacheEnabled(updated.cache_enabled);
       setTtlSeconds(updated.cache_ttl_seconds);
       setSuccess(SAVED_MESSAGE);
-      if (identity.isCurrent(captured)) {
-        // Write the freshly saved settings into the cache so a reopen needs no
-        // GET, then invalidate discovery so the next rendered run follows the
-        // new cache policy.
-        queryClient.setQueryData(
-          queryKeys.dashboard.settings(captured.userId, captured.orgId),
-          updated,
-        );
-        await queryClient.invalidateQueries({
-          queryKey: queryKeys.dashboard.cachedRun(
-            captured.userId,
-            captured.orgId,
-          ),
-        });
-      }
+      // Write the freshly saved settings into the cache so a reopen needs no
+      // GET, then invalidate discovery so the next rendered run follows the
+      // new cache policy.
+      queryClient.setQueryData(
+        queryKeys.dashboard.settings(captured.userId, captured.orgId),
+        updated,
+      );
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.dashboard.cachedRun(captured.userId, captured.orgId),
+      });
     } catch (err: unknown) {
+      // Same identity guard as the success path: a failure from a stale request
+      // must not surface its error on the newly active org's surface.
+      if (!identity.isCurrent(captured)) return;
       if (
         err instanceof CacheSettingsValidationError ||
         err instanceof CacheSettingsForbiddenError
