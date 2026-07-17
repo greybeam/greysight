@@ -764,6 +764,50 @@ describe("OrgShell", () => {
     await act(async () => {});
   });
 
+  it("does not expose the previous user's identity in a capture taken after a transition, before render commits", async () => {
+    const { client, trigger } = withCapturedAuthCallback();
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell
+        authRequired
+        authClient={client}
+        fetchMemberships={vi
+          .fn()
+          .mockResolvedValue([{ id: "org-1", name: "Acme", accountLocator: null }])}
+      >
+        <IdentityProbe grab={(v) => (latest = v)} />
+      </OrgShell>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("user-id")).toHaveTextContent("user-a"),
+    );
+
+    // Fire the transition WITHOUT act(): the cache is cleared and the epoch is
+    // bumped, but React has not yet re-rendered/committed. A capture taken in
+    // this window must reflect the NEW user, never the prior user-a paired with
+    // the freshly-bumped epoch (the stale-userId + new-epoch combination the
+    // whole-snapshot reset prevents).
+    trigger(userB);
+    const captured = latest!.identity.capture();
+    expect(captured.userId).not.toBe("user-a");
+
+    // Once render commits to the new identity, a guarded write scoped to the
+    // OLD user must be dropped and never land in the just-cleared cache.
+    await act(async () => {});
+    const staleKey = queryKeys.dashboard.scope("user-a", "org-1");
+    const wrote = guardedSetQueryData(
+      latest!.queryClient,
+      latest!.identity.ref,
+      captured,
+      staleKey,
+      { stale: true },
+    );
+
+    expect(wrote).toBe(false);
+    expect(latest!.queryClient.getQueryData(staleKey)).toBeUndefined();
+  });
+
   it("drops a deferred write attempted synchronously after an org switch, before render commits", async () => {
     let latest: ProbeGrab | undefined;
     render(

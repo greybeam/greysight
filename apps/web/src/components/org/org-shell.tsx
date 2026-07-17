@@ -120,13 +120,17 @@ export default function OrgShell({
       void queryClient.cancelQueries();
       queryClient.clear();
       identityEpochRef.current += 1;
-      // Update the live snapshot synchronously (bump the epoch here) so a
-      // guarded write landing after this transition returns but before React
-      // commits the next render compares against the NEW epoch and is dropped,
-      // never writing stale data into the just-cleared cache. The render-time
-      // refresh below still reconciles userId/orgId once state settles.
+      // Replace the WHOLE live snapshot synchronously (userId + orgId + epoch),
+      // not just the epoch. A caller that captures identity after this returns
+      // but before React commits must never see the PRIOR userId paired with the
+      // NEW epoch — that stale/new combination would pass sameQueryIdentity
+      // against the live ref and let a guarded write repopulate the just-cleared
+      // cache with the previous user's data. Reset to the incoming user (or the
+      // demo sentinel when signed out) and to the demo org sentinel; the
+      // render-time refresh below reconciles the real orgId once state settles.
       identityRef.current = {
-        ...identityRef.current,
+        userId: nextUserId ?? DEMO_USER_ID,
+        orgId: DEMO_ORG_ID,
         epoch: identityEpochRef.current,
       };
       setIdentityEpoch(identityEpochRef.current);
