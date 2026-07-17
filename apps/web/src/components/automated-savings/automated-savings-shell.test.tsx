@@ -787,6 +787,52 @@ describe("AutomatedSavingsShell", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
+  it("keeps the warehouse refresh error visible when a manual refresh fails", async () => {
+    // TanStack v5 refetch() resolves with an error-state result instead of
+    // rejecting; the shell's handleRefresh must pass throwOnError so a FAILED
+    // manual refresh rejects into WarehouseTable's catch and its error banner
+    // stays visible — rather than the refetch resolving and clearing the error
+    // as though the refresh had succeeded.
+    fetchStatusMock.mockResolvedValue({
+      agreed: true,
+      globalEnabled: true,
+      grantPresent: true,
+      grantCheckedAt: null,
+      roleName: null,
+    });
+    const unenrolled = { ...baseRow, enabled: false };
+    const enrolled = { ...baseRow, enabled: true, status: "transitioning" as const };
+    fetchWarehousesMock
+      .mockResolvedValueOnce([unenrolled]) // initial load
+      .mockRejectedValueOnce(new Error("hydrate failed")) // enrollment hydration → refreshFailed
+      .mockResolvedValueOnce([enrolled]) // post-enroll invalidation refetch
+      .mockRejectedValue(new Error("refresh failed")); // manual retry refresh
+    toggleWarehouseMock.mockResolvedValue(undefined);
+
+    renderShell();
+
+    const rowSwitch = await screen.findByRole("switch", { name: "WH1" });
+    fireEvent.click(rowSwitch);
+
+    // The enrollment hydration failed, surfacing the retry affordance.
+    const retryButton = await screen.findByRole("button", {
+      name: /retry refresh/i,
+    });
+
+    fireEvent.click(retryButton);
+
+    // The manual refresh rejects, so the error banner must persist rather than
+    // being cleared as a false success.
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        /could not be refreshed/i,
+      ),
+    );
+    expect(
+      screen.getByRole("button", { name: /retry refresh/i }),
+    ).toBeInTheDocument();
+  });
+
   it("serves cached status and warehouses on remount without refetching", async () => {
     fetchStatusMock.mockResolvedValue({
       agreed: true,

@@ -304,7 +304,11 @@ export function AutomatedSavingsShell() {
   }
 
   const handleRefresh = useCallback(async () => {
-    await warehousesQuery.refetch();
+    // TanStack v5 refetch() resolves with an error-state result instead of
+    // rejecting; throwOnError makes a failed manual refresh reject so
+    // WarehouseTable's catch keeps its error banner visible instead of clearing
+    // it as though the refresh succeeded.
+    await warehousesQuery.refetch({ throwOnError: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [warehousesKey]);
 

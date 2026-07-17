@@ -92,6 +92,27 @@ describe("OptInGate", () => {
     expect(agreeSpy).toHaveBeenCalledWith("org-1", { accessToken: "tok" });
   });
 
+  it("recovers the Agree button when the post-agreement status refetch fails and leaves the gate mounted", async () => {
+    // agree() succeeds, but the shell's post-agreement status refetch fails, so
+    // the cache keeps agreed:false and this same gate stays mounted. The button
+    // must reset to enabled (recoverable) rather than stay stuck "submitting"
+    // and disabled forever. onAgreed here does nothing — standing in for a
+    // failed refetch that never unmounts the gate.
+    vi.spyOn(automatedSavingsApi, "agree").mockResolvedValue(undefined);
+    const onAgreed = vi.fn();
+    render(
+      <AccountChromeProvider value={withRole("owner")}>
+        <OptInGate orgId="org-1" roleName="GREYSIGHT_RL" onAgreed={onAgreed} />
+      </AccountChromeProvider>,
+    );
+
+    const agreeButton = screen.getByRole("button", { name: /agree/i });
+    fireEvent.click(agreeButton);
+
+    await waitFor(() => expect(onAgreed).toHaveBeenCalled());
+    await waitFor(() => expect(agreeButton).not.toBeDisabled());
+  });
+
   it("shows an error message when agree fails", async () => {
     vi.spyOn(automatedSavingsApi, "agree").mockRejectedValue(new Error("boom"));
     render(
