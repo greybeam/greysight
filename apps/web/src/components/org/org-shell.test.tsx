@@ -370,6 +370,81 @@ describe("OrgShell", () => {
     expect(latest?.identity.snapshot.orgId).not.toBe("org-a");
   });
 
+  it("reloads memberships after a user transition that reuses the same access token", async () => {
+    // Finding: when user B's session carries the SAME access token as user A,
+    // the access-token effect never re-runs (the token string is unchanged), so
+    // latestTokenRef stays null (invalidated by transitionUser) and B's
+    // membership load never starts — B is stuck transitioning. A user
+    // transition must always trigger a fresh membership load for the new
+    // session, while the stale-result guard still discards A's late result.
+    let onAuthStateChange: SessionChangeCallback | undefined;
+    const client = authClient(session, {
+      onAuthStateChange: vi.fn((callback: SessionChangeCallback) => {
+        onAuthStateChange = callback;
+        return { unsubscribe: vi.fn() };
+      }),
+    });
+
+    let resolveA: ((orgs: MembershipOrganization[]) => void) | undefined;
+    const fetchMemberships = vi.fn((_token: string, ...rest: unknown[]) => {
+      void rest;
+      // Distinguish the two calls by invocation order: the first is user-a's
+      // (left pending), the second is user-b's (resolves immediately). Both
+      // carry the same access token, so the token argument can't disambiguate.
+      if (fetchMemberships.mock.calls.length === 1) {
+        return new Promise<MembershipOrganization[]>((resolve) => {
+          resolveA = resolve;
+        });
+      }
+      return Promise.resolve<MembershipOrganization[]>([
+        { id: "org-b", name: "Bravo", role: "member", accountLocator: null },
+      ]);
+    });
+
+    const onOrganizationChange = vi.fn();
+    render(
+      <OrgShell
+        authRequired
+        authClient={client}
+        fetchMemberships={fetchMemberships}
+        onOrganizationChange={onOrganizationChange}
+      >
+        <p>dashboard</p>
+      </OrgShell>,
+    );
+
+    await waitFor(() => expect(resolveA).toBeDefined());
+
+    // Transition to user-b reusing the SAME access token.
+    const sameTokenNewUser: AuthSession = {
+      accessToken: "access-token",
+      user: { id: "user-b", email: "b@example.com", appMetadata: null },
+    };
+    act(() => onAuthStateChange?.(sameTokenNewUser));
+
+    // B's membership request must be issued and B's org must render.
+    await screen.findByText("dashboard");
+    await waitFor(() =>
+      expect(onOrganizationChange).toHaveBeenCalledWith({
+        id: "org-b",
+        name: "Bravo",
+        role: "member",
+        accountLocator: null,
+      }),
+    );
+
+    // A's stale in-flight result resolves last and must be discarded.
+    await act(async () => {
+      resolveA?.([
+        { id: "org-a", name: "Alpha", role: "member", accountLocator: null },
+      ]);
+    });
+
+    expect(onOrganizationChange).not.toHaveBeenCalledWith(
+      expect.objectContaining({ id: "org-a" }),
+    );
+  });
+
   it("does not refetch when an inline onOrganizationChange changes identity", async () => {
     const fetchMemberships = vi
       .fn()

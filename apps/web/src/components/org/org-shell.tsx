@@ -221,15 +221,22 @@ export default function OrgShell({
 
   const loadMemberships = useCallback(
     async (token: string) => {
+      // Capture the identity epoch at request start. A user transition bumps the
+      // epoch, so a previous user's in-flight request is discarded on resolution
+      // even when the new user reuses the SAME access token (the token guard
+      // alone can't tell same-token users apart).
+      const requestEpoch = identityEpochRef.current;
+      const isStale = () =>
+        latestTokenRef.current !== token ||
+        identityEpochRef.current !== requestEpoch;
       setMembership({ status: "loading" });
       try {
         const organizations = await fetchMemberships(token);
-        // Discard results for a token that is no longer current (stale-token
-        // race: a later sign-in superseded this request).
-        if (latestTokenRef.current !== token) return;
+        // Discard results superseded by a later sign-in / user transition.
+        if (isStale()) return;
         setMembership({ status: "resolved", organizations });
       } catch {
-        if (latestTokenRef.current !== token) return;
+        if (isStale()) return;
         setMembership({ status: "error" });
       }
     },
@@ -250,7 +257,13 @@ export default function OrgShell({
       return;
     }
     void loadMemberships(accessToken);
-  }, [accessToken, authRequired, loadMemberships]);
+    // identityEpoch is a dependency so a user transition ALWAYS reloads
+    // memberships for the new session — even when user B reuses user A's exact
+    // access token (the token string is unchanged, so this effect would not
+    // otherwise re-run). transitionUser bumps identityEpoch and nulls
+    // latestTokenRef; re-running here re-records the current token and starts
+    // B's load, while loadMemberships's guard still discards A's stale result.
+  }, [accessToken, authRequired, loadMemberships, identityEpoch]);
 
   const organizations =
     membership.status === "resolved" ? membership.organizations : [];
