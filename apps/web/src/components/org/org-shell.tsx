@@ -120,19 +120,27 @@ export default function OrgShell({
       void queryClient.cancelQueries();
       queryClient.clear();
       identityEpochRef.current += 1;
-      // Replace the WHOLE live snapshot synchronously (userId + orgId + epoch),
-      // not just the epoch. A caller that captures identity after this returns
-      // but before React commits must never see the PRIOR userId paired with the
-      // NEW epoch — that stale/new combination would pass sameQueryIdentity
-      // against the live ref and let a guarded write repopulate the just-cleared
-      // cache with the previous user's data. Reset to the incoming user (or the
-      // demo sentinel when signed out) and to the demo org sentinel; the
-      // render-time refresh below reconciles the real orgId once state settles.
+      // Replace the WHOLE live snapshot synchronously and mark it transitioning.
+      // Until the NEW user's memberships resolve, no coherent identity exists:
+      // the userId is known but the org is not. Marking the snapshot
+      // `transitioning` makes it uncapturable (sameQueryIdentity always returns
+      // false), so a write captured in the pre-commit window can neither
+      // repopulate the just-cleared cache with the previous user's data (stale
+      // userId), nor land a demo-org-scoped entry for a real user, nor pair the
+      // new user with the previous user's org. The render-time refresh clears
+      // the marker once the new user's real org is established.
       identityRef.current = {
         userId: nextUserId ?? DEMO_USER_ID,
         orgId: DEMO_ORG_ID,
         epoch: identityEpochRef.current,
+        transitioning: true,
       };
+      // Reset membership/active-org state that belonged to the PREVIOUS user so
+      // the next render can't derive `activeOrganization` from the old user's
+      // memberships and pair it with the new user. The accessToken effect
+      // reloads memberships for the new session.
+      setMembership({ status: "idle" });
+      setActiveOrgId(null);
       setIdentityEpoch(identityEpochRef.current);
     },
     [queryClient],
@@ -304,11 +312,25 @@ export default function OrgShell({
   if (!authRequired) {
     identityRef.current = { userId: DEMO_USER_ID, orgId: DEMO_ORG_ID, epoch: 0 };
   } else if (session?.user?.id) {
-    identityRef.current = {
-      userId: session.user.id,
-      orgId: activeOrganization?.id ?? DEMO_ORG_ID,
-      epoch: identityEpoch,
-    };
+    if (membership.status === "resolved") {
+      // Memberships for THIS session have resolved: a coherent identity (real
+      // user + its own active org) exists, so clear the transitioning marker.
+      identityRef.current = {
+        userId: session.user.id,
+        orgId: activeOrganization?.id ?? DEMO_ORG_ID,
+        epoch: identityEpoch,
+      };
+    } else {
+      // Session is known but memberships have not resolved yet (initial load or
+      // mid user-transition). The active org can't be trusted — it may still be
+      // derived from a previous user — so keep the snapshot uncapturable.
+      identityRef.current = {
+        userId: session.user.id,
+        orgId: DEMO_ORG_ID,
+        epoch: identityEpoch,
+        transitioning: true,
+      };
+    }
   } else {
     identityRef.current = {
       userId: DEMO_USER_ID,

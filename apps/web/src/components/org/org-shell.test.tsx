@@ -900,6 +900,114 @@ describe("OrgShell", () => {
     expect(queryClient.getQueryData(key)).toEqual({ keep: true });
   });
 
+  it("drops a write captured pre-render under the captured snapshot's own demo-org key after a user transition", async () => {
+    // Finding 1: during a signed-in user->user transition the live ref is
+    // synchronously {newUser, DEMO_ORG_ID, newEpoch}. A capture in the
+    // pre-render window returns exactly that; if it passed the guard, a guarded
+    // write under scope(newUser, demo-org) would land a demo-scoped cache entry
+    // for a real user. The transitioning marker must make it uncapturable.
+    const { client, trigger } = withCapturedAuthCallback();
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell
+        authRequired
+        authClient={client}
+        fetchMemberships={vi
+          .fn()
+          .mockResolvedValue([{ id: "org-1", name: "Acme", accountLocator: null }])}
+      >
+        <IdentityProbe grab={(v) => (latest = v)} />
+      </OrgShell>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("user-id")).toHaveTextContent("user-a"),
+    );
+
+    // Transition WITHOUT act(): cache cleared + epoch bumped, no render commit.
+    trigger(userB);
+    const captured = latest!.identity.capture();
+    // The captured snapshot's OWN key (its userId + orgId) — the exact path
+    // finding 1 warns about.
+    const ownKey = queryKeys.dashboard.scope(captured.userId, captured.orgId);
+
+    const wrote = guardedSetQueryData(
+      latest!.queryClient,
+      latest!.identity.ref,
+      captured,
+      ownKey,
+      { stale: true },
+    );
+
+    expect(wrote).toBe(false);
+    expect(latest!.queryClient.getQueryData(ownKey)).toBeUndefined();
+
+    await act(async () => {});
+  });
+
+  it("never pairs the new user with the previous user's org before the new memberships load", async () => {
+    // Finding 3: the render-time refresh derives orgId from activeOrganization,
+    // which is computed from the PREVIOUS user's membership state. Without a
+    // reset, the first new-user render could pair {newUser, oldOrg} and let a
+    // guarded write for that combination land. transitionUser must reset stale
+    // membership and keep the snapshot transitioning until the new user's
+    // memberships resolve.
+    const { client, trigger } = withCapturedAuthCallback();
+    let resolveB: ((orgs: MembershipOrganization[]) => void) | undefined;
+    const fetchMemberships = vi.fn((token: string) => {
+      if (token === "access-token") {
+        return Promise.resolve<MembershipOrganization[]>([
+          { id: "org-1", name: "Acme", role: "member", accountLocator: null },
+        ]);
+      }
+      // user-b's memberships stay pending, holding the transition window open.
+      return new Promise<MembershipOrganization[]>((resolve) => {
+        resolveB = resolve;
+      });
+    });
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell authRequired authClient={client} fetchMemberships={fetchMemberships}>
+        <IdentityProbe grab={(v) => (latest = v)} />
+      </OrgShell>,
+    );
+
+    await waitFor(() => expect(latest?.identity.snapshot.orgId).toBe("org-1"));
+    const queryClient = latest!.queryClient;
+    const ref = latest!.identity.ref;
+
+    // Transition to user-b; its memberships never resolve during this window.
+    await act(async () => {
+      trigger(userB);
+    });
+
+    // A capture that would pair the new user with the OLD org must not pass the
+    // guard, and the live ref must not have settled to {user-b, org-1}.
+    const staleKey = queryKeys.dashboard.scope("user-b", "org-1");
+    const fabricated = {
+      userId: "user-b",
+      orgId: "org-1",
+      epoch: ref.current.epoch,
+    };
+    const wrote = guardedSetQueryData(
+      queryClient,
+      ref,
+      fabricated,
+      staleKey,
+      { stale: true },
+    );
+
+    expect(wrote).toBe(false);
+    expect(queryClient.getQueryData(staleKey)).toBeUndefined();
+    expect(ref.current.transitioning).toBe(true);
+
+    // Cleanup: let user-b's memberships resolve so pending effects settle.
+    resolveB?.([
+      { id: "org-9", name: "Nine", role: "member", accountLocator: null },
+    ]);
+    await act(async () => {});
+  });
+
   it("does not clear the cache when a sign-out fails", async () => {
     const signOut = vi
       .fn()

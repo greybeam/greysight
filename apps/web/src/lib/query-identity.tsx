@@ -27,12 +27,23 @@ export type QueryIdentitySnapshot = {
   userId: string;
   orgId: string;
   epoch: number;
+  // Set while a user transition is in flight — after the cache is cleared and
+  // the epoch bumped, but before a coherent identity for the NEW user (its own
+  // memberships / active org) has been established. A transitioning snapshot is
+  // deliberately uncapturable: no capture taken in this window can ever satisfy
+  // sameQueryIdentity, so a deferred write can't repopulate the just-cleared
+  // cache under a half-formed identity (e.g. real user paired with the demo-org
+  // sentinel, or the new user paired with the previous user's org).
+  transitioning?: boolean;
 };
 
 export function sameQueryIdentity(
   a: QueryIdentitySnapshot,
   b: QueryIdentitySnapshot,
 ): boolean {
+  // A transition in progress on either side means identity is not yet coherent,
+  // so nothing captured against it should pass the guard.
+  if (a.transitioning || b.transitioning) return false;
   return a.userId === b.userId && a.orgId === b.orgId && a.epoch === b.epoch;
 }
 
