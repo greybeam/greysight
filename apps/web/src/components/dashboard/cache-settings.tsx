@@ -69,6 +69,7 @@ export default function CacheSettings({
   // Supabase rotates it roughly hourly and a rotation must not invalidate the
   // cached settings entry.
   const accessTokenRef = useRef(account?.accessToken ?? null);
+  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern: query fn reads freshest token without re-keying the query
   accessTokenRef.current = account?.accessToken ?? null;
 
   const userId = identity.snapshot.userId;

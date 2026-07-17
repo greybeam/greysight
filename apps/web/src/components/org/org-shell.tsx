@@ -334,11 +334,13 @@ export default function OrgShell({
   // (via QueryIdentityProvider) read the current user/org/epoch. Auth-off mode
   // uses the fixed demo sentinel; authenticated renders carry the real identity.
   if (!authRequired) {
+    // eslint-disable-next-line react-hooks/refs -- render-time identity refresh required for race safety
     identityRef.current = { userId: DEMO_USER_ID, orgId: DEMO_ORG_ID, epoch: 0 };
   } else if (session?.user?.id) {
     if (membership.status === "resolved") {
       // Memberships for THIS session have resolved: a coherent identity (real
       // user + its own active org) exists, so clear the transitioning marker.
+      // eslint-disable-next-line react-hooks/refs -- render-time identity refresh required for race safety
       identityRef.current = {
         userId: session.user.id,
         orgId: activeOrganization?.id ?? DEMO_ORG_ID,
@@ -348,6 +350,7 @@ export default function OrgShell({
       // Session is known but memberships have not resolved yet (initial load or
       // mid user-transition). The active org can't be trusted — it may still be
       // derived from a previous user — so keep the snapshot uncapturable.
+      // eslint-disable-next-line react-hooks/refs -- render-time identity refresh required for race safety
       identityRef.current = {
         userId: session.user.id,
         orgId: DEMO_ORG_ID,
@@ -356,6 +359,7 @@ export default function OrgShell({
       };
     }
   } else {
+    // eslint-disable-next-line react-hooks/refs -- render-time identity refresh required for race safety
     identityRef.current = {
       userId: DEMO_USER_ID,
       orgId: DEMO_ORG_ID,

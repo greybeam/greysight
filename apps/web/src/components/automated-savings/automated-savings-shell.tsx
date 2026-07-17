@@ -103,6 +103,7 @@ export function AutomatedSavingsShell() {
   // rotates it roughly hourly, and a rotation must not invalidate cache entries
   // or restart in-flight reads.
   const accessTokenRef = useRef(accessToken);
+  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern: query fn reads freshest token without re-keying queries
   accessTokenRef.current = accessToken;
 
   const statusKey = queryKeys.autoSavings.status(userId, orgId ?? "");

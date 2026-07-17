@@ -206,6 +206,7 @@ function CostDashboardContent({
   // callbacks/effects read the live identity without re-subscribing on identity
   // reference churn.
   const identityRef = useRef(identity);
+  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern: async callbacks read live identity without re-subscribing
   identityRef.current = identity;
 
   // Cache scope. Demo data always lives under the fixed demo sentinels so it can
@@ -219,6 +220,7 @@ function CostDashboardContent({
   // Read the access token at call time rather than keying queries on it: Supabase
   // rotates it roughly hourly, and a rotation must not invalidate cache entries.
   const accessTokenRef = useRef(runtime?.accessToken ?? null);
+  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern: query fn reads freshest token without re-keying queries
   accessTokenRef.current = runtime?.accessToken ?? null;
 
   const rangeRequestSeqRef = useRef(0);
@@ -733,6 +735,7 @@ function CostDashboardContent({
       return;
     }
     // Still fetching the initial demo view: show the fresh-analysis skeletons.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- loading UI must react to async query state; not derivable during render
     setRunInFlight(true);
     setLoadingReason("fresh");
     setSectionReadiness(undefined);
@@ -778,6 +781,7 @@ function CostDashboardContent({
     }
     if (discoveryIsError || discoveryData == null) {
       // 204 miss or transport error: keep the idle CTA, never auto-run.
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- loading UI must react to async discovery result; not derivable during render
       setRunInFlight(false);
       setLoadingReason(null);
       return;

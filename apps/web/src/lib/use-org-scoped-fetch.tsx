@@ -32,7 +32,9 @@ export function useOrgScopedFetch<T>(
 ): OrgScopedFetchResult<T> {
   const accessTokenRef = useRef(accessToken);
   const fetchFnRef = useRef(fetchFn);
+  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern: query fn reads freshest token/fn without re-subscribing
   accessTokenRef.current = accessToken;
+  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern: query fn reads freshest token/fn without re-subscribing
   fetchFnRef.current = fetchFn;
 
   const query = useQuery({

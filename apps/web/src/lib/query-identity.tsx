@@ -108,6 +108,7 @@ export function QueryIdentityProvider({
   const queryClient = useQueryClient();
   const fallbackRef = useRef<QueryIdentitySnapshot>(snapshotFromChrome(chrome));
   if (!identityRef) {
+    // eslint-disable-next-line react-hooks/refs -- render-time identity refresh required for race safety
     fallbackRef.current = snapshotFromChrome(chrome);
   }
   const current = identityRef ?? fallbackRef;
@@ -139,6 +140,7 @@ export function useQueryIdentity(): QueryIdentityValue {
   const chrome = useAccountChrome();
   const fallbackRef = useRef<QueryIdentitySnapshot>(snapshotFromChrome(chrome));
   if (!ctx) {
+    // eslint-disable-next-line react-hooks/refs -- render-time identity refresh required for race safety
     fallbackRef.current = snapshotFromChrome(chrome);
   }
   const ref = ctx?.current ?? fallbackRef;
@@ -149,8 +151,11 @@ export function useQueryIdentity(): QueryIdentityValue {
         queryKey: queryKeys.scope(ref.current.userId, orgId),
       }));
 
+  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern: return exposes live identity ref/snapshot for race-safe reads
   return {
+    // eslint-disable-next-line react-hooks/refs -- latest-ref pattern: expose current identity snapshot for race-safe reads
     snapshot: ref.current,
+    // eslint-disable-next-line react-hooks/refs -- latest-ref pattern: expose stable identity ref for race-safe async reads
     ref,
     capture: () => ref.current,
     isCurrent: (captured: QueryIdentitySnapshot) =>

@@ -164,6 +164,7 @@ export function SuspensionEventsTable({
   // token roughly hourly, and keying on `accessToken` would split the cache and
   // restart pagination on every rotation.
   const accessTokenRef = useRef(accessToken);
+  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern: fetch reads freshest token without re-keying queries
   accessTokenRef.current = accessToken;
 
   const cursor = cursorStack[pageIndex] ?? null;
