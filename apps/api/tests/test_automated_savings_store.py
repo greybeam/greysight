@@ -1,9 +1,7 @@
-import contextlib
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-import anyio
 import httpx
 import pytest
 
@@ -14,23 +12,8 @@ from app.services.automated_savings_store import (
     SupabaseAutomatedSavingsStore,
 )
 from app.services.dashboard_run_cache import SupabaseRunCacheStore
-from app.services.http_pool import clear_clients, get_sync_client, install_clients
-
-
-@contextlib.contextmanager
-def _installed_sync_pool(handler):
-    clear_clients()
-    sync_client = httpx.Client(transport=httpx.MockTransport(handler))
-    auth = httpx.AsyncClient()
-    async_client = httpx.AsyncClient()
-    install_clients(auth=auth, async_client=async_client, sync_client=sync_client)
-    try:
-        yield sync_client
-    finally:
-        clear_clients()
-        sync_client.close()
-        anyio.run(auth.aclose)
-        anyio.run(async_client.aclose)
+from app.services.http_pool import get_sync_client
+from tests.conftest import installed_sync_pool
 
 
 def test_savings_store_reuses_pooled_sync_client_without_closing() -> None:
@@ -40,7 +23,7 @@ def test_savings_store_reuses_pooled_sync_client_without_closing() -> None:
         requests.append(request)
         return httpx.Response(200, json=[])
 
-    with _installed_sync_pool(handler) as sync_client:
+    with installed_sync_pool(handler) as sync_client:
         store = SupabaseAutomatedSavingsStore(
             supabase_url="https://project.supabase.co",
             service_role_key="service-role-key",
@@ -58,7 +41,7 @@ def test_two_sequential_savings_calls_reuse_open_shared_client() -> None:
         requests.append(request)
         return httpx.Response(200, json=[])
 
-    with _installed_sync_pool(handler) as sync_client:
+    with installed_sync_pool(handler) as sync_client:
         store = SupabaseAutomatedSavingsStore(
             supabase_url="https://project.supabase.co",
             service_role_key="service-role-key",
@@ -95,7 +78,7 @@ def test_pooled_requests_isolate_credentials_when_concurrent() -> None:
             requests_by_key[request.headers["apikey"]] = request
         return httpx.Response(200, json=[])
 
-    with _installed_sync_pool(handler) as sync_client:
+    with installed_sync_pool(handler) as sync_client:
         store_a = SupabaseAutomatedSavingsStore(
             supabase_url="https://project.supabase.co",
             service_role_key="key-a",

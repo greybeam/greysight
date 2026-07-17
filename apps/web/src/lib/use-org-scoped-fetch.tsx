@@ -1,7 +1,8 @@
 "use client";
 
-import { useRef } from "react";
 import { useQuery, type QueryKey } from "@tanstack/react-query";
+
+import { useLatestRef } from "./use-latest-ref";
 
 export type LoadState = "loading" | "ready" | "error";
 
@@ -30,12 +31,8 @@ export function useOrgScopedFetch<T>(
   accessToken: string | null,
   fetchFn: (orgId: string, accessToken: string | null) => Promise<T>,
 ): OrgScopedFetchResult<T> {
-  const accessTokenRef = useRef(accessToken);
-  const fetchFnRef = useRef(fetchFn);
-  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern: query fn reads freshest token/fn without re-subscribing
-  accessTokenRef.current = accessToken;
-  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern: query fn reads freshest token/fn without re-subscribing
-  fetchFnRef.current = fetchFn;
+  const accessTokenRef = useLatestRef(accessToken);
+  const fetchFnRef = useLatestRef(fetchFn);
 
   const query = useQuery({
     queryKey,

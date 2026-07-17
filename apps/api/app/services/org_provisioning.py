@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import httpx
 
-from app.services.http_pool import get_sync_client, request_timeout
+from app.services.pooled_requests import send_pooled_request
 
 
 class OrgProvisioningError(RuntimeError):
@@ -53,11 +53,13 @@ class SupabaseOrgProvisioner:
         self._transport = transport
 
     def _send(self, method: str, url: str, **kwargs: object) -> httpx.Response:
-        timeout = request_timeout(self._timeout_seconds)
-        if self._transport is not None:
-            with httpx.Client(transport=self._transport, timeout=timeout) as client:
-                return client.request(method, url, timeout=timeout, **kwargs)
-        return get_sync_client().request(method, url, timeout=timeout, **kwargs)
+        return send_pooled_request(
+            method,
+            url,
+            transport=self._transport,
+            timeout_seconds=self._timeout_seconds,
+            **kwargs,
+        )
 
     def __call__(self, **params: str) -> str:
         try:
@@ -106,11 +108,13 @@ class SupabaseOrgDisconnector:
         self._transport = transport
 
     def _send(self, method: str, url: str, **kwargs: object) -> httpx.Response:
-        timeout = request_timeout(self._timeout_seconds)
-        if self._transport is not None:
-            with httpx.Client(transport=self._transport, timeout=timeout) as client:
-                return client.request(method, url, timeout=timeout, **kwargs)
-        return get_sync_client().request(method, url, timeout=timeout, **kwargs)
+        return send_pooled_request(
+            method,
+            url,
+            transport=self._transport,
+            timeout_seconds=self._timeout_seconds,
+            **kwargs,
+        )
 
     def __call__(self, organization_id: str) -> None:
         try:

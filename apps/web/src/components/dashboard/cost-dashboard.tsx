@@ -26,6 +26,7 @@ import {
   type DashboardViewSectionStatuses,
 } from "../../lib/dashboard-contracts";
 import { queryKeys } from "../../lib/query-keys";
+import { useLatestRef } from "../../lib/use-latest-ref";
 import {
   DEMO_ORG_ID,
   DEMO_USER_ID,
@@ -219,9 +220,7 @@ function CostDashboardContent({
 
   // Read the access token at call time rather than keying queries on it: Supabase
   // rotates it roughly hourly, and a rotation must not invalidate cache entries.
-  const accessTokenRef = useRef(runtime?.accessToken ?? null);
-  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern: query fn reads freshest token without re-keying queries
-  accessTokenRef.current = runtime?.accessToken ?? null;
+  const accessTokenRef = useLatestRef(runtime?.accessToken ?? null);
 
   const rangeRequestSeqRef = useRef(0);
   const aiSeqRef = useRef(0);
@@ -275,6 +274,40 @@ function CostDashboardContent({
     [],
   );
 
+  // Shared identity-guarded view fetch: capture identity, fetch (the demo source
+  // in demo mode, the Snowflake run's view otherwise), then drop the result via
+  // the identity guard if identity changed mid-flight. Used by range fetches,
+  // relative-window prefetch, and the initial default-view read.
+  const fetchViewForQuery = useCallback(
+    async (runId: string, request: DashboardViewRangeRequest) => {
+      const captured = identityRef.current.capture();
+      const view = shouldUseDemo
+        ? await fetchDemoDashboardView(request)
+        : await fetchDashboardView(runId, request, {
+            accessToken: accessTokenRef.current,
+          });
+      throwIfIdentityChanged(captured);
+      return view;
+    },
+    [accessTokenRef, shouldUseDemo, throwIfIdentityChanged],
+  );
+
+  // Demo-view fetch that additionally asserts the backend-emitted run id matches
+  // DEMO_RUN_ID — a cross-layer invariant checked before the identity guard,
+  // exactly as the inline demo queries did.
+  const fetchDemoViewForQuery = useCallback(
+    async (request: DashboardViewRangeRequest) => {
+      const captured = identityRef.current.capture();
+      const view = await fetchDemoDashboardView(request);
+      if (view.run.id !== DEMO_RUN_ID) {
+        throw new Error("Demo dashboard run id does not match DEMO_RUN_ID");
+      }
+      throwIfIdentityChanged(captured);
+      return view;
+    },
+    [throwIfIdentityChanged],
+  );
+
   // Write a resolved view under both the requested-range key and the
   // server-resolved-range key, so a later read by either range retrieves it. The
   // identity guard drops writes that resolved after a sign-out / account / org
@@ -321,18 +354,9 @@ function CostDashboardContent({
     (runId: string, request: DashboardViewRangeRequest) =>
       queryClient.fetchQuery({
         queryKey: queryKeys.dashboard.view(userId, orgId, runId, request),
-        queryFn: async () => {
-          const captured = identityRef.current.capture();
-          const view = shouldUseDemo
-            ? await fetchDemoDashboardView(request)
-            : await fetchDashboardView(runId, request, {
-                accessToken: accessTokenRef.current,
-              });
-          throwIfIdentityChanged(captured);
-          return view;
-        },
+        queryFn: () => fetchViewForQuery(runId, request),
       }),
-    [queryClient, userId, orgId, shouldUseDemo, throwIfIdentityChanged],
+    [queryClient, userId, orgId, fetchViewForQuery],
   );
 
   const applyDashboardView = useCallback((dashboardView: DashboardView) => {
@@ -364,20 +388,11 @@ function CostDashboardContent({
         }
         void queryClient.prefetchQuery({
           queryKey: key,
-          queryFn: async () => {
-            const captured = identityRef.current.capture();
-            const view = shouldUseDemo
-              ? await fetchDemoDashboardView(request)
-              : await fetchDashboardView(runId, request, {
-                  accessToken: accessTokenRef.current,
-                });
-            throwIfIdentityChanged(captured);
-            return view;
-          },
+          queryFn: () => fetchViewForQuery(runId, request),
         });
       }
     },
-    [queryClient, userId, orgId, shouldUseDemo, throwIfIdentityChanged],
+    [queryClient, userId, orgId, fetchViewForQuery],
   );
 
   const loadDemoRun = useCallback(async () => {
@@ -397,15 +412,7 @@ function CostDashboardContent({
           DEMO_RUN_ID,
           DEFAULT_VIEW_RANGE,
         ),
-        queryFn: async () => {
-          const queryCaptured = identityRef.current.capture();
-          const view = await fetchDemoDashboardView(DEFAULT_VIEW_RANGE);
-          if (view.run.id !== DEMO_RUN_ID) {
-            throw new Error("Demo dashboard run id does not match DEMO_RUN_ID");
-          }
-          throwIfIdentityChanged(queryCaptured);
-          return view;
-        },
+        queryFn: () => fetchDemoViewForQuery(DEFAULT_VIEW_RANGE),
       });
       if (
         runGeneration !== runGenerationRef.current ||
@@ -441,10 +448,10 @@ function CostDashboardContent({
     applyDashboardView,
     cacheView,
     data,
+    fetchDemoViewForQuery,
     orgId,
     prefetchRelativeWindows,
     queryClient,
-    throwIfIdentityChanged,
     userId,
   ]);
 
@@ -590,6 +597,7 @@ function CostDashboardContent({
       }
     }
   }, [
+    accessTokenRef,
     applyDashboardView,
     cacheView,
     prefetchRelativeWindows,
@@ -640,15 +648,7 @@ function CostDashboardContent({
       DEMO_RUN_ID,
       DEFAULT_VIEW_RANGE,
     ),
-    queryFn: async () => {
-      const captured = identityRef.current.capture();
-      const view = await fetchDemoDashboardView(DEFAULT_VIEW_RANGE);
-      if (view.run.id !== DEMO_RUN_ID) {
-        throw new Error("Demo dashboard run id does not match DEMO_RUN_ID");
-      }
-      throwIfIdentityChanged(captured);
-      return view;
-    },
+    queryFn: () => fetchDemoViewForQuery(DEFAULT_VIEW_RANGE),
     enabled: shouldUseDemo && !data && !discoveryDismissed,
   });
 
@@ -676,14 +676,7 @@ function CostDashboardContent({
       discoveredRunId ?? "__no-run__",
       DEFAULT_VIEW_RANGE,
     ),
-    queryFn: async () => {
-      const captured = identityRef.current.capture();
-      const view = await fetchDashboardView(discoveredRunId!, DEFAULT_VIEW_RANGE, {
-        accessToken: accessTokenRef.current,
-      });
-      throwIfIdentityChanged(captured);
-      return view;
-    },
+    queryFn: () => fetchViewForQuery(discoveredRunId!, DEFAULT_VIEW_RANGE),
     enabled: Boolean(
       runtime &&
         !shouldUseDemo &&
@@ -1038,7 +1031,7 @@ function CostDashboardContent({
         }
       }
     })();
-  }, [aiSource, orgId, queryClient, shouldUseDemo, userId]);
+  }, [accessTokenRef, aiSource, orgId, queryClient, shouldUseDemo, userId]);
 
   const isFailedWithoutView =
     !viewModel &&

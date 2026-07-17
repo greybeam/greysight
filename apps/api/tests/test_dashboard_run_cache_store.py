@@ -1,28 +1,11 @@
 from datetime import date, datetime, timezone
-import contextlib
 import json
 
-import anyio
 import httpx
 
 from app.services.dashboard_run_cache import CachedDashboardRun, SupabaseRunCacheStore
-from app.services.http_pool import clear_clients, get_sync_client, install_clients
-
-
-@contextlib.contextmanager
-def _installed_sync_pool(handler):
-    clear_clients()
-    sync_client = httpx.Client(transport=httpx.MockTransport(handler))
-    auth = httpx.AsyncClient()
-    async_client = httpx.AsyncClient()
-    install_clients(auth=auth, async_client=async_client, sync_client=sync_client)
-    try:
-        yield sync_client
-    finally:
-        clear_clients()
-        sync_client.close()
-        anyio.run(auth.aclose)
-        anyio.run(async_client.aclose)
+from app.services.http_pool import get_sync_client
+from tests.conftest import installed_sync_pool
 
 
 def _cached_run() -> CachedDashboardRun:
@@ -49,7 +32,7 @@ def test_run_cache_reuses_pooled_sync_client_without_closing() -> None:
         requests.append(request)
         return httpx.Response(201)
 
-    with _installed_sync_pool(handler) as sync_client:
+    with installed_sync_pool(handler) as sync_client:
         store = SupabaseRunCacheStore(
             supabase_url="https://project.supabase.co",
             service_role_key="service-role-key",

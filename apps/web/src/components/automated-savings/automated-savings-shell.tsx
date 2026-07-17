@@ -18,6 +18,7 @@ import {
   type QueryIdentitySnapshot,
 } from "../../lib/query-identity";
 import { DashboardApiError } from "../../lib/dashboard-errors";
+import { useLatestRef } from "../../lib/use-latest-ref";
 import { AppHeader } from "../dashboard/app-header";
 import DashboardFailureMessage from "../dashboard/dashboard-failure-message";
 import { Switch } from "../ui/switch";
@@ -102,9 +103,7 @@ export function AutomatedSavingsShell() {
   // Read the access token at call time rather than keying queries on it: Supabase
   // rotates it roughly hourly, and a rotation must not invalidate cache entries
   // or restart in-flight reads.
-  const accessTokenRef = useRef(accessToken);
-  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern: query fn reads freshest token without re-keying queries
-  accessTokenRef.current = accessToken;
+  const accessTokenRef = useLatestRef(accessToken);
 
   const statusKey = queryKeys.autoSavings.status(userId, orgId ?? "");
   const warehousesKey = queryKeys.autoSavings.warehouses(userId, orgId ?? "");

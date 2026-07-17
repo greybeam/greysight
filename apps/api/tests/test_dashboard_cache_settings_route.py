@@ -1,7 +1,5 @@
-import contextlib
 import json
 
-import anyio
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -15,24 +13,9 @@ from app.services.dashboard_cache_settings import (
     SupabaseCacheSettingsStore,
     configure_cache_settings_store,
 )
-from app.services.http_pool import clear_clients, get_sync_client, install_clients
+from app.services.http_pool import get_sync_client
+from tests.conftest import installed_sync_pool
 from app.services.membership_directory import Organization
-
-
-@contextlib.contextmanager
-def _installed_sync_pool(handler):
-    clear_clients()
-    sync_client = httpx.Client(transport=httpx.MockTransport(handler))
-    auth = httpx.AsyncClient()
-    async_client = httpx.AsyncClient()
-    install_clients(auth=auth, async_client=async_client, sync_client=sync_client)
-    try:
-        yield sync_client
-    finally:
-        clear_clients()
-        sync_client.close()
-        anyio.run(auth.aclose)
-        anyio.run(async_client.aclose)
 
 
 def test_cache_settings_store_reuses_pooled_sync_client_without_closing() -> None:
@@ -42,7 +25,7 @@ def test_cache_settings_store_reuses_pooled_sync_client_without_closing() -> Non
         requests.append(request)
         return httpx.Response(200, json=[])
 
-    with _installed_sync_pool(handler) as sync_client:
+    with installed_sync_pool(handler) as sync_client:
         store = SupabaseCacheSettingsStore(
             supabase_url="https://example.supabase.co",
             service_role_key="svc",

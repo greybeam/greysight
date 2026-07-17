@@ -1,10 +1,8 @@
-import contextlib
-
-import anyio
 import httpx
 import pytest
 
-from app.services.http_pool import clear_clients, get_sync_client, install_clients
+from app.services.http_pool import get_sync_client
+from tests.conftest import installed_sync_pool
 from app.services.org_provisioning import (
     DuplicateSnowflakeAccountError,
     OrgProvisioningError,
@@ -13,30 +11,18 @@ from app.services.org_provisioning import (
 )
 
 
-@contextlib.contextmanager
-def _installed_sync_pool(handler):
-    clear_clients()
-    sync_client = httpx.Client(transport=httpx.MockTransport(handler))
-    auth = httpx.AsyncClient()
-    async_client = httpx.AsyncClient()
-    install_clients(auth=auth, async_client=async_client, sync_client=sync_client)
-    try:
-        yield sync_client
-    finally:
-        clear_clients()
-        sync_client.close()
-        anyio.run(auth.aclose)
-        anyio.run(async_client.aclose)
-
-
-def test_provisioner_reuses_pooled_sync_client_without_closing() -> None:
+def test_provisioner_and_disconnector_reuse_pooled_sync_client_without_closing() -> (
+    None
+):
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
+        if request.url.path.endswith("/disconnect_organization_snowflake"):
+            return httpx.Response(204)
         return httpx.Response(200, json="org-123")
 
-    with _installed_sync_pool(handler) as sync_client:
+    with installed_sync_pool(handler) as sync_client:
         provisioner = SupabaseOrgProvisioner(
             supabase_url="https://example.supabase.co",
             service_role_key="svc",
@@ -46,15 +32,6 @@ def test_provisioner_reuses_pooled_sync_client_without_closing() -> None:
         assert not sync_client.is_closed
         assert len(requests) == 1
 
-
-def test_disconnector_reuses_pooled_sync_client_without_closing() -> None:
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(204)
-
-    with _installed_sync_pool(handler) as sync_client:
         disconnector = SupabaseOrgDisconnector(
             supabase_url="https://example.supabase.co",
             service_role_key="svc",
@@ -62,7 +39,7 @@ def test_disconnector_reuses_pooled_sync_client_without_closing() -> None:
         disconnector("org-1")
         assert get_sync_client() is sync_client
         assert not sync_client.is_closed
-        assert len(requests) == 1
+        assert len(requests) == 2
 
 
 def _provision(provisioner: SupabaseOrgProvisioner) -> str:

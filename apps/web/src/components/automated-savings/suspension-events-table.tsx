@@ -17,6 +17,7 @@ import {
 } from "../../lib/automated-savings-api";
 import { queryKeys } from "../../lib/query-keys";
 import { useQueryIdentity } from "../../lib/query-identity";
+import { useLatestRef } from "../../lib/use-latest-ref";
 import { LoadStatePanel } from "../../lib/use-org-scoped-fetch";
 import { Tooltip } from "../ui/tooltip";
 
@@ -163,9 +164,7 @@ export function SuspensionEventsTable({
   // Read at fetch time instead of keying on it: Supabase rotates the access
   // token roughly hourly, and keying on `accessToken` would split the cache and
   // restart pagination on every rotation.
-  const accessTokenRef = useRef(accessToken);
-  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern: fetch reads freshest token without re-keying queries
-  accessTokenRef.current = accessToken;
+  const accessTokenRef = useLatestRef(accessToken);
 
   const cursor = cursorStack[pageIndex] ?? null;
   const pageQuery = useQuery({

@@ -13,6 +13,7 @@ import {
 } from "../../lib/cache-settings-api";
 import { queryKeys } from "../../lib/query-keys";
 import { useQueryIdentity } from "../../lib/query-identity";
+import { useLatestRef } from "../../lib/use-latest-ref";
 
 const GENERIC_ERROR = "Something went wrong. Please try again.";
 const SAVED_MESSAGE = "Cache settings saved.";
@@ -68,9 +69,7 @@ export default function CacheSettings({
   // Read the access token at call time rather than keying the query on it:
   // Supabase rotates it roughly hourly and a rotation must not invalidate the
   // cached settings entry.
-  const accessTokenRef = useRef(account?.accessToken ?? null);
-  // eslint-disable-next-line react-hooks/refs -- latest-ref pattern: query fn reads freshest token without re-keying the query
-  accessTokenRef.current = account?.accessToken ?? null;
+  const accessTokenRef = useLatestRef(account?.accessToken ?? null);
 
   const userId = identity.snapshot.userId;
 
