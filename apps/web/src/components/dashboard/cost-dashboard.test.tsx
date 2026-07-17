@@ -1921,6 +1921,59 @@ describe("CostDashboard", () => {
       ).not.toBeInTheDocument();
     });
 
+    it("does not paint a dashboard failure when the default-view fetch is cancelled by an identity switch", async () => {
+      vi.mocked(fetchCachedDashboardRun).mockResolvedValue({
+        run: cachedRun,
+        cachedAsOf: "2026-07-06T14:30:00Z",
+      });
+      // Hold the default-view fetch in flight so the identity switch lands while
+      // it is still pending; its queryFn will then throw the identity-change
+      // cancellation once it resolves under the new identity.
+      const pending = createDeferred<DashboardView>();
+      vi.mocked(fetchDashboardView).mockReturnValue(pending.promise);
+
+      const client = createPersistentQueryClient();
+      const view = render(
+        <QueryTestProvider
+          client={client}
+          identity={{ activeOrganizationId: ORG_ID, identityEpoch: 0 }}
+        >
+          <CostDashboard demoMode={false} runtime={runtime} />
+        </QueryTestProvider>,
+      );
+
+      // The discovery hit drives the dependent default-view fetch.
+      await waitFor(() =>
+        expect(fetchDashboardView).toHaveBeenCalledWith(
+          "cached-run-1",
+          { windowDays: 30 },
+          expect.anything(),
+        ),
+      );
+
+      // Identity epoch bumps (sign-out / account switch) while the default-view
+      // fetch is still in flight.
+      view.rerender(
+        <QueryTestProvider
+          client={client}
+          identity={{ activeOrganizationId: ORG_ID, identityEpoch: 1 }}
+        >
+          <CostDashboard demoMode={false} runtime={runtime} />
+        </QueryTestProvider>,
+      );
+
+      await act(async () => {
+        pending.resolve(cachedView);
+        await pending.promise;
+      });
+
+      // The queryFn throws an IdentityChangedError, which the default-view path
+      // must treat as a benign cancellation — never a user-visible failed state.
+      expect(
+        screen.queryByText("Could not load dashboard data."),
+      ).not.toBeInTheDocument();
+    });
+
     it("caches demo views under the demo sentinel scope even inside authenticated chrome", async () => {
       vi.mocked(fetchDemoDashboardView).mockImplementation(async (range) =>
         demoViewForRange(range),

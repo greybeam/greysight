@@ -156,6 +156,24 @@ function readinessForView(
   return allSectionsReady ? undefined : dashboardView.sectionStatuses;
 }
 
+// Thrown by `throwIfIdentityChanged` when the query identity changed mid-fetch.
+// This is a benign cancellation, NOT a load failure: an identity transition
+// (sign-out / account / org switch) already clears and repaints the surface, so
+// any user-visible error handler must treat it as a no-op rather than painting a
+// failed dashboard state via `dashboardFailure`. Discovery/cache-guard paths
+// already drop it silently; this marker lets the default-view and demo error
+// paths distinguish it from a genuine transport/API failure.
+class IdentityChangedError extends Error {
+  constructor() {
+    super("Query identity changed before the result could be stored");
+    this.name = "IdentityChangedError";
+  }
+}
+
+function isIdentityChangedError(error: unknown): boolean {
+  return error instanceof IdentityChangedError;
+}
+
 export default function CostDashboard({
   data,
   demoMode,
@@ -249,9 +267,7 @@ function CostDashboardContent({
   const throwIfIdentityChanged = useCallback(
     (captured: QueryIdentitySnapshot) => {
       if (!identityRef.current.isCurrent(captured)) {
-        throw new Error(
-          "Query identity changed before the result could be stored",
-        );
+        throw new IdentityChangedError();
       }
     },
     [],
@@ -684,8 +700,17 @@ function CostDashboardContent({
     if (!shouldUseDemo || data || discoveryDismissed) {
       return;
     }
+    // Guard every state write against a mid-flight identity transition. During a
+    // transition the captured snapshot is uncapturable (transitioning flag), so
+    // isCurrent() is false and we skip the writes — the transition already
+    // clears/repaints the surface. Genuine demo rendering (no transition) keeps
+    // its captured snapshot current, so writes proceed as before. cacheView keys
+    // still use the component-scoped demo sentinels regardless of chrome.
+    const captured = identityRef.current.capture();
     if (demoData) {
-      const captured = identityRef.current.capture();
+      if (!identityRef.current.isCurrent(captured)) {
+        return;
+      }
       cacheView(captured, DEMO_RUN_ID, DEFAULT_VIEW_RANGE, demoData);
       applyDashboardView(demoData);
       prefetchRelativeWindows(DEMO_RUN_ID);
@@ -694,6 +719,14 @@ function CostDashboardContent({
       return;
     }
     if (demoIsError) {
+      // An identity-change cancellation is benign: the transition owns the
+      // repaint, so never paint a failed dashboard state for it.
+      if (isIdentityChangedError(demoError)) {
+        return;
+      }
+      if (!identityRef.current.isCurrent(captured)) {
+        return;
+      }
       setLoadState({ status: "failed", ...dashboardFailure(demoError) });
       setRunInFlight(false);
       setLoadingReason(null);
@@ -763,6 +796,13 @@ function CostDashboardContent({
       return;
     }
     if (defaultViewIsError) {
+      // An identity-change cancellation is benign: the identity transition
+      // already clears/repaints the surface, so mapping it through
+      // dashboardFailure would paint a spurious user-visible failed dashboard.
+      // Treat it as a no-op.
+      if (isIdentityChangedError(defaultViewError)) {
+        return;
+      }
       setLoadState({ status: "failed", ...dashboardFailure(defaultViewError) });
       setRunInFlight(false);
       setLoadingReason(null);
