@@ -109,6 +109,11 @@ export default function OrgShell({
     epoch: 0,
   });
 
+  // Track the latest token so stale in-flight membership requests can be
+  // discarded. Declared before transitionUser so a transition can synchronously
+  // invalidate it, dropping a previous user's in-flight membership request.
+  const latestTokenRef = useRef<string | null>(accessToken);
+
   // Centralize user transitions: cancel in-flight queries, wipe the cache, and
   // bump the epoch whenever the signed-in user id actually changes (including
   // null <-> user). A no-op when the user id is unchanged, so repeated null/user
@@ -119,6 +124,14 @@ export default function OrgShell({
       observedUserIdRef.current = nextUserId;
       void queryClient.cancelQueries();
       queryClient.clear();
+      // Synchronously invalidate the latest-token ref so a PREVIOUS user's
+      // membership request still in flight is discarded on resolution, even if
+      // the access-token effect has not yet run to record the new token (e.g.
+      // the new session reuses the same access token, so that effect never
+      // re-runs). Null can never equal a real token, so loadMemberships's guard
+      // rejects the stale result rather than pairing the new user with the old
+      // user's organizations.
+      latestTokenRef.current = null;
       identityEpochRef.current += 1;
       // Replace the WHOLE live snapshot synchronously and mark it transitioning.
       // Until the NEW user's memberships resolve, no coherent identity exists:
@@ -162,10 +175,8 @@ export default function OrgShell({
     if (client) setLoadingSession(true);
   }, [authRequired, providedAuthClient]);
 
-  // Track the latest token so stale in-flight membership requests can be
-  // discarded, and store callback props in refs so changing callback identity
-  // never retriggers the membership effect.
-  const latestTokenRef = useRef<string | null>(accessToken);
+  // Store callback props in refs so changing callback identity never retriggers
+  // the membership effect.
   const onAccessTokenChangeRef = useRef(onAccessTokenChange);
   const onOrganizationChangeRef = useRef(onOrganizationChange);
 

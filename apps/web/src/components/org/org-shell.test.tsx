@@ -309,6 +309,67 @@ describe("OrgShell", () => {
     });
   });
 
+  it("discards a previous-user membership result still in flight across a user transition", async () => {
+    // Finding: transitionUser must synchronously invalidate latestTokenRef.
+    // Here user-a's membership fetch is left pending, then the user transitions
+    // (the new session carries the SAME access token, so the access-token effect
+    // does not re-run and therefore never updates latestTokenRef on its own). If
+    // transitionUser does not invalidate the ref, user-a's late-resolving result
+    // passes the token guard and pairs the NEW user with user-a's org.
+    let onAuthStateChange: SessionChangeCallback | undefined;
+    const client = authClient(session, {
+      onAuthStateChange: vi.fn((callback: SessionChangeCallback) => {
+        onAuthStateChange = callback;
+        return { unsubscribe: vi.fn() };
+      }),
+    });
+
+    let resolveA: ((orgs: MembershipOrganization[]) => void) | undefined;
+    const fetchMemberships = vi.fn(
+      () =>
+        new Promise<MembershipOrganization[]>((resolve) => {
+          resolveA = resolve;
+        }),
+    );
+
+    const onOrganizationChange = vi.fn();
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell
+        authRequired
+        authClient={client}
+        fetchMemberships={fetchMemberships}
+        onOrganizationChange={onOrganizationChange}
+      >
+        <IdentityProbe grab={(v) => (latest = v)} />
+      </OrgShell>,
+    );
+
+    await waitFor(() => expect(resolveA).toBeDefined());
+
+    // Transition to a new user that reuses the same access token, so the
+    // access-token effect will not re-run to supersede the token ref.
+    const sameTokenNewUser: AuthSession = {
+      accessToken: "access-token",
+      user: { id: "user-b", email: "b@example.com", appMetadata: null },
+    };
+
+    // Let user-a's in-flight request resolve after the transition.
+    await act(async () => {
+      onAuthStateChange?.(sameTokenNewUser);
+      resolveA?.([
+        { id: "org-a", name: "Alpha", role: "member", accountLocator: null },
+      ]);
+    });
+
+    // The stale user-a result must be discarded: the new user is never paired
+    // with user-a's org, and the identity snapshot never settles on org-a.
+    expect(onOrganizationChange).not.toHaveBeenCalledWith(
+      expect.objectContaining({ id: "org-a" }),
+    );
+    expect(latest?.identity.snapshot.orgId).not.toBe("org-a");
+  });
+
   it("does not refetch when an inline onOrganizationChange changes identity", async () => {
     const fetchMemberships = vi
       .fn()
