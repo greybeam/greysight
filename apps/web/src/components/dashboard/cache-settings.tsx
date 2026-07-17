@@ -89,16 +89,27 @@ export default function CacheSettings({
   const syncedRef = useRef<CacheSettingsData | null>(null);
   const settingsData = settingsQuery.data;
   useEffect(() => {
-    if (!settingsData || settingsData === syncedRef.current) return;
+    // Depend on `open` too: the cached settingsData reference is unchanged across
+    // a close/reopen, so a settingsData-only effect would never re-seed the form
+    // after the close-reset below nulls syncedRef. Re-running on reopen restores
+    // the saved/cached values without a fresh GET.
+    if (!open || !settingsData || settingsData === syncedRef.current) return;
     syncedRef.current = settingsData;
     setCacheEnabled(settingsData.cache_enabled);
     setTtlSeconds(settingsData.cache_ttl_seconds);
-  }, [settingsData]);
+  }, [open, settingsData]);
 
   // Clear transient messages whenever the surface opens so a stale error or the
   // previous save confirmation is never shown on reopen.
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      // The dialog content unmounts on close but this component stays mounted,
+      // so clear the sync marker: the next open re-seeds the form from cached
+      // query data instead of preserving unsaved edits from the prior session.
+      // No GET is triggered — the cached settings entry paints directly.
+      syncedRef.current = null;
+      return;
+    }
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setError(null);
     setSuccess(null);
@@ -126,6 +137,11 @@ export default function CacheSettings({
     // Capture identity at the start so a late-arriving result is dropped if the
     // org/account switches out from under us while the PATCH is in flight.
     const captured = identity.capture();
+    // The surface may target a non-active org (account-switcher renders one
+    // CacheSettings per org), so cache writes must key on the edited org rather
+    // than the active-org identity snapshot. The identity guard below stays a
+    // pure stale-result check.
+    const targetOrgId = active.id;
     try {
       const updated = await updateCacheSettings(
         active.id,
@@ -144,11 +160,11 @@ export default function CacheSettings({
       // GET, then invalidate discovery so the next rendered run follows the
       // new cache policy.
       queryClient.setQueryData(
-        queryKeys.dashboard.settings(captured.userId, captured.orgId),
+        queryKeys.dashboard.settings(captured.userId, targetOrgId),
         updated,
       );
       await queryClient.invalidateQueries({
-        queryKey: queryKeys.dashboard.cachedRun(captured.userId, captured.orgId),
+        queryKey: queryKeys.dashboard.cachedRun(captured.userId, targetOrgId),
       });
     } catch (err: unknown) {
       // Same identity guard as the success path: a failure from a stale request

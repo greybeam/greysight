@@ -193,6 +193,136 @@ describe("CacheSettings", () => {
     ).toBe(true);
   });
 
+  it("keys the post-save cache write on the prop org, not the active org", async () => {
+    const client = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: Infinity, staleTime: Infinity },
+      },
+    });
+    // Seed discovery for BOTH orgs so we can assert only the prop org's is
+    // invalidated.
+    client.setQueryData(queryKeys.dashboard.cachedRun("test-user", "org-1"), {
+      run: { id: "run-active" },
+      cachedAsOf: "2026-07-16T00:00:00Z",
+    });
+    client.setQueryData(queryKeys.dashboard.cachedRun("test-user", "org-2"), {
+      run: { id: "run-target" },
+      cachedAsOf: "2026-07-16T00:00:00Z",
+    });
+    vi.spyOn(api, "fetchCacheSettings").mockResolvedValue({
+      cache_enabled: true,
+      cache_ttl_seconds: 86_400,
+    });
+    const updated = { cache_enabled: false, cache_ttl_seconds: 3_600 };
+    vi.spyOn(api, "updateCacheSettings").mockResolvedValue(updated);
+
+    // org-1 is active, but this surface targets org-2 (a non-active org).
+    const value = buildChrome({
+      activeOrganizationId: "org-1",
+      organizations: [
+        { id: "org-1", name: "Acme", role: "owner", accountLocator: "AAA-111" },
+        { id: "org-2", name: "Globex", role: "owner", accountLocator: "BBB-222" },
+      ],
+    });
+    render(
+      <QueryTestProvider client={client}>
+        <AccountChromeProvider value={value}>
+          <CacheSettings organizationId="org-2" />
+        </AccountChromeProvider>
+      </QueryTestProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /cache settings/i }));
+    await waitFor(() =>
+      expect(api.fetchCacheSettings).toHaveBeenCalledWith("org-2", {
+        accessToken: "tok",
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("checkbox", { name: /enable caching/i }),
+      ).not.toBeDisabled(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() =>
+      expect(screen.getByText("Cache settings saved.")).toBeInTheDocument(),
+    );
+
+    // The edited (prop) org's settings entry holds the updated policy.
+    expect(
+      client.getQueryData(queryKeys.dashboard.settings("test-user", "org-2")),
+    ).toEqual(updated);
+    // The active org's settings entry must NOT be written.
+    expect(
+      client.getQueryData(queryKeys.dashboard.settings("test-user", "org-1")),
+    ).toBeUndefined();
+    // Only the prop org's discovery is invalidated; the active org's is not.
+    expect(
+      client.getQueryState(queryKeys.dashboard.cachedRun("test-user", "org-2"))
+        ?.isInvalidated,
+    ).toBe(true);
+    expect(
+      client.getQueryState(queryKeys.dashboard.cachedRun("test-user", "org-1"))
+        ?.isInvalidated,
+    ).toBe(false);
+  });
+
+  it("re-seeds the form from cached data on reopen after unsaved edits, with no extra GET", async () => {
+    const client = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: Infinity, staleTime: 60_000 },
+      },
+    });
+    const fetchSpy = vi.spyOn(api, "fetchCacheSettings").mockResolvedValue({
+      cache_enabled: true,
+      cache_ttl_seconds: 86_400,
+    });
+    renderWith({}, client);
+    const trigger = screen.getByRole("button", { name: /cache settings/i });
+
+    fireEvent.click(trigger);
+    // Wait until the load settles (control enabled) so the reseed has landed
+    // before we edit — otherwise the initial payload would clobber our edit.
+    await waitFor(() =>
+      expect(
+        screen.getByRole("checkbox", { name: /enable caching/i }),
+      ).not.toBeDisabled(),
+    );
+    expect(
+      (screen.getByRole("checkbox", { name: /enable caching/i }) as HTMLInputElement)
+        .checked,
+    ).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // Toggle a field WITHOUT saving.
+    fireEvent.click(screen.getByRole("checkbox", { name: /enable caching/i }));
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("checkbox", { name: /enable caching/i }) as HTMLInputElement)
+          .checked,
+      ).toBe(false),
+    );
+
+    // Close, then reopen within staleTime.
+    fireEvent.click(trigger);
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("checkbox", { name: /enable caching/i }),
+      ).not.toBeInTheDocument(),
+    );
+    fireEvent.click(trigger);
+
+    // The unsaved edit is discarded: the cached value repaints, no extra GET.
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("checkbox", { name: /enable caching/i }) as HTMLInputElement)
+          .checked,
+      ).toBe(true),
+    );
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("drops a save that resolves after the identity switches away", async () => {
     const client = new QueryClient({
       defaultOptions: {
