@@ -8,6 +8,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  fetchCachedDashboardRun,
   fetchDashboardView,
   pollUntilTerminal,
   startDashboardRun,
@@ -25,8 +26,12 @@ import DashboardRuntimeShell from "./dashboard-runtime-shell";
 import { WorkspaceRuntimeShell } from "../workspace/workspace-runtime-shell";
 
 vi.mock("../../lib/dashboard-api", () => ({
+  fetchCachedDashboardRun: vi.fn(),
   fetchDashboardView: vi.fn(),
   fetchDemoDashboardView: vi.fn(),
+  fetchDemoDashboardSource: vi.fn(),
+  pollDashboardSource: vi.fn(),
+  triggerDashboardSource: vi.fn(),
   pollUntilTerminal: vi.fn(),
   startDashboardRun: vi.fn(),
 }));
@@ -68,6 +73,8 @@ describe("DashboardRuntimeShell integration", () => {
   });
 
   it("starts runs with the resolved membership organization id", async () => {
+    // No cached run: discovery lands on the idle CTA so the user can start a run.
+    vi.mocked(fetchCachedDashboardRun).mockResolvedValue(null);
     vi.mocked(startDashboardRun).mockResolvedValue({
       id: "run-1",
       source: "snowflake",
