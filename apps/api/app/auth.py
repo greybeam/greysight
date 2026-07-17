@@ -9,9 +9,11 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import Settings
+from app.services.http_pool import get_auth_client, request_timeout
 from app.services.membership_directory import (
     MembershipLookup,
     MembershipLookupError,
+    MembershipLookupUnavailable,
     Organization,
     SupabaseServiceRoleMembershipLookup,
 )
@@ -40,18 +42,29 @@ class SupabaseAuthServerVerifier:
         self._transport = transport
 
     async def __call__(self, token: str) -> Mapping[str, object]:
+        headers = {
+            "apikey": self._anon_key,
+            "authorization": f"Bearer {token}",
+        }
+        timeout = request_timeout(self._timeout_seconds)
         try:
-            async with httpx.AsyncClient(
-                timeout=self._timeout_seconds,
-                transport=self._transport,
-            ) as client:
+            if self._transport is not None:
+                # Test-only transport override: a short-lived client so the
+                # override never touches the shared, credential-neutral pool.
+                async with httpx.AsyncClient(
+                    timeout=timeout,
+                    transport=self._transport,
+                ) as client:
+                    response = await client.get(self._user_url, headers=headers)
+            else:
+                client = get_auth_client()
                 response = await client.get(
-                    self._user_url,
-                    headers={
-                        "apikey": self._anon_key,
-                        "authorization": f"Bearer {token}",
-                    },
+                    self._user_url, headers=headers, timeout=timeout
                 )
+        except httpx.TransportError as exc:
+            # Upstream unreachable (pool/connect/read/write timeouts): surface as
+            # 503 rather than masking infrastructure failure as a bad token.
+            raise _authentication_service_unavailable() from exc
         except httpx.HTTPError as exc:
             raise _authentication_required() from exc
         if response.status_code != status.HTTP_200_OK:
@@ -203,6 +216,10 @@ async def _fetch_organizations(
         organizations = (
             await lookup_result if inspect.isawaitable(lookup_result) else lookup_result
         )
+    except MembershipLookupUnavailable as exc:
+        # Upstream membership service is unreachable: surface as 503 so clients
+        # can retry, rather than failing closed as an auth error.
+        raise _authentication_service_unavailable() from exc
     except MembershipLookupError as exc:
         raise _authentication_required() from exc
     return tuple(organizations)
@@ -223,4 +240,11 @@ def _authentication_required() -> HTTPException:
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Authentication required",
         headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def _authentication_service_unavailable() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Authentication service unavailable",
     )

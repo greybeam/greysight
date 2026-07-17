@@ -14,6 +14,11 @@ from app.auth import (
 )
 from app.config import Settings
 from app.main import warn_when_auth_required_without_verifier
+from app.services.http_pool import (
+    clear_clients,
+    get_auth_client,
+    install_clients,
+)
 
 
 def test_member_access_returns_none() -> None:
@@ -280,7 +285,7 @@ def test_supabase_auth_server_verifier_rejects_invalid_token() -> None:
     assert exc_info.value.status_code == 401
 
 
-def test_supabase_auth_server_verifier_rejects_transport_errors() -> None:
+def test_supabase_auth_server_verifier_maps_transport_errors_to_503() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("private network detail")
 
@@ -293,8 +298,103 @@ def test_supabase_auth_server_verifier_rejects_transport_errors() -> None:
     with pytest.raises(HTTPException) as exc_info:
         anyio.run(validate_supabase_session, "opaque-token", verifier)
 
-    assert exc_info.value.status_code == 401
-    assert exc_info.value.detail == "Authentication required"
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "Authentication service unavailable"
+
+
+def test_auth_verifier_reuses_pooled_client() -> None:
+    clear_clients()
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"id": "user_123"})
+
+    auth = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    async_client = httpx.AsyncClient()
+    sync_client = httpx.Client()
+    install_clients(auth=auth, async_client=async_client, sync_client=sync_client)
+    try:
+        verifier = SupabaseAuthServerVerifier(
+            supabase_url="https://project.supabase.co",
+            supabase_anon_key="anon-key",
+        )
+        anyio.run(verifier, "token-a")
+        anyio.run(verifier, "token-b")
+
+        assert get_auth_client() is auth
+        assert len(requests) == 2
+        assert requests[0].headers["authorization"] == "Bearer token-a"
+        assert requests[1].headers["authorization"] == "Bearer token-b"
+        assert requests[0].headers["apikey"] == "anon-key"
+        # Pooled client stays credential-neutral: no per-request headers leak
+        # onto its defaults.
+        assert "authorization" not in auth.headers
+        assert "apikey" not in auth.headers
+    finally:
+        clear_clients()
+        anyio.run(auth.aclose)
+        anyio.run(async_client.aclose)
+        sync_client.close()
+
+
+def test_auth_verifier_maps_pool_timeout_to_503() -> None:
+    clear_clients()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise httpx.PoolTimeout("pool exhausted")
+
+    auth = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    async_client = httpx.AsyncClient()
+    sync_client = httpx.Client()
+    install_clients(auth=auth, async_client=async_client, sync_client=sync_client)
+    try:
+        verifier = SupabaseAuthServerVerifier(
+            supabase_url="https://project.supabase.co",
+            supabase_anon_key="anon-key",
+        )
+        with pytest.raises(HTTPException) as auth_pool_timeout:
+            anyio.run(validate_supabase_session, "opaque-token", verifier)
+        assert auth_pool_timeout.value.status_code == 503
+    finally:
+        clear_clients()
+        anyio.run(auth.aclose)
+        anyio.run(async_client.aclose)
+        sync_client.close()
+
+
+def test_fetch_organizations_maps_unavailable_to_503(monkeypatch) -> None:
+    from app.services.membership_directory import MembershipLookupUnavailable
+
+    async def verifier(token: str) -> dict[str, object]:
+        return {"sub": "user_123"}
+
+    async def lookup(user_id: str):
+        raise MembershipLookupUnavailable()
+
+    monkeypatch.setattr("app.auth.supabase_session_verifier", verifier)
+
+    with pytest.raises(HTTPException) as membership_pool_timeout:
+        anyio.run(validate_supabase_session, "opaque-token", None, lookup)
+
+    assert membership_pool_timeout.value.status_code == 503
+
+
+def test_fetch_organizations_maps_lookup_error_to_401(monkeypatch) -> None:
+    from app.services.membership_directory import MembershipLookupError
+
+    async def verifier(token: str) -> dict[str, object]:
+        return {"sub": "user_123"}
+
+    async def lookup(user_id: str):
+        raise MembershipLookupError()
+
+    monkeypatch.setattr("app.auth.supabase_session_verifier", verifier)
+
+    with pytest.raises(HTTPException) as malformed_membership_payload:
+        anyio.run(validate_supabase_session, "opaque-token", None, lookup)
+
+    assert malformed_membership_payload.value.status_code == 401
 
 
 def test_configure_supabase_session_verifier_clears_missing_config(
