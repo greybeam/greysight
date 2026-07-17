@@ -24,6 +24,7 @@ from app.services.http_pool import (
     HTTP_LIMITS,
     clear_clients,
     client_timeout,
+    disable_cookie_persistence,
     install_clients,
 )
 from app.services.automated_savings_store import (
@@ -185,9 +186,15 @@ async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
     tear it down on shutdown so queued Snowflake query work does not outlive
     the process (e.g. on reload).
     """
-    auth_client = httpx.AsyncClient(limits=HTTP_LIMITS, timeout=client_timeout())
-    async_client = httpx.AsyncClient(limits=HTTP_LIMITS, timeout=client_timeout())
-    sync_client = httpx.Client(limits=HTTP_LIMITS, timeout=client_timeout())
+    auth_client = disable_cookie_persistence(
+        httpx.AsyncClient(limits=HTTP_LIMITS, timeout=client_timeout())
+    )
+    async_client = disable_cookie_persistence(
+        httpx.AsyncClient(limits=HTTP_LIMITS, timeout=client_timeout())
+    )
+    sync_client = disable_cookie_persistence(
+        httpx.Client(limits=HTTP_LIMITS, timeout=client_timeout())
+    )
     install_clients(
         auth=auth_client, async_client=async_client, sync_client=sync_client
     )

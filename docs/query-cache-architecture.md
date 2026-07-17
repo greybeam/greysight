@@ -166,6 +166,12 @@ params**. Credentials (`apikey`, bearer token, service-role key) are passed
 never mutate, close, or `async with` the pooled client; `send_pooled_request`
 (`pooled_requests.py`) is the single entry point for sync services.
 
+Each pooled client also has cookie persistence disabled at construction
+(`disable_cookie_persistence` in `http_pool.py` installs a no-op cookie jar), so
+an upstream `Set-Cookie` is never stored and replayed as a `Cookie:` header on a
+later request from a different credential — the shared clients stay strictly
+credential-neutral.
+
 ### Test seam
 
 Every service constructor accepts a `transport=` override. When supplied, the

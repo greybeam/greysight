@@ -6,12 +6,64 @@ from app import main
 from app.services.http_pool import (
     POOL_TIMEOUT_SECONDS,
     clear_clients,
+    disable_cookie_persistence,
     get_async_client,
     get_auth_client,
     get_sync_client,
     install_clients,
     request_timeout,
 )
+
+
+def _set_cookie_transport() -> httpx.MockTransport:
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"Set-Cookie": "session=SECRET; Path=/"})
+
+    return httpx.MockTransport(_handler)
+
+
+def test_sync_client_drops_response_cookies() -> None:
+    client = disable_cookie_persistence(httpx.Client(transport=_set_cookie_transport()))
+    try:
+        client.get("https://supabase.example/1")
+        second = client.get("https://supabase.example/2")
+        assert "cookie" not in {k.lower() for k in second.request.headers}
+        assert not client.cookies
+    finally:
+        client.close()
+
+
+def test_async_client_drops_response_cookies() -> None:
+    async def _run() -> None:
+        client = disable_cookie_persistence(
+            httpx.AsyncClient(transport=_set_cookie_transport())
+        )
+        try:
+            await client.get("https://supabase.example/1")
+            second = await client.get("https://supabase.example/2")
+            assert "cookie" not in {k.lower() for k in second.request.headers}
+            assert not client.cookies
+        finally:
+            await client.aclose()
+
+    anyio.run(_run)
+
+
+def test_sequential_requests_do_not_leak_cross_credentials() -> None:
+    client = disable_cookie_persistence(httpx.Client(transport=_set_cookie_transport()))
+    try:
+        client.get(
+            "https://supabase.example/1",
+            headers={"authorization": "Bearer service-role"},
+        )
+        second = client.get(
+            "https://supabase.example/2",
+            headers={"authorization": "Bearer per-user"},
+        )
+        assert second.request.headers["authorization"] == "Bearer per-user"
+        assert "cookie" not in {k.lower() for k in second.request.headers}
+    finally:
+        client.close()
 
 
 def test_getters_fail_before_install_and_after_clear() -> None:
