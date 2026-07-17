@@ -91,7 +91,11 @@ export function OptInGate({ orgId, roleName, onAgreed }: OptInGateProps) {
         setStatus("idle");
       }
     } catch {
-      setStatus("error");
+      // Only surface the error on the gate that started the request. If the
+      // org/account switched to another still-unagreed workspace while this
+      // request was in flight, a stale failure must not paint its error message
+      // on the new org's gate — reset to idle so its button stays usable.
+      setStatus(queryIdentity.isCurrent(captured) ? "error" : "idle");
     }
   }
 

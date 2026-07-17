@@ -729,6 +729,64 @@ describe("AutomatedSavingsShell", () => {
     );
   });
 
+  it("drops a stale agreement error on the new org's gate after an identity switch", async () => {
+    // Identity is captured when agree STARTS (org-1). Switching to org-2 — also
+    // unagreed, so the gate stays mounted — while the request is in flight must
+    // not paint org-1's failure message on org-2's gate once org-1's stale agree
+    // REJECTS; the new org's gate must show no error and stay usable.
+    let rejectOrgOneAgree: (() => void) | undefined;
+    agreeMock.mockImplementation((orgId: string) =>
+      orgId === "org-1"
+        ? new Promise<void>((_resolve, reject) => {
+            rejectOrgOneAgree = () => reject(new Error("boom"));
+          })
+        : Promise.resolve(),
+    );
+    fetchStatusMock.mockResolvedValue({
+      agreed: false,
+      globalEnabled: false,
+      grantPresent: false,
+      grantCheckedAt: null,
+      roleName: null,
+    });
+    fetchWarehousesMock.mockResolvedValue([baseRow]);
+    const client = createTestQueryClient();
+    // Pre-seed org-2's (also unagreed) status so switching to it paints the gate
+    // immediately — the gate stays mounted across the switch.
+    const unagreed = {
+      agreed: false,
+      globalEnabled: false,
+      grantPresent: false,
+      grantCheckedAt: null,
+      roleName: null,
+    };
+    client.setQueryData(
+      queryKeys.autoSavings.status("test-user", "org-2"),
+      unagreed,
+    );
+
+    const view = render(shellForOrganization("org-1", client));
+    fireEvent.click(await screen.findByRole("button", { name: /agree/i }));
+    expect(screen.getByRole("button", { name: /agree/i })).toBeDisabled();
+
+    view.rerender(shellForOrganization("org-2", client));
+    await waitFor(() =>
+      expect(fetchStatusMock).toHaveBeenCalledWith("org-2", {
+        accessToken: "tok",
+      }),
+    );
+
+    // The stale org-1 agreement REJECTS against a now-inactive identity — the
+    // gate must reset to idle, not surface org-1's error on org-2's gate.
+    rejectOrgOneAgree?.();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /agree/i }),
+      ).not.toBeDisabled(),
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("serves cached status and warehouses on remount without refetching", async () => {
     fetchStatusMock.mockResolvedValue({
       agreed: true,
