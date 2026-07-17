@@ -10,6 +10,11 @@ import type { MembershipOrganization } from "./session-memberships";
 // useAccountChrome(); it is null in unauthenticated/demo contexts where no
 // provider wraps the tree, so the dashboard header simply omits the user menu.
 export type AccountChrome = {
+  // The signed-in Supabase user id and the current identity epoch. Together with
+  // the active org they scope the query cache; the epoch bumps on every user
+  // transition so stale writes captured before a switch can be dropped.
+  userId: string;
+  identityEpoch: number;
   email: string;
   onSignOut: () => void;
   signOutError: string | null;

@@ -27,7 +27,9 @@ type QueryTestProviderProps = {
 };
 
 function buildChrome(identity: TestIdentity): AccountChrome {
-  const chrome = {
+  return {
+    userId: identity.userId ?? "test-user",
+    identityEpoch: identity.identityEpoch ?? 0,
     email: identity.userId ?? "test-user@example.com",
     onSignOut: () => {},
     signOutError: null,
@@ -36,10 +38,7 @@ function buildChrome(identity: TestIdentity): AccountChrome {
     setActiveOrganization: () => {},
     openAddAccount: () => {},
     accessToken: null,
-    userId: identity.userId,
-    identityEpoch: identity.identityEpoch,
-  } as AccountChrome & { userId?: string; identityEpoch?: number };
-  return chrome;
+  };
 }
 
 export function QueryTestProvider({

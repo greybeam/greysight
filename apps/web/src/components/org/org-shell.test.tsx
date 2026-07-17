@@ -1,10 +1,17 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { fireEvent } from "@testing-library/react";
 import { useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import OrgShell from "./org-shell";
-import { useAccountChrome } from "../../lib/account-context";
+import { useAccountChrome, type AccountChrome } from "../../lib/account-context";
+import {
+  guardedSetQueryData,
+  useQueryIdentity,
+  type QueryIdentityValue,
+} from "../../lib/query-identity";
+import { queryKeys } from "../../lib/query-keys";
 import type { MembershipOrganization } from "../../lib/session-memberships";
 import type {
   AuthSession,
@@ -53,7 +60,7 @@ function authClient(
 
 const session: AuthSession = {
   accessToken: "access-token",
-  user: { email: "owner@example.com", appMetadata: null },
+  user: { id: "user-a", email: "owner@example.com", appMetadata: null },
 };
 
 afterEach(() => {
@@ -277,7 +284,7 @@ describe("OrgShell", () => {
     // Sign back in with token B before A resolves.
     onAuthStateChange?.({
       accessToken: "token-b",
-      user: { email: "owner@example.com", appMetadata: null },
+      user: { id: "user-a", email: "owner@example.com", appMetadata: null },
     });
 
     await screen.findByText("dashboard");
@@ -532,5 +539,222 @@ describe("OrgShell", () => {
     // Give any (incorrect) close handler a chance to run.
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  // ---- Identity / cache-lifecycle probes ------------------------------------
+
+  type ProbeGrab = {
+    queryClient: QueryClient;
+    identity: QueryIdentityValue;
+    account: AccountChrome | null;
+  };
+
+  function IdentityProbe({ grab }: { grab: (v: ProbeGrab) => void }) {
+    const queryClient = useQueryClient();
+    const identity = useQueryIdentity();
+    const account = useAccountChrome();
+    grab({ queryClient, identity, account });
+    return <p data-testid="user-id">{account?.userId ?? "none"}</p>;
+  }
+
+  function withCapturedAuthCallback() {
+    let onAuthStateChange: SessionChangeCallback | undefined;
+    const client = authClient(session, {
+      onAuthStateChange: vi.fn((callback: SessionChangeCallback) => {
+        onAuthStateChange = callback;
+        return { unsubscribe: vi.fn() };
+      }),
+    });
+    return {
+      client,
+      trigger: (next: AuthSession | null) => onAuthStateChange?.(next),
+    };
+  }
+
+  const userB: AuthSession = {
+    accessToken: "token-b",
+    user: { id: "user-b", email: "b@example.com", appMetadata: null },
+  };
+
+  it("clears the cache and preserves identity when the user changes via the auth callback", async () => {
+    const { client, trigger } = withCapturedAuthCallback();
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell
+        authRequired
+        authClient={client}
+        fetchMemberships={vi
+          .fn()
+          .mockResolvedValue([{ id: "org-1", name: "Acme", accountLocator: null }])}
+      >
+        <IdentityProbe grab={(v) => (latest = v)} />
+      </OrgShell>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("user-id")).toHaveTextContent("user-a"),
+    );
+    const queryClient = latest!.queryClient;
+    // Seed data belonging to user A's org.
+    queryClient.setQueryData(
+      queryKeys.dashboard.scope("user-a", "org-1"),
+      { stale: true },
+    );
+    expect(queryClient.getQueryCache().getAll().length).toBeGreaterThan(0);
+
+    act(() => trigger(userB));
+
+    await waitFor(() =>
+      expect(queryClient.getQueryCache().getAll()).toHaveLength(0),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("user-id")).toHaveTextContent("user-b"),
+    );
+  });
+
+  it("drops a deferred write captured before the user changes", async () => {
+    const { client, trigger } = withCapturedAuthCallback();
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell
+        authRequired
+        authClient={client}
+        fetchMemberships={vi
+          .fn()
+          .mockResolvedValue([{ id: "org-1", name: "Acme", accountLocator: null }])}
+      >
+        <IdentityProbe grab={(v) => (latest = v)} />
+      </OrgShell>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("user-id")).toHaveTextContent("user-a"),
+    );
+    // Capture user A's identity as an in-flight poll would.
+    const captured = latest!.identity.capture();
+    const staleKey = queryKeys.dashboard.scope("user-a", "org-1");
+
+    // The user transitions to B before the deferred work resolves.
+    act(() => trigger(userB));
+    await waitFor(() =>
+      expect(screen.getByTestId("user-id")).toHaveTextContent("user-b"),
+    );
+
+    const wrote = guardedSetQueryData(
+      latest!.queryClient,
+      latest!.identity.ref,
+      captured,
+      staleKey,
+      { stale: true },
+    );
+
+    expect(wrote).toBe(false);
+    expect(latest!.queryClient.getQueryData(staleKey)).toBeUndefined();
+  });
+
+  it("drops a deferred write when the org changes even though the epoch is unchanged", async () => {
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell
+        authRequired
+        authClient={authClient(session)}
+        fetchMemberships={vi.fn().mockResolvedValue([
+          { id: "org-1", name: "Alpha", accountLocator: null },
+          { id: "org-2", name: "Bravo", accountLocator: null },
+        ])}
+      >
+        <IdentityProbe grab={(v) => (latest = v)} />
+      </OrgShell>,
+    );
+
+    await waitFor(() =>
+      expect(latest?.identity.snapshot.orgId).toBe("org-1"),
+    );
+    const capturedEpoch = latest!.identity.snapshot.epoch;
+    const captured = latest!.identity.capture();
+    const staleKey = queryKeys.dashboard.scope("user-a", "org-1");
+
+    // Switch the active org without any re-auth: the epoch stays fixed.
+    act(() => latest!.account?.setActiveOrganization("org-2"));
+    await waitFor(() =>
+      expect(latest?.identity.snapshot.orgId).toBe("org-2"),
+    );
+    expect(latest!.identity.snapshot.epoch).toBe(capturedEpoch);
+
+    const wrote = guardedSetQueryData(
+      latest!.queryClient,
+      latest!.identity.ref,
+      captured,
+      staleKey,
+      { stale: true },
+    );
+
+    expect(wrote).toBe(false);
+    expect(latest!.queryClient.getQueryData(staleKey)).toBeUndefined();
+  });
+
+  it("removeOrganizationQueries removes only the supplied org's entries", async () => {
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell
+        authRequired
+        authClient={authClient(session)}
+        fetchMemberships={vi.fn().mockResolvedValue([
+          { id: "org-1", name: "Alpha", accountLocator: null },
+          { id: "org-2", name: "Bravo", accountLocator: null },
+        ])}
+      >
+        <IdentityProbe grab={(v) => (latest = v)} />
+      </OrgShell>,
+    );
+
+    await waitFor(() =>
+      expect(latest?.identity.snapshot.orgId).toBe("org-1"),
+    );
+    const queryClient = latest!.queryClient;
+    const orgOneKey = queryKeys.dashboard.scope("user-a", "org-1");
+    const orgTwoKey = queryKeys.dashboard.scope("user-a", "org-2");
+    queryClient.setQueryData(orgOneKey, { org: 1 });
+    queryClient.setQueryData(orgTwoKey, { org: 2 });
+
+    act(() => latest!.identity.removeOrganizationQueries("org-1"));
+
+    expect(queryClient.getQueryData(orgOneKey)).toBeUndefined();
+    expect(queryClient.getQueryData(orgTwoKey)).toEqual({ org: 2 });
+  });
+
+  it("does not clear the cache when a sign-out fails", async () => {
+    const signOut = vi
+      .fn()
+      .mockResolvedValue({ error: { message: "Sign out failed" } });
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell
+        authRequired
+        authClient={authClient(session, { signOut })}
+        fetchMemberships={vi
+          .fn()
+          .mockResolvedValue([{ id: "org-1", name: "Acme", accountLocator: null }])}
+      >
+        <IdentityProbe grab={(v) => (latest = v)} />
+        <AccountChromeProbe />
+      </OrgShell>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("user-id")).toHaveTextContent("user-a"),
+    );
+    const queryClient = latest!.queryClient;
+    queryClient.setQueryData(queryKeys.dashboard.scope("user-a", "org-1"), {
+      keep: true,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(signOut).toHaveBeenCalled());
+    await screen.findByText(/couldn’t sign you out/i);
+
+    // Failed sign-out must not clear the cache or the identity.
+    expect(queryClient.getQueryCache().getAll().length).toBeGreaterThan(0);
+    expect(screen.getByTestId("user-id")).toHaveTextContent("user-a");
   });
 });

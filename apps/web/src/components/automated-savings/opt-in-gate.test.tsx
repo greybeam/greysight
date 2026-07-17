@@ -19,6 +19,8 @@ afterEach(() => {
 
 function withRole(role: "owner" | "member") {
   return {
+    userId: "test-user",
+    identityEpoch: 0,
     email: "u@acme.com",
     onSignOut: () => {},
     signOutError: null,

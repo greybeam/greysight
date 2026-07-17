@@ -7,6 +7,8 @@ import InviteUser from "./invite-user";
 
 function renderWith(overrides: Partial<AccountChrome>) {
   const value: AccountChrome = {
+    userId: "test-user",
+    identityEpoch: 0,
     email: "user@example.com",
     onSignOut: vi.fn(),
     signOutError: null,
@@ -37,6 +39,8 @@ describe("InviteUser", () => {
     const { container } = render(
       <AccountChromeProvider
         value={{
+          userId: "test-user",
+          identityEpoch: 0,
           email: "u@e.com",
           onSignOut: vi.fn(),
           signOutError: null,

@@ -8,8 +8,10 @@ import {
   type ReactNode,
 } from "react";
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { useAccountChrome, type AccountChrome } from "./account-context";
+import { queryKeys } from "./query-keys";
 
 // Fixed sentinels for unauthenticated/demo contexts where no signed-in identity
 // exists. They give the cache a stable, non-colliding scope so demo data never
@@ -50,19 +52,15 @@ type QueryIdentityContextValue = {
   // Mutable ref so late async callbacks read the *current* identity at call time
   // rather than a value captured at render.
   current: React.MutableRefObject<QueryIdentitySnapshot>;
+  // Remove every cached entry scoped to the current user + the supplied org,
+  // without touching any other org. Wired for the future browser-disconnect
+  // action so a single disconnect can never wipe the whole cache.
+  removeOrganizationQueries: (orgId: string) => void;
 };
 
 const QueryIdentityContext = createContext<QueryIdentityContextValue | null>(
   null,
 );
-
-// AccountChrome does not yet expose userId/identityEpoch (added in a later task).
-// Read them defensively/optionally so this module compiles and behaves sanely
-// today, falling back to the signed-in email and org selection when present.
-type ChromeIdentityFields = {
-  userId?: string | null;
-  identityEpoch?: number | null;
-};
 
 function snapshotFromChrome(
   chrome: AccountChrome | null,
@@ -70,26 +68,50 @@ function snapshotFromChrome(
   if (!chrome) {
     return { userId: DEMO_USER_ID, orgId: DEMO_ORG_ID, epoch: 0 };
   }
-  const identity = chrome as AccountChrome & ChromeIdentityFields;
-  const userId = identity.userId ?? chrome.email ?? DEMO_USER_ID;
+  const userId = chrome.userId || chrome.email || DEMO_USER_ID;
   const orgId = chrome.activeOrganizationId ?? DEMO_ORG_ID;
-  const epoch = identity.identityEpoch ?? 0;
+  const epoch = chrome.identityEpoch ?? 0;
   return { userId, orgId, epoch };
 }
 
 export type QueryIdentityValue = {
   snapshot: QueryIdentitySnapshot;
+  // The live identity ref, so callers can pass it to guardedSetQueryData().
+  ref: React.MutableRefObject<QueryIdentitySnapshot>;
   capture: () => QueryIdentitySnapshot;
   isCurrent: (captured: QueryIdentitySnapshot) => boolean;
+  removeOrganizationQueries: (orgId: string) => void;
 };
 
-export function QueryIdentityProvider({ children }: { children: ReactNode }) {
+export function QueryIdentityProvider({
+  children,
+  identityRef,
+}: {
+  children: ReactNode;
+  // When the owner (OrgShell) maintains the authoritative identity ref, it is
+  // passed in so late async callbacks read the same live snapshot. Otherwise the
+  // provider derives the snapshot from AccountChrome (isolated tests).
+  identityRef?: React.MutableRefObject<QueryIdentitySnapshot>;
+}) {
   const chrome = useAccountChrome();
-  const snapshot = snapshotFromChrome(chrome);
-  const current = useRef<QueryIdentitySnapshot>(snapshot);
-  current.current = snapshot;
+  const queryClient = useQueryClient();
+  const fallbackRef = useRef<QueryIdentitySnapshot>(snapshotFromChrome(chrome));
+  if (!identityRef) {
+    fallbackRef.current = snapshotFromChrome(chrome);
+  }
+  const current = identityRef ?? fallbackRef;
 
-  const value = useMemo<QueryIdentityContextValue>(() => ({ current }), []);
+  const value = useMemo<QueryIdentityContextValue>(
+    () => ({
+      current,
+      removeOrganizationQueries: (orgId: string) => {
+        queryClient.removeQueries({
+          queryKey: queryKeys.scope(current.current.userId, orgId),
+        });
+      },
+    }),
+    [current, queryClient],
+  );
 
   return (
     <QueryIdentityContext.Provider value={value}>
@@ -100,6 +122,7 @@ export function QueryIdentityProvider({ children }: { children: ReactNode }) {
 
 export function useQueryIdentity(): QueryIdentityValue {
   const ctx = useContext(QueryIdentityContext);
+  const queryClient = useQueryClient();
   // Fall back to the AccountChrome-derived snapshot when no provider wraps the
   // tree (e.g. isolated tests). The local ref keeps capture()/isCurrent() stable.
   const chrome = useAccountChrome();
@@ -108,11 +131,19 @@ export function useQueryIdentity(): QueryIdentityValue {
     fallbackRef.current = snapshotFromChrome(chrome);
   }
   const ref = ctx?.current ?? fallbackRef;
+  const removeOrganizationQueries =
+    ctx?.removeOrganizationQueries ??
+    ((orgId: string) =>
+      queryClient.removeQueries({
+        queryKey: queryKeys.scope(ref.current.userId, orgId),
+      }));
 
   return {
     snapshot: ref.current,
+    ref,
     capture: () => ref.current,
     isCurrent: (captured: QueryIdentitySnapshot) =>
       sameQueryIdentity(captured, ref.current),
+    removeOrganizationQueries,
   };
 }

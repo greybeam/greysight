@@ -45,6 +45,8 @@ vi.mock("../../lib/automated-savings-api", async () => {
 
 function shellAccountValue(activeOrganizationId: string) {
   return {
+    userId: "test-user",
+    identityEpoch: 0,
     email: "u@acme.com",
     onSignOut: () => {},
     signOutError: null,

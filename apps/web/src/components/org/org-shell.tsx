@@ -1,8 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { AccountChromeProvider } from "../../lib/account-context";
+import {
+  DEMO_ORG_ID,
+  DEMO_USER_ID,
+  QueryIdentityProvider,
+  type QueryIdentitySnapshot,
+} from "../../lib/query-identity";
 import {
   readActiveOrganizationId,
   writeActiveOrganizationId,
@@ -74,6 +81,50 @@ export default function OrgShell({
   const [addAccountOpen, setAddAccountOpen] = useState(false);
   const accessToken = session?.accessToken ?? null;
 
+  // OrgShell owns a single QueryClient for the whole authenticated tree so the
+  // cache lives and dies with this shell's identity, not with any child.
+  const [queryClient] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: {
+            staleTime: 60_000,
+            gcTime: 30 * 60_000,
+            retry: false,
+            refetchOnWindowFocus: false,
+          },
+        },
+      }),
+  );
+
+  // Identity epoch bumps on every user transition. `observedUserIdRef` starts
+  // `undefined` (nothing observed yet) so the first real/null resolution counts
+  // as a transition exactly once; repeated identical callbacks are ignored.
+  const [identityEpoch, setIdentityEpoch] = useState(0);
+  const identityEpochRef = useRef(0);
+  const observedUserIdRef = useRef<string | null | undefined>(undefined);
+  const identityRef = useRef<QueryIdentitySnapshot>({
+    userId: DEMO_USER_ID,
+    orgId: DEMO_ORG_ID,
+    epoch: 0,
+  });
+
+  // Centralize user transitions: cancel in-flight queries, wipe the cache, and
+  // bump the epoch whenever the signed-in user id actually changes (including
+  // null <-> user). A no-op when the user id is unchanged, so repeated null/user
+  // callbacks never double-bump the epoch or needlessly clear the cache.
+  const transitionUser = useCallback(
+    (nextUserId: string | null) => {
+      if (observedUserIdRef.current === nextUserId) return;
+      observedUserIdRef.current = nextUserId;
+      void queryClient.cancelQueries();
+      queryClient.clear();
+      identityEpochRef.current += 1;
+      setIdentityEpoch(identityEpochRef.current);
+    },
+    [queryClient],
+  );
+
   // When no client prop is supplied, defer createBrowserAuthClient() to a
   // post-mount effect. Until it runs, both the server render and the client's
   // first paint show the deterministic "Loading authentication" placeholder,
@@ -108,12 +159,14 @@ export default function OrgShell({
     let active = true;
     void authClient.getSession().then((result) => {
       if (!active) return;
+      transitionUser(result.session?.user?.id ?? null);
       setSession(result.session);
       setLoadingSession(false);
     });
 
     const subscription = authClient.onAuthStateChange((nextSession) => {
       if (!active) return;
+      transitionUser(nextSession?.user?.id ?? null);
       setSession(nextSession);
       setLoadingSession(false);
     });
@@ -122,7 +175,7 @@ export default function OrgShell({
       active = false;
       subscription.unsubscribe();
     };
-  }, [authClient, authRequired]);
+  }, [authClient, authRequired, transitionUser]);
 
   useEffect(() => {
     onAccessTokenChangeRef.current?.(accessToken);
@@ -215,11 +268,33 @@ export default function OrgShell({
     // existing effects, the membership reset to idle, the latest-token ref
     // reset, onAccessTokenChange(null), and onOrganizationChange(null) — so the
     // component cannot keep rendering as signed-in if that callback is delayed
-    // or never fires.
+    // or never fires. A failed sign-out (handled above) never reaches here, so
+    // it leaves the cache and identity intact.
+    transitionUser(null);
     setSession(null);
     onOrganizationChangeRef.current?.(null);
-  }, [authClient]);
+  }, [authClient, transitionUser]);
 
+  // Refresh the shared identity snapshot on every render so late async callbacks
+  // (via QueryIdentityProvider) read the current user/org/epoch. Auth-off mode
+  // uses the fixed demo sentinel; authenticated renders carry the real identity.
+  if (!authRequired) {
+    identityRef.current = { userId: DEMO_USER_ID, orgId: DEMO_ORG_ID, epoch: 0 };
+  } else if (session?.user?.id) {
+    identityRef.current = {
+      userId: session.user.id,
+      orgId: activeOrganization?.id ?? DEMO_ORG_ID,
+      epoch: identityEpoch,
+    };
+  } else {
+    identityRef.current = {
+      userId: DEMO_USER_ID,
+      orgId: DEMO_ORG_ID,
+      epoch: identityEpoch,
+    };
+  }
+
+  const content = (() => {
   if (!authRequired) {
     return (
       <div className="min-h-screen bg-slate-50">
@@ -345,6 +420,8 @@ export default function OrgShell({
   return (
     <AccountChromeProvider
       value={{
+        userId: session.user?.id ?? DEMO_USER_ID,
+        identityEpoch,
         email: session.user?.email ?? "Authenticated user",
         onSignOut: handleSignOut,
         signOutError,
@@ -396,5 +473,14 @@ export default function OrgShell({
         </div>
       ) : null}
     </AccountChromeProvider>
+  );
+  })();
+
+  return (
+    <QueryClientProvider client={queryClient}>
+      <QueryIdentityProvider identityRef={identityRef}>
+        {content}
+      </QueryIdentityProvider>
+    </QueryClientProvider>
   );
 }

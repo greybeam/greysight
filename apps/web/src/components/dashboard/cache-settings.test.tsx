@@ -7,6 +7,8 @@ import CacheSettings from "./cache-settings";
 
 function renderWith(overrides: Partial<AccountChrome>) {
   const value: AccountChrome = {
+    userId: "test-user",
+    identityEpoch: 0,
     email: "user@example.com",
     onSignOut: vi.fn(),
     signOutError: null,

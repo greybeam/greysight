@@ -8,6 +8,7 @@ type PublicSupabaseEnv = Record<string, string | undefined> & {
 export type AuthSession = {
   accessToken: string;
   user?: {
+    id: string;
     email?: string | null;
     appMetadata?: Record<string, unknown> | null;
   } | null;
@@ -71,6 +72,7 @@ function toAuthSession(session: Session | null): AuthSession | null {
   return {
     accessToken: session.access_token,
     user: {
+      id: session.user.id,
       email: session.user.email ?? null,
       appMetadata: session.user.app_metadata ?? null,
     },

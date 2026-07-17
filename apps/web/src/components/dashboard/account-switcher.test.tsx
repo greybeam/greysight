@@ -7,6 +7,8 @@ import AccountSwitcher from "./account-switcher";
 
 function renderWith(overrides: Partial<AccountChrome>) {
   const value: AccountChrome = {
+    userId: "test-user",
+    identityEpoch: 0,
     email: "user@example.com",
     onSignOut: vi.fn(),
     signOutError: null,
@@ -104,7 +106,9 @@ describe("AccountSwitcher", () => {
     const { container } = render(
       <AccountChromeProvider
         value={{
-          email: "user@example.com",
+          userId: "test-user",
+    identityEpoch: 0,
+    email: "user@example.com",
           onSignOut: vi.fn(),
           signOutError: null,
           organizations: [],
