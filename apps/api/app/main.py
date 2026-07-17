@@ -188,7 +188,9 @@ async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
     auth_client = httpx.AsyncClient(limits=HTTP_LIMITS, timeout=client_timeout())
     async_client = httpx.AsyncClient(limits=HTTP_LIMITS, timeout=client_timeout())
     sync_client = httpx.Client(limits=HTTP_LIMITS, timeout=client_timeout())
-    install_clients(auth=auth_client, async_client=async_client, sync_client=sync_client)
+    install_clients(
+        auth=auth_client, async_client=async_client, sync_client=sync_client
+    )
     try:
         query_concurrency.configure(settings.query_concurrency)
         yield

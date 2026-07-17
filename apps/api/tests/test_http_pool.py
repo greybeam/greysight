@@ -48,9 +48,7 @@ def test_reinstall_same_objects_is_noop() -> None:
     sync_client = httpx.Client()
     install_clients(auth=auth, async_client=async_client, sync_client=sync_client)
     try:
-        install_clients(
-            auth=auth, async_client=async_client, sync_client=sync_client
-        )
+        install_clients(auth=auth, async_client=async_client, sync_client=sync_client)
         assert get_auth_client() is auth
     finally:
         clear_clients()

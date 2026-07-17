@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AccountChromeProvider, type AccountChrome } from "../../lib/account-context";
 import * as api from "../../lib/cache-settings-api";
+import { createTestQueryClient } from "../../lib/query-test-utils";
+import { QueryClientProvider } from "@tanstack/react-query";
 import AccountSwitcher from "./account-switcher";
 
 function renderWith(overrides: Partial<AccountChrome>) {
@@ -20,9 +22,11 @@ function renderWith(overrides: Partial<AccountChrome>) {
     ...overrides,
   };
   render(
-    <AccountChromeProvider value={value}>
-      <AccountSwitcher />
-    </AccountChromeProvider>,
+    <QueryClientProvider client={createTestQueryClient()}>
+      <AccountChromeProvider value={value}>
+        <AccountSwitcher />
+      </AccountChromeProvider>
+    </QueryClientProvider>,
   );
   return value;
 }

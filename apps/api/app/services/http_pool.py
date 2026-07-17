@@ -35,7 +35,9 @@ def install_clients(
     sync_client: httpx.Client,
 ) -> None:
     global _auth_client, _async_client, _sync_client
-    if any(client is not None for client in (_auth_client, _async_client, _sync_client)):
+    if any(
+        client is not None for client in (_auth_client, _async_client, _sync_client)
+    ):
         if (_auth_client, _async_client, _sync_client) != (
             auth,
             async_client,
