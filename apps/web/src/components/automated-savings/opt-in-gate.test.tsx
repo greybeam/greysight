@@ -113,6 +113,39 @@ describe("OptInGate", () => {
     await waitFor(() => expect(agreeButton).not.toBeDisabled());
   });
 
+  it("keeps the Agree button disabled until the completion callback settles, preventing a duplicate agree POST", async () => {
+    // agree() resolves, but the shell's post-agreement status invalidation/refetch
+    // (onAgreed) is still pending. Until it settles the cache still reads
+    // agreed:false, so this gate stays mounted. The button must remain disabled
+    // during that window — a second click must NOT issue another agree POST.
+    const agreeSpy = vi
+      .spyOn(automatedSavingsApi, "agree")
+      .mockResolvedValue(undefined);
+    let resolveComplete: (() => void) | undefined;
+    const onAgreed = vi.fn(
+      () => new Promise<void>((resolve) => { resolveComplete = resolve; }),
+    );
+    render(
+      <AccountChromeProvider value={withRole("owner")}>
+        <OptInGate orgId="org-1" roleName="GREYSIGHT_RL" onAgreed={onAgreed} />
+      </AccountChromeProvider>,
+    );
+
+    const agreeButton = screen.getByRole("button", { name: /agree/i });
+    fireEvent.click(agreeButton);
+
+    await waitFor(() => expect(onAgreed).toHaveBeenCalled());
+    // Completion still pending: the gate stays busy and a second click is a no-op.
+    expect(agreeButton).toBeDisabled();
+    fireEvent.click(agreeButton);
+    expect(agreeSpy).toHaveBeenCalledOnce();
+
+    // Once the completion settles (e.g. the refetch resolved or failed, but the
+    // gate remained mounted), the button recovers to a clickable state.
+    resolveComplete?.();
+    await waitFor(() => expect(agreeButton).not.toBeDisabled());
+  });
+
   it("shows an error message when agree fails", async () => {
     vi.spyOn(automatedSavingsApi, "agree").mockRejectedValue(new Error("boom"));
     render(

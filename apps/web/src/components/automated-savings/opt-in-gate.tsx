@@ -13,7 +13,7 @@ import {
 type OptInGateProps = {
   orgId: string;
   roleName: string;
-  onAgreed: (captured: QueryIdentitySnapshot) => void;
+  onAgreed: (captured: QueryIdentitySnapshot) => Promise<void> | void;
 };
 
 // Escapes a Snowflake identifier for safe interpolation into double-quoted
@@ -79,24 +79,33 @@ export function OptInGate({ orgId, roleName, onAgreed }: OptInGateProps) {
     // request is in flight (see handleAgreementComplete in the shell).
     const captured = queryIdentity.capture();
     setStatus("submitting");
+    let failed = false;
     try {
       await agree(orgId, { accessToken: account?.accessToken ?? null });
-      onAgreed(captured);
-      // Always reset to idle after onAgreed. For the current identity, onAgreed
-      // refetches status and this gate unmounts once agreed renders, so the
-      // reset is a harmless no-op on success — but if that post-agreement
-      // refetch FAILS (cache keeps agreed:false), the gate stays mounted, and
-      // an unconditional reset recovers its button instead of leaving it stuck
-      // disabled forever. It also covers the case where the org/account switched
-      // to another still-unagreed workspace while the request was in flight, so
-      // this same gate stays mounted for the NEW org.
-      setStatus("idle");
+      // Hold the gate busy until the completion callback settles. The shell's
+      // handler awaits a status invalidation/refetch, and until it resolves the
+      // cache still reads agreed:false — this gate stays mounted. Resetting to
+      // idle before onAgreed settles would re-enable the button and allow a
+      // duplicate agree POST. The invalidate promise resolves even when the
+      // refetch errors, so this await always settles and the button recovers.
+      await onAgreed(captured);
     } catch {
+      failed = true;
       // Only surface the error on the gate that started the request. If the
       // org/account switched to another still-unagreed workspace while this
       // request was in flight, a stale failure must not paint its error message
       // on the new org's gate — reset to idle so its button stays usable.
       setStatus(queryIdentity.isCurrent(captured) ? "error" : "idle");
+    } finally {
+      // Reset to idle only after onAgreed has settled. For the current identity,
+      // onAgreed refetches status and this gate unmounts once agreed renders, so
+      // the reset is a harmless no-op on success — but if that post-agreement
+      // refetch FAILS (cache keeps agreed:false), the gate stays mounted, and
+      // this reset recovers its button instead of leaving it stuck disabled
+      // forever. It also covers the case where the org/account switched to
+      // another still-unagreed workspace while the request was in flight, so
+      // this same gate stays mounted for the NEW org.
+      if (!failed) setStatus("idle");
     }
   }
 
