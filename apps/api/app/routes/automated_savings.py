@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
-from datetime import datetime, timezone
+import re
+from datetime import date, datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.auth import (
@@ -18,6 +21,7 @@ from app.services.automated_savings_store import (
     get_automated_savings_store,
 )
 from app.services.snowflake_client import SnowflakeQueryError
+from app.services.ttl_cache import TtlCache
 from app.services.warehouse_directory import WarehouseStatus
 
 logger = logging.getLogger(__name__)
@@ -45,6 +49,33 @@ class CheckAccessResponse(BaseModel):
     grant_present: bool
     grant_checked_at: str | None
     role_name: str | None = None
+
+
+class SuspensionStatsBucket(BaseModel):
+    day: str
+    counts: dict[str, int]
+
+
+class SuspensionStatsResponse(BaseModel):
+    days: int
+    warehouses: list[str]
+    buckets: list[SuspensionStatsBucket]
+
+
+class SuspensionEventResponse(BaseModel):
+    id: str
+    created_at: str
+    warehouse_name: str
+    action: str
+    reason: str
+    observed_started_clusters: int | None
+    observed_resumed_on: str | None
+    observed_at: str
+
+
+class SuspensionEventsPageResponse(BaseModel):
+    events: list[SuspensionEventResponse]
+    next_cursor: str | None
 
 
 class WarehouseResponse(BaseModel):
@@ -129,6 +160,57 @@ def _status_response(settings_row, *, role_name: str | None = None) -> StatusRes
         grant_checked_at=settings_row.grant_checked_at,
         role_name=role_name,
     )
+
+
+# Stats responses are cheap but page-refresh-hot; 60s staleness is acceptable.
+_stats_cache = TtlCache(ttl_seconds=60.0, max_entries=256)
+
+_ALLOWED_STATS_DAYS = (7, 30)
+
+
+def _utc_today() -> date:
+    return datetime.now(timezone.utc).date()
+
+
+_CURSOR_VERSION = "v1"
+_CURSOR_MAX_LENGTH = 256
+_EVENTS_MAX_LIMIT = 100
+_BASE64URL_RE = re.compile(r"^[A-Za-z0-9_-]+={0,2}$")
+
+
+def _encode_cursor(created_at: str, event_id: int) -> str:
+    raw = f"{_CURSOR_VERSION}|{created_at}|{event_id}".encode()
+    return base64.urlsafe_b64encode(raw).decode()
+
+
+def _decode_cursor(cursor: str) -> tuple[str, int]:
+    invalid = HTTPException(status_code=400, detail="Invalid cursor.")
+    if len(cursor) > _CURSOR_MAX_LENGTH:
+        raise invalid
+    if not _BASE64URL_RE.match(cursor):
+        raise invalid
+    try:
+        # urlsafe_b64decode has no validate parameter; strict-decode via altchars.
+        raw = base64.b64decode(cursor.encode(), altchars=b"-_", validate=True).decode()
+    except (binascii.Error, UnicodeDecodeError, ValueError):
+        raise invalid from None
+    parts = raw.split("|")
+    if len(parts) != 3 or parts[0] != _CURSOR_VERSION:
+        raise invalid
+    _, created_at, id_text = parts
+    try:
+        parsed = datetime.fromisoformat(created_at)
+        event_id = int(id_text)
+    except ValueError:
+        raise invalid from None
+    if (
+        parsed.tzinfo is None
+        or parsed.utcoffset() is None
+        or event_id <= 0
+        or event_id > 2**63 - 1
+    ):
+        raise invalid
+    return created_at, event_id
 
 
 def _require_store():
@@ -385,4 +467,106 @@ def check_access(
 
     return CheckAccessResponse(
         grant_present=present, grant_checked_at=checked_at, role_name=role_name
+    )
+
+
+@router.get(
+    "/{organization_id}/stats/suspensions",
+    response_model=SuspensionStatsResponse,
+)
+def get_suspension_stats(
+    organization_id: str,
+    days: int = Query(7),
+    auth_context: AuthContext = Depends(require_auth_context),
+) -> SuspensionStatsResponse:
+    require_org_membership(auth_context, organization_id)
+    if days not in _ALLOWED_STATS_DAYS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"days must be one of {list(_ALLOWED_STATS_DAYS)}.",
+        )
+
+    today = _utc_today()
+    cache_key = (organization_id, days, today.isoformat())
+    cached = _stats_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    store = _require_store()
+    try:
+        rows = store.daily_suspensions(organization_id, days, today.isoformat())
+    except AutomatedSavingsStoreError as exc:
+        _log_store_failure("daily_suspensions", exc)
+        raise HTTPException(
+            status_code=502, detail="Could not load suspension stats."
+        ) from None
+
+    warehouses = sorted({row.warehouse_name for row in rows})
+    counts_by_day_wh = {
+        (row.day, row.warehouse_name): row.suspension_count for row in rows
+    }
+    start = today - timedelta(days=days - 1)
+    buckets = []
+    for offset in range(days):
+        day_iso = (start + timedelta(days=offset)).isoformat()
+        counts = {wh: counts_by_day_wh.get((day_iso, wh), 0) for wh in warehouses}
+        buckets.append(SuspensionStatsBucket(day=day_iso, counts=counts))
+    response = SuspensionStatsResponse(
+        days=days, warehouses=warehouses, buckets=buckets
+    )
+    _stats_cache.set(cache_key, response)
+    return response
+
+
+@router.get(
+    "/{organization_id}/events",
+    response_model=SuspensionEventsPageResponse,
+)
+def list_suspension_events(
+    organization_id: str,
+    limit: int = Query(25),
+    cursor: str | None = Query(None),
+    auth_context: AuthContext = Depends(require_auth_context),
+) -> SuspensionEventsPageResponse:
+    require_org_membership(auth_context, organization_id)
+    page_limit = max(1, min(limit, _EVENTS_MAX_LIMIT))
+    cursor_created_at: str | None = None
+    cursor_id: int | None = None
+    if cursor is not None:
+        cursor_created_at, cursor_id = _decode_cursor(cursor)
+
+    store = _require_store()
+    try:
+        rows = store.list_events(
+            organization_id,
+            limit=page_limit + 1,
+            cursor_created_at=cursor_created_at,
+            cursor_id=cursor_id,
+        )
+    except AutomatedSavingsStoreError as exc:
+        _log_store_failure("list_events", exc)
+        raise HTTPException(
+            status_code=502, detail="Could not load suspension events."
+        ) from None
+
+    has_more = len(rows) > page_limit
+    page = rows[:page_limit]
+    next_cursor = (
+        _encode_cursor(page[-1].created_at, page[-1].id) if has_more and page else None
+    )
+    return SuspensionEventsPageResponse(
+        events=[
+            SuspensionEventResponse(
+                id=str(row.id),
+                created_at=row.created_at,
+                warehouse_name=row.warehouse_name,
+                action=row.action,
+                reason=row.reason,
+                observed_started_clusters=row.observed_started_clusters,
+                observed_resumed_on=row.observed_resumed_on,
+                observed_at=row.observed_at,
+            )
+            for row in page
+        ],
+        next_cursor=next_cursor,
     )

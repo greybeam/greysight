@@ -774,7 +774,9 @@ begin
               'automated_savings_disable_enrollment',
               'automated_savings_authorize_suspend',
               'automated_savings_delete_stale_enrollment',
-              'automated_savings_worker_tenants'
+              'automated_savings_worker_tenants',
+              'automated_savings_daily_suspensions',
+              'automated_savings_events_page'
           )
           and grantee in ('PUBLIC', 'anon', 'authenticated')
     ) then
@@ -790,7 +792,9 @@ begin
               'automated_savings_disable_enrollment',
               'automated_savings_authorize_suspend',
               'automated_savings_delete_stale_enrollment',
-              'automated_savings_worker_tenants'
+              'automated_savings_worker_tenants',
+              'automated_savings_daily_suspensions',
+              'automated_savings_events_page'
           )
           and grantee not in ('postgres', 'service_role')
     ) then
@@ -807,7 +811,9 @@ begin
               'automated_savings_disable_enrollment',
               'automated_savings_authorize_suspend',
               'automated_savings_delete_stale_enrollment',
-              'automated_savings_worker_tenants'
+              'automated_savings_worker_tenants',
+              'automated_savings_daily_suspensions',
+              'automated_savings_events_page'
           )
           and (
               p.prosecdef
@@ -829,7 +835,7 @@ begin
     join pg_catalog.pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public'
       and left(p.proname, length('automated_savings_')) = 'automated_savings_';
-    if v_rpc_signature_count <> 5 then
+    if v_rpc_signature_count <> 7 then
         raise exception 'unexpected automated savings RPC signature or overload';
     end if;
 
@@ -844,7 +850,10 @@ begin
                  'uuid, text, timestamp with time zone, timestamp with time zone'),
                 ('automated_savings_delete_stale_enrollment',
                  'uuid, text, timestamp with time zone, timestamp with time zone'),
-                ('automated_savings_worker_tenants', '')
+                ('automated_savings_worker_tenants', ''),
+                ('automated_savings_daily_suspensions', 'uuid, integer, date'),
+                ('automated_savings_events_page',
+                 'uuid, integer, timestamp with time zone, bigint')
         ) expected(name, arguments)
         where not exists (
             select 1

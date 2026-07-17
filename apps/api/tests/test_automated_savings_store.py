@@ -5,6 +5,8 @@ import pytest
 
 from app.services.automated_savings_store import (
     AutomatedSavingsStoreError,
+    DailySuspensionsRow,
+    EventRow,
     SupabaseAutomatedSavingsStore,
 )
 
@@ -155,3 +157,206 @@ def test_upsert_enrollment_raises_on_non_success_status() -> None:
             enabled=True,
             warehouse_created_on="2024-01-01T00:00:00Z",
         )
+
+
+def _rpc_store(handler):
+    return SupabaseAutomatedSavingsStore(
+        supabase_url="https://example.supabase.co",
+        service_role_key="key",
+        transport=httpx.MockTransport(handler),
+    )
+
+
+def test_daily_suspensions_calls_rpc_and_parses_rows():
+    captured = {}
+
+    def handler(request):
+        captured["url"] = str(request.url)
+        captured["json"] = json.loads(request.read())
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "day": "2026-07-14",
+                    "warehouse_name": "COMPUTE_WH",
+                    "suspension_count": 3,
+                },
+                {
+                    "day": "2026-07-15",
+                    "warehouse_name": "ANALYTICS_WH",
+                    "suspension_count": 1,
+                },
+            ],
+        )
+
+    rows = _rpc_store(handler).daily_suspensions("org-1", 7, "2026-07-15")
+
+    assert captured["url"].endswith("/rest/v1/rpc/automated_savings_daily_suspensions")
+    assert captured["json"] == {
+        "p_organization_id": "org-1",
+        "p_day_count": 7,
+        "p_end_day": "2026-07-15",
+    }
+    assert rows == [
+        DailySuspensionsRow(
+            day="2026-07-14", warehouse_name="COMPUTE_WH", suspension_count=3
+        ),
+        DailySuspensionsRow(
+            day="2026-07-15", warehouse_name="ANALYTICS_WH", suspension_count=1
+        ),
+    ]
+
+
+def test_list_events_passes_cursor_and_parses_rows():
+    captured = {}
+
+    def handler(request):
+        captured["url"] = str(request.url)
+        captured["json"] = json.loads(request.read())
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 42,
+                    "created_at": "2026-07-15T10:00:00+00:00",
+                    "warehouse_name": "COMPUTE_WH",
+                    "action": "suspend",
+                    "reason": "idle",
+                    "observed_started_clusters": 1,
+                    "observed_resumed_on": "2026-07-15T08:00:00+00:00",
+                    "observed_at": "2026-07-15T09:59:00+00:00",
+                }
+            ],
+        )
+
+    rows = _rpc_store(handler).list_events(
+        "org-1",
+        limit=26,
+        cursor_created_at="2026-07-15T11:00:00+00:00",
+        cursor_id=99,
+    )
+
+    assert captured["url"].endswith("/rest/v1/rpc/automated_savings_events_page")
+    assert captured["json"] == {
+        "p_organization_id": "org-1",
+        "p_page_limit": 26,
+        "p_cursor_created_at": "2026-07-15T11:00:00+00:00",
+        "p_cursor_id": 99,
+    }
+    assert rows == [
+        EventRow(
+            id=42,
+            created_at="2026-07-15T10:00:00+00:00",
+            warehouse_name="COMPUTE_WH",
+            action="suspend",
+            reason="idle",
+            observed_started_clusters=1,
+            observed_resumed_on="2026-07-15T08:00:00+00:00",
+            observed_at="2026-07-15T09:59:00+00:00",
+        )
+    ]
+
+
+def test_list_events_nullable_fields_allowed_and_malformed_row_raises():
+    def ok_handler(request):
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 1,
+                    "created_at": "2026-07-15T10:00:00+00:00",
+                    "warehouse_name": "WH",
+                    "action": "suspend",
+                    "reason": "idle",
+                    "observed_started_clusters": None,
+                    "observed_resumed_on": None,
+                    "observed_at": "2026-07-15T09:59:00+00:00",
+                }
+            ],
+        )
+
+    row = _rpc_store(ok_handler).list_events("org-1", limit=1)[0]
+    assert row.observed_resumed_on is None
+    assert row.observed_started_clusters is None
+
+    def bad_handler(request):
+        return httpx.Response(200, json=[{"id": "not-an-int"}])
+
+    with pytest.raises(AutomatedSavingsStoreError) as exc_info:
+        _rpc_store(bad_handler).list_events("org-1", limit=1)
+    assert exc_info.value.kind == "malformed_row"
+
+
+def test_daily_suspensions_rejects_invalid_calendar_day():
+    def handler(request):
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "day": "2026-13-40",
+                    "warehouse_name": "COMPUTE_WH",
+                    "suspension_count": 3,
+                }
+            ],
+        )
+
+    with pytest.raises(AutomatedSavingsStoreError) as exc_info:
+        _rpc_store(handler).daily_suspensions("org-1", 7, "2026-07-15")
+    assert exc_info.value.kind == "malformed_row"
+
+
+def test_daily_suspensions_rejects_non_canonical_day():
+    # Python 3.11+'s date.fromisoformat also accepts basic-format ("20260715")
+    # and ISO-week ("2026-W29-4") strings; only canonical YYYY-MM-DD may pass.
+    def handler(request):
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "day": "20260715",
+                    "warehouse_name": "COMPUTE_WH",
+                    "suspension_count": 3,
+                }
+            ],
+        )
+
+    with pytest.raises(AutomatedSavingsStoreError) as exc_info:
+        _rpc_store(handler).daily_suspensions("org-1", 7, "2026-07-15")
+    assert exc_info.value.kind == "malformed_row"
+
+
+@pytest.mark.parametrize(
+    "missing_key",
+    ["observed_started_clusters", "observed_resumed_on"],
+)
+def test_list_events_missing_nullable_event_key_raises_malformed_row(
+    missing_key,
+):
+    event_row = {
+        "id": 1,
+        "created_at": "2026-07-15T10:00:00+00:00",
+        "warehouse_name": "WH",
+        "action": "suspend",
+        "reason": "idle",
+        "observed_started_clusters": None,
+        "observed_resumed_on": None,
+        "observed_at": "2026-07-15T09:59:00+00:00",
+    }
+    del event_row[missing_key]
+
+    def handler(request):
+        return httpx.Response(200, json=[event_row])
+
+    with pytest.raises(AutomatedSavingsStoreError) as exc_info:
+        _rpc_store(handler).list_events("org-1", limit=1)
+    assert exc_info.value.kind == "malformed_row"
+
+
+def test_read_rpc_http_failure_raises_store_error():
+    def handler(request):
+        return httpx.Response(503, text="secret body")
+
+    with pytest.raises(AutomatedSavingsStoreError) as exc_info:
+        _rpc_store(handler).daily_suspensions("org-1", 7, "2026-07-15")
+    assert exc_info.value.kind == "http_status"
+    assert exc_info.value.status_code == 503
