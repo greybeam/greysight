@@ -96,8 +96,8 @@ path. Additional invariants:
   credential *object* structurally cannot be smuggled into a key. String params
   (`userId`, `orgId`, `runId`, `cursor`, and any token strings) are still valid
   `QueryKeyParamValue`s, so the type does **not** prevent a secret *string* from
-  entering a key — keeping raw secrets out of key strings is a matter of
-  convention, enforced by only constructing keys from the registry.
+  entering a key — keeping raw secrets out of key strings is a convention (the
+  registry accepts any string), upheld by code review rather than the type system.
 - **Demo sentinels.** Unauthenticated/demo contexts use the fixed `demo-user` /
   `demo-org` sentinels (`DEMO_USER_ID` / `DEMO_ORG_ID`), giving demo data a stable,
   non-colliding scope that never mixes with a real user's org data.
