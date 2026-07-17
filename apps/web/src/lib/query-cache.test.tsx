@@ -3,7 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import { createTestQueryClient } from "./query-test-utils";
-import { queryKeys } from "./query-keys";
+import { queryKeys, type QueryKeyParamValue } from "./query-keys";
 
 function Consumer({
   queryKey,
@@ -87,6 +87,14 @@ describe("session query cache", () => {
     expectTypeOf(queryKeys.dashboard.cachedRun).parameters.toEqualTypeOf<
       [string, string]
     >();
+    expectTypeOf(queryKeys.autoSavings.stats).parameters.toEqualTypeOf<
+      [string, string, Readonly<Record<string, QueryKeyParamValue>>]
+    >();
+    // An object value such as a credential must be rejected as a param value.
+    queryKeys.autoSavings.stats("user-1", "org-1", {
+      // @ts-expect-error object values are not key-safe primitives
+      credential: { accessToken: "secret" },
+    });
     expect(queryKeys.autoSavings.status("user-1", "org-1")).not.toContain(
       "secret-access-token",
     );

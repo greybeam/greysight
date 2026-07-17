@@ -3,6 +3,10 @@ import type { DashboardViewRangeRequest } from "./dashboard-api";
 export type QueryUserId = string;
 export type QueryOrganizationId = string;
 
+// Restrict query-key param values to key-safe primitives so callers cannot
+// smuggle an access token or credential object into a cache key.
+export type QueryKeyParamValue = string | number | boolean | null | undefined;
+
 // Normalize range inputs so semantically identical range keys are byte-for-byte
 // identical (e.g. `{}` and `{ windowDays: 30 }` collapse to the same relative
 // window), keeping the cache from splitting into redundant entries.
@@ -69,7 +73,7 @@ export const queryKeys = {
     stats: (
       userId: string,
       orgId: string,
-      params: Readonly<Record<string, unknown>>,
+      params: Readonly<Record<string, QueryKeyParamValue>>,
     ) =>
       [...autoSavingsScope(userId, orgId), "suspension-stats", params] as const,
     events: (userId: string, orgId: string, cursor: string | null) =>
