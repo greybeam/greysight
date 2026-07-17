@@ -241,10 +241,30 @@ function CostDashboardContent({
   // for fresh/demo runs.
   const [cachedAsOf, setCachedAsOf] = useState<string | null>(null);
 
+  // Throw from a query function when identity has changed since it started, so
+  // TanStack (which only stores successful results) never writes an in-flight
+  // result under a now-stale scoped key after an identity transition cleared the
+  // cache. Callers capture identity when the queryFn begins and call this right
+  // before returning the result.
+  const throwIfIdentityChanged = useCallback(
+    (captured: QueryIdentitySnapshot) => {
+      if (!identityRef.current.isCurrent(captured)) {
+        throw new Error(
+          "Query identity changed before the result could be stored",
+        );
+      }
+    },
+    [],
+  );
+
   // Write a resolved view under both the requested-range key and the
   // server-resolved-range key, so a later read by either range retrieves it. The
   // identity guard drops writes that resolved after a sign-out / account / org
-  // switch, so a stale poll can never repopulate old keys.
+  // switch, so a stale poll can never repopulate old keys. Keys always use the
+  // component-scoped userId/orgId (the DEMO sentinels in demo mode, the signed-in
+  // scope otherwise) so writes land in the SAME scope the reads use — never the
+  // surrounding chrome identity when demo mode renders inside authenticated
+  // chrome.
   const cacheView = useCallback(
     (
       captured: QueryIdentitySnapshot,
@@ -254,13 +274,13 @@ function CostDashboardContent({
     ) => {
       if (!identityRef.current.isCurrent(captured)) return false;
       queryClient.setQueryData(
-        queryKeys.dashboard.view(captured.userId, captured.orgId, runId, requested),
+        queryKeys.dashboard.view(userId, orgId, runId, requested),
         view,
       );
       queryClient.setQueryData(
         queryKeys.dashboard.view(
-          captured.userId,
-          captured.orgId,
+          userId,
+          orgId,
           runId,
           requestFromViewRange(view.range),
         ),
@@ -268,7 +288,7 @@ function CostDashboardContent({
       );
       return true;
     },
-    [queryClient],
+    [queryClient, userId, orgId],
   );
 
   const readCachedView = useCallback(
@@ -283,14 +303,18 @@ function CostDashboardContent({
     (runId: string, request: DashboardViewRangeRequest) =>
       queryClient.fetchQuery({
         queryKey: queryKeys.dashboard.view(userId, orgId, runId, request),
-        queryFn: () =>
-          shouldUseDemo
-            ? fetchDemoDashboardView(request)
-            : fetchDashboardView(runId, request, {
+        queryFn: async () => {
+          const captured = identityRef.current.capture();
+          const view = shouldUseDemo
+            ? await fetchDemoDashboardView(request)
+            : await fetchDashboardView(runId, request, {
                 accessToken: accessTokenRef.current,
-              }),
+              });
+          throwIfIdentityChanged(captured);
+          return view;
+        },
       }),
-    [queryClient, userId, orgId, shouldUseDemo],
+    [queryClient, userId, orgId, shouldUseDemo, throwIfIdentityChanged],
   );
 
   const applyDashboardView = useCallback((dashboardView: DashboardView) => {
@@ -322,16 +346,20 @@ function CostDashboardContent({
         }
         void queryClient.prefetchQuery({
           queryKey: key,
-          queryFn: () =>
-            shouldUseDemo
-              ? fetchDemoDashboardView(request)
-              : fetchDashboardView(runId, request, {
+          queryFn: async () => {
+            const captured = identityRef.current.capture();
+            const view = shouldUseDemo
+              ? await fetchDemoDashboardView(request)
+              : await fetchDashboardView(runId, request, {
                   accessToken: accessTokenRef.current,
-                }),
+                });
+            throwIfIdentityChanged(captured);
+            return view;
+          },
         });
       }
     },
-    [queryClient, userId, orgId, shouldUseDemo],
+    [queryClient, userId, orgId, shouldUseDemo, throwIfIdentityChanged],
   );
 
   const loadDemoRun = useCallback(async () => {
@@ -352,21 +380,29 @@ function CostDashboardContent({
           DEFAULT_VIEW_RANGE,
         ),
         queryFn: async () => {
+          const queryCaptured = identityRef.current.capture();
           const view = await fetchDemoDashboardView(DEFAULT_VIEW_RANGE);
           if (view.run.id !== DEMO_RUN_ID) {
             throw new Error("Demo dashboard run id does not match DEMO_RUN_ID");
           }
+          throwIfIdentityChanged(queryCaptured);
           return view;
         },
       });
-      if (runGeneration !== runGenerationRef.current) {
+      if (
+        runGeneration !== runGenerationRef.current ||
+        !identityRef.current.isCurrent(captured)
+      ) {
         return;
       }
       cacheView(captured, DEMO_RUN_ID, DEFAULT_VIEW_RANGE, dashboardView);
       applyDashboardView(dashboardView);
       prefetchRelativeWindows(DEMO_RUN_ID);
     } catch (error) {
-      if (runGeneration !== runGenerationRef.current) {
+      if (
+        runGeneration !== runGenerationRef.current ||
+        !identityRef.current.isCurrent(captured)
+      ) {
         return;
       }
       if (data) {
@@ -390,6 +426,7 @@ function CostDashboardContent({
     orgId,
     prefetchRelativeWindows,
     queryClient,
+    throwIfIdentityChanged,
     userId,
   ]);
 
@@ -586,10 +623,12 @@ function CostDashboardContent({
       DEFAULT_VIEW_RANGE,
     ),
     queryFn: async () => {
+      const captured = identityRef.current.capture();
       const view = await fetchDemoDashboardView(DEFAULT_VIEW_RANGE);
       if (view.run.id !== DEMO_RUN_ID) {
         throw new Error("Demo dashboard run id does not match DEMO_RUN_ID");
       }
+      throwIfIdentityChanged(captured);
       return view;
     },
     enabled: shouldUseDemo && !data && !discoveryDismissed,
@@ -600,8 +639,14 @@ function CostDashboardContent({
   // leaves the idle CTA in place (non-blocking).
   const discovery = useQuery({
     queryKey: queryKeys.dashboard.cachedRun(userId, orgId),
-    queryFn: () =>
-      fetchCachedDashboardRun(orgId, { accessToken: accessTokenRef.current }),
+    queryFn: async () => {
+      const captured = identityRef.current.capture();
+      const result = await fetchCachedDashboardRun(orgId, {
+        accessToken: accessTokenRef.current,
+      });
+      throwIfIdentityChanged(captured);
+      return result;
+    },
     enabled: Boolean(runtime && !shouldUseDemo && !data && !discoveryDismissed),
   });
   const discoveredRunId = discovery.data?.run.id ?? null;
@@ -613,10 +658,14 @@ function CostDashboardContent({
       discoveredRunId ?? "__no-run__",
       DEFAULT_VIEW_RANGE,
     ),
-    queryFn: () =>
-      fetchDashboardView(discoveredRunId!, DEFAULT_VIEW_RANGE, {
+    queryFn: async () => {
+      const captured = identityRef.current.capture();
+      const view = await fetchDashboardView(discoveredRunId!, DEFAULT_VIEW_RANGE, {
         accessToken: accessTokenRef.current,
-      }),
+      });
+      throwIfIdentityChanged(captured);
+      return view;
+    },
     enabled: Boolean(
       runtime &&
         !shouldUseDemo &&
@@ -790,7 +839,8 @@ function CostDashboardContent({
       } catch (error) {
         if (
           runGeneration === runGenerationRef.current &&
-          requestSeq === rangeRequestSeqRef.current
+          requestSeq === rangeRequestSeqRef.current &&
+          identityRef.current.isCurrent(captured)
         ) {
           const failure = dashboardFailure(error);
           setLoadState((current) => ({
@@ -902,11 +952,13 @@ function CostDashboardContent({
       try {
         if (shouldUseDemo) {
           const result = await fetchDemoDashboardSource(AI_SOURCE_ID, request);
-          if (seq !== aiSeqRef.current) return;
+          // Identity may have switched (sign-out / account / org) while the
+          // request was in flight; check immediately before ANY cache or React
+          // state write so a stale result never repopulates the cache or paints.
+          if (seq !== aiSeqRef.current || !identityRef.current.isCurrent(captured))
+            return;
           if (result.view) {
-            if (identityRef.current.isCurrent(captured)) {
-              queryClient.setQueryData(sourceKey, result.view);
-            }
+            queryClient.setQueryData(sourceKey, result.view);
             setAiDetail({ status: "ready", viewModel: result.view });
           } else {
             setAiDetail({
@@ -923,11 +975,10 @@ function CostDashboardContent({
         const result = await pollDashboardSource(runId, AI_SOURCE_ID, request, {
           accessToken: accessTokenRef.current,
         });
-        if (seq !== aiSeqRef.current) return;
+        if (seq !== aiSeqRef.current || !identityRef.current.isCurrent(captured))
+          return;
         if (result.status === "completed" && result.view) {
-          if (identityRef.current.isCurrent(captured)) {
-            queryClient.setQueryData(sourceKey, result.view);
-          }
+          queryClient.setQueryData(sourceKey, result.view);
           setAiDetail({ status: "ready", viewModel: result.view });
         } else {
           setAiDetail({
@@ -938,7 +989,7 @@ function CostDashboardContent({
           });
         }
       } catch (error) {
-        if (seq === aiSeqRef.current) {
+        if (seq === aiSeqRef.current && identityRef.current.isCurrent(captured)) {
           setAiDetail({ status: "error", ...dashboardFailure(error) });
         }
       }

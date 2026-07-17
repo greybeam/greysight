@@ -10,12 +10,29 @@ import {
 } from "@testing-library/react";
 import { QueryClient, notifyManager } from "@tanstack/react-query";
 import type { ReactElement, ReactNode } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 // React Query batches observer notifications through a setTimeout(0) scheduler by
 // default, which fake timers freeze. Flush notifications synchronously so the
-// fake-timer reveal tests observe query results without advancing timers.
-notifyManager.setScheduler((callback) => callback());
+// fake-timer reveal tests observe query results without advancing timers. Scope
+// the override to this suite and restore the default scheduler afterwards so the
+// altered batching does not leak into other suites sharing the worker.
+const DEFAULT_NOTIFY_SCHEDULER = (callback: () => void) => setTimeout(callback, 0);
+beforeAll(() => {
+  notifyManager.setScheduler((callback) => callback());
+});
+afterAll(() => {
+  notifyManager.setScheduler(DEFAULT_NOTIFY_SCHEDULER);
+});
 
 import {
   type DashboardViewRangeRequest,
@@ -1784,6 +1801,160 @@ describe("CostDashboard", () => {
         { windowDays: 7 },
         expect.anything(),
       );
+    });
+
+    it("drops an in-flight range fetch after an identity switch + cache clear so TanStack cannot repopulate the old key", async () => {
+      const dataView: DashboardView = {
+        ...demoDashboardView,
+        run: {
+          ...demoDashboardView.run,
+          id: "run-range-guard",
+          source: "snowflake",
+          status: "completed",
+        },
+      };
+      const pending = createDeferred<DashboardView>();
+      vi.mocked(fetchDashboardView).mockImplementation(async (_runId, request) => {
+        if (request?.windowDays === 7) return pending.promise;
+        return dataView;
+      });
+
+      const client = createPersistentQueryClient();
+      const view = render(
+        <QueryTestProvider
+          client={client}
+          identity={{ activeOrganizationId: ORG_ID, identityEpoch: 0 }}
+        >
+          <CostDashboard demoMode={false} data={dataView} runtime={runtime} />
+        </QueryTestProvider>,
+      );
+
+      // Switch to the 7-day window: loadRange runs a fetchQuery whose queryFn is
+      // held pending, so it is still in flight during the identity switch.
+      fireEvent.click(screen.getByRole("button", { name: "7 days" }));
+      await waitFor(() =>
+        expect(fetchDashboardView).toHaveBeenCalledWith(
+          "run-range-guard",
+          { windowDays: 7 },
+          expect.anything(),
+        ),
+      );
+
+      // Identity epoch bumps and the cache is cleared, mirroring OrgShell's
+      // transitionUser (cancelQueries + clear).
+      view.rerender(
+        <QueryTestProvider
+          client={client}
+          identity={{ activeOrganizationId: ORG_ID, identityEpoch: 1 }}
+        >
+          <CostDashboard demoMode={false} data={dataView} runtime={runtime} />
+        </QueryTestProvider>,
+      );
+      client.clear();
+
+      await act(async () => {
+        pending.resolve(dataView);
+        await pending.promise;
+      });
+
+      // The queryFn throws on the stale identity, so TanStack must not store the
+      // result under the now-cleared 7-day key.
+      const key = queryKeys.dashboard.view(USER_ID, ORG_ID, "run-range-guard", {
+        windowDays: 7,
+      });
+      expect(client.getQueryData(key)).toBeUndefined();
+    });
+
+    it("does not paint a range fetch rejection that settles after an identity switch", async () => {
+      const dataView: DashboardView = {
+        ...demoDashboardView,
+        run: {
+          ...demoDashboardView.run,
+          id: "run-range-reject",
+          source: "snowflake",
+          status: "completed",
+        },
+      };
+      const pending = createDeferred<DashboardView>();
+      vi.mocked(fetchDashboardView).mockImplementation(async (_runId, request) => {
+        if (request?.windowDays === 7) return pending.promise;
+        return dataView;
+      });
+
+      const client = createPersistentQueryClient();
+      const view = render(
+        <QueryTestProvider
+          client={client}
+          identity={{ activeOrganizationId: ORG_ID, identityEpoch: 0 }}
+        >
+          <CostDashboard demoMode={false} data={dataView} runtime={runtime} />
+        </QueryTestProvider>,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "7 days" }));
+      await waitFor(() =>
+        expect(fetchDashboardView).toHaveBeenCalledWith(
+          "run-range-reject",
+          { windowDays: 7 },
+          expect.anything(),
+        ),
+      );
+
+      view.rerender(
+        <QueryTestProvider
+          client={client}
+          identity={{ activeOrganizationId: ORG_ID, identityEpoch: 1 }}
+        >
+          <CostDashboard demoMode={false} data={dataView} runtime={runtime} />
+        </QueryTestProvider>,
+      );
+
+      await act(async () => {
+        pending.reject(new Error("range failure"));
+        await pending.promise.catch(() => undefined);
+      });
+
+      // The identity-guarded catch must not surface the range error for a
+      // request that belonged to the previous identity.
+      expect(
+        screen.queryByText("Could not load selected date range."),
+      ).not.toBeInTheDocument();
+    });
+
+    it("caches demo views under the demo sentinel scope even inside authenticated chrome", async () => {
+      vi.mocked(fetchDemoDashboardView).mockImplementation(async (range) =>
+        demoViewForRange(range),
+      );
+
+      const client = createPersistentQueryClient();
+      render(
+        <QueryTestProvider
+          client={client}
+          identity={{ userId: "auth-user", activeOrganizationId: "auth-org" }}
+        >
+          <CostDashboard demoMode />
+        </QueryTestProvider>,
+      );
+
+      await screen.findByText("Total Spend in Last 30 Days");
+
+      // The demo view lands under the fixed demo sentinels…
+      const demoKey = queryKeys.dashboard.view(
+        DEMO_USER_ID,
+        DEMO_ORG_ID,
+        "demo-run",
+        { windowDays: 30 },
+      );
+      expect(client.getQueryData<DashboardView>(demoKey)).toBeDefined();
+      // …and never under the surrounding authenticated chrome identity, so demo
+      // reads (which use the demo sentinels) can find every write.
+      const authKey = queryKeys.dashboard.view(
+        "auth-user",
+        "auth-org",
+        "demo-run",
+        { windowDays: 30 },
+      );
+      expect(client.getQueryData(authKey)).toBeUndefined();
     });
 
     it("clears cachedAsOf on a fresh run and updates discovery on completion without another /cached request", async () => {
