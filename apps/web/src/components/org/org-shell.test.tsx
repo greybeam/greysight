@@ -723,6 +723,139 @@ describe("OrgShell", () => {
     expect(queryClient.getQueryData(orgTwoKey)).toEqual({ org: 2 });
   });
 
+  it("drops a deferred write attempted synchronously after a user transition, before render commits", async () => {
+    const { client, trigger } = withCapturedAuthCallback();
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell
+        authRequired
+        authClient={client}
+        fetchMemberships={vi
+          .fn()
+          .mockResolvedValue([{ id: "org-1", name: "Acme", accountLocator: null }])}
+      >
+        <IdentityProbe grab={(v) => (latest = v)} />
+      </OrgShell>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("user-id")).toHaveTextContent("user-a"),
+    );
+    const captured = latest!.identity.capture();
+    const staleKey = queryKeys.dashboard.scope("user-a", "org-1");
+
+    // Fire the transition WITHOUT act(): React has cleared the cache and bumped
+    // the epoch, but has not yet re-rendered/committed. A guarded write landing
+    // in this window must still be dropped because identityRef was updated
+    // synchronously inside transitionUser.
+    trigger(userB);
+    const wrote = guardedSetQueryData(
+      latest!.queryClient,
+      latest!.identity.ref,
+      captured,
+      staleKey,
+      { stale: true },
+    );
+
+    expect(wrote).toBe(false);
+    expect(latest!.queryClient.getQueryData(staleKey)).toBeUndefined();
+
+    // Let the scheduled render/effects settle to avoid act warnings.
+    await act(async () => {});
+  });
+
+  it("drops a deferred write attempted synchronously after an org switch, before render commits", async () => {
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell
+        authRequired
+        authClient={authClient(session)}
+        fetchMemberships={vi.fn().mockResolvedValue([
+          { id: "org-1", name: "Alpha", accountLocator: null },
+          { id: "org-2", name: "Bravo", accountLocator: null },
+        ])}
+      >
+        <IdentityProbe grab={(v) => (latest = v)} />
+      </OrgShell>,
+    );
+
+    await waitFor(() => expect(latest?.identity.snapshot.orgId).toBe("org-1"));
+    const captured = latest!.identity.capture();
+    const staleKey = queryKeys.dashboard.scope("user-a", "org-1");
+
+    // Switch org WITHOUT act(): activeOrgId state update is scheduled but not
+    // yet committed. The guarded write for the old org must still be dropped
+    // because identityRef.current.orgId was updated synchronously.
+    latest!.account?.setActiveOrganization("org-2");
+    const wrote = guardedSetQueryData(
+      latest!.queryClient,
+      latest!.identity.ref,
+      captured,
+      staleKey,
+      { stale: true },
+    );
+
+    expect(wrote).toBe(false);
+    expect(latest!.queryClient.getQueryData(staleKey)).toBeUndefined();
+
+    await act(async () => {});
+  });
+
+  it("ignores a late initial getSession result after an auth-state callback fired", async () => {
+    let resolveInitial:
+      | ((result: { session: AuthSession | null; error: null }) => void)
+      | undefined;
+    let onAuthStateChange: SessionChangeCallback | undefined;
+    const client = authClient(session, {
+      getSession: vi.fn(
+        () =>
+          new Promise<{ session: AuthSession | null; error: null }>(
+            (resolve) => {
+              resolveInitial = resolve;
+            },
+          ),
+      ),
+      onAuthStateChange: vi.fn((callback: SessionChangeCallback) => {
+        onAuthStateChange = callback;
+        return { unsubscribe: vi.fn() };
+      }),
+    });
+    let latest: ProbeGrab | undefined;
+    render(
+      <OrgShell
+        authRequired
+        authClient={client}
+        fetchMemberships={vi
+          .fn()
+          .mockResolvedValue([{ id: "org-1", name: "Acme", accountLocator: null }])}
+      >
+        <IdentityProbe grab={(v) => (latest = v)} />
+      </OrgShell>,
+    );
+
+    // Auth-state callback delivers user B while the initial getSession is
+    // still pending.
+    await waitFor(() => expect(onAuthStateChange).toBeDefined());
+    act(() => onAuthStateChange?.(userB));
+    await waitFor(() =>
+      expect(screen.getByTestId("user-id")).toHaveTextContent("user-b"),
+    );
+
+    const queryClient = latest!.queryClient;
+    const key = queryKeys.dashboard.scope("user-b", "org-1");
+    queryClient.setQueryData(key, { keep: true });
+
+    // The stale initial getSession resolves last with user A. It must be
+    // ignored: no transition back to A, no second cache clear.
+    await act(async () => {
+      resolveInitial?.({ session, error: null });
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId("user-id")).toHaveTextContent("user-b");
+    expect(queryClient.getQueryData(key)).toEqual({ keep: true });
+  });
+
   it("does not clear the cache when a sign-out fails", async () => {
     const signOut = vi
       .fn()

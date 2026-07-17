@@ -120,6 +120,15 @@ export default function OrgShell({
       void queryClient.cancelQueries();
       queryClient.clear();
       identityEpochRef.current += 1;
+      // Update the live snapshot synchronously (bump the epoch here) so a
+      // guarded write landing after this transition returns but before React
+      // commits the next render compares against the NEW epoch and is dropped,
+      // never writing stale data into the just-cleared cache. The render-time
+      // refresh below still reconciles userId/orgId once state settles.
+      identityRef.current = {
+        ...identityRef.current,
+        epoch: identityEpochRef.current,
+      };
       setIdentityEpoch(identityEpochRef.current);
     },
     [queryClient],
@@ -157,8 +166,13 @@ export default function OrgShell({
     if (!authRequired || !authClient) return;
 
     let active = true;
+    // Once any auth-state callback has fired, its session is authoritative. A
+    // slower initial getSession() resolving afterwards could otherwise transition
+    // back to a stale user (e.g. B signs in while A's getSession is pending),
+    // so the late initial result is ignored.
+    let authEventSeen = false;
     void authClient.getSession().then((result) => {
-      if (!active) return;
+      if (!active || authEventSeen) return;
       transitionUser(result.session?.user?.id ?? null);
       setSession(result.session);
       setLoadingSession(false);
@@ -166,6 +180,7 @@ export default function OrgShell({
 
     const subscription = authClient.onAuthStateChange((nextSession) => {
       if (!active) return;
+      authEventSeen = true;
       transitionUser(nextSession?.user?.id ?? null);
       setSession(nextSession);
       setLoadingSession(false);
@@ -250,6 +265,10 @@ export default function OrgShell({
   }, [membership, activeOrgId]);
 
   const setActiveOrganization = useCallback((id: string) => {
+    // Update the live snapshot's orgId synchronously so a guarded write for the
+    // previous org captured before this switch is dropped even though the epoch
+    // is unchanged and React has not yet committed the activeOrgId state change.
+    identityRef.current = { ...identityRef.current, orgId: id };
     setActiveOrgId(id);
     writeActiveOrganizationId(id);
   }, []);
