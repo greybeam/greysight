@@ -5,6 +5,8 @@ from typing import Protocol
 
 import httpx
 
+from app.services.http_pool import get_sync_client, request_timeout
+
 # Contract defaults. When an org has no settings row, cache is ON with a 24h
 # TTL. TTL is clamped to [1h, 7d] at the API boundary; the DB enforces the same
 # range via a CHECK constraint.
@@ -118,20 +120,25 @@ class SupabaseCacheSettingsStore:
             headers["prefer"] = prefer
         return headers
 
+    def _send(self, method: str, url: str, **kwargs: object) -> httpx.Response:
+        timeout = request_timeout(self._timeout_seconds)
+        if self._transport is not None:
+            with httpx.Client(transport=self._transport, timeout=timeout) as client:
+                return client.request(method, url, timeout=timeout, **kwargs)
+        return get_sync_client().request(method, url, timeout=timeout, **kwargs)
+
     def get(self, organization_id: str) -> CacheSettings | None:
         try:
-            with httpx.Client(
-                timeout=self._timeout_seconds, transport=self._transport
-            ) as client:
-                response = client.get(
-                    self._table_url,
-                    params={
-                        "organization_id": f"eq.{organization_id}",
-                        "select": "cache_enabled,cache_ttl_seconds",
-                        "limit": "1",
-                    },
-                    headers=self._headers(),
-                )
+            response = self._send(
+                "GET",
+                self._table_url,
+                params={
+                    "organization_id": f"eq.{organization_id}",
+                    "select": "cache_enabled,cache_ttl_seconds",
+                    "limit": "1",
+                },
+                headers=self._headers(),
+            )
         except httpx.HTTPError as exc:
             raise CacheSettingsStoreError() from exc
         if response.status_code != 200:
@@ -165,17 +172,15 @@ class SupabaseCacheSettingsStore:
         if cache_ttl_seconds is not None:
             payload["cache_ttl_seconds"] = cache_ttl_seconds
         try:
-            with httpx.Client(
-                timeout=self._timeout_seconds, transport=self._transport
-            ) as client:
-                response = client.post(
-                    self._table_url,
-                    params={"on_conflict": "organization_id"},
-                    json=payload,
-                    headers=self._headers(
-                        prefer="resolution=merge-duplicates,return=representation"
-                    ),
-                )
+            response = self._send(
+                "POST",
+                self._table_url,
+                params={"on_conflict": "organization_id"},
+                json=payload,
+                headers=self._headers(
+                    prefer="resolution=merge-duplicates,return=representation"
+                ),
+            )
         except httpx.HTTPError as exc:
             raise CacheSettingsStoreError() from exc
         if response.status_code not in (200, 201):

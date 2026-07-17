@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import httpx
 
+from app.services.http_pool import get_sync_client, request_timeout
+
 STATUS_UNAUTHORIZED = "unauthorized"
 STATUS_INVITE_NEEDED = "invite_needed"
 STATUS_PENDING_RESEND = "pending_resend"
@@ -38,27 +40,32 @@ class SupabaseMemberRpc:
     ) -> None:
         self._url = f"{supabase_url.rstrip('/')}/rest/v1/rpc/add_org_member_by_email"
         self._key = service_role_key
-        self._timeout = timeout_seconds
+        self._timeout_seconds = timeout_seconds
         self._transport = transport
+
+    def _send(self, method: str, url: str, **kwargs: object) -> httpx.Response:
+        timeout = request_timeout(self._timeout_seconds)
+        if self._transport is not None:
+            with httpx.Client(transport=self._transport, timeout=timeout) as client:
+                return client.request(method, url, timeout=timeout, **kwargs)
+        return get_sync_client().request(method, url, timeout=timeout, **kwargs)
 
     def __call__(self, actor_user_id: str, organization_id: str, email: str) -> str:
         try:
-            with httpx.Client(
-                timeout=self._timeout, transport=self._transport
-            ) as client:
-                response = client.post(
-                    self._url,
-                    json={
-                        "p_actor_user_id": actor_user_id,
-                        "p_org_id": organization_id,
-                        "p_email": email,
-                    },
-                    headers={
-                        "apikey": self._key,
-                        "authorization": f"Bearer {self._key}",
-                        "content-type": "application/json",
-                    },
-                )
+            response = self._send(
+                "POST",
+                self._url,
+                json={
+                    "p_actor_user_id": actor_user_id,
+                    "p_org_id": organization_id,
+                    "p_email": email,
+                },
+                headers={
+                    "apikey": self._key,
+                    "authorization": f"Bearer {self._key}",
+                    "content-type": "application/json",
+                },
+            )
         except httpx.HTTPError:
             raise InviteProvisioningError("Could not send the invite.") from None
         if response.status_code not in (200, 201):
@@ -82,7 +89,7 @@ class SupabaseUserInviter:
         self._invite_url = f"{base}/auth/v1/invite"
         self._generate_link_url = f"{base}/auth/v1/admin/generate_link"
         self._key = service_role_key
-        self._timeout = timeout_seconds
+        self._timeout_seconds = timeout_seconds
         self._transport = transport
 
     def _headers(self) -> dict[str, str]:
@@ -92,15 +99,19 @@ class SupabaseUserInviter:
             "content-type": "application/json",
         }
 
+    def _send(self, method: str, url: str, **kwargs: object) -> httpx.Response:
+        timeout = request_timeout(self._timeout_seconds)
+        if self._transport is not None:
+            with httpx.Client(transport=self._transport, timeout=timeout) as client:
+                return client.request(method, url, timeout=timeout, **kwargs)
+        return get_sync_client().request(method, url, timeout=timeout, **kwargs)
+
     def invite(self, email: str, *, data: dict | None = None) -> None:
         body = {"email": email, **({"data": data} if data else {})}
         try:
-            with httpx.Client(
-                timeout=self._timeout, transport=self._transport
-            ) as client:
-                response = client.post(
-                    self._invite_url, json=body, headers=self._headers()
-                )
+            response = self._send(
+                "POST", self._invite_url, json=body, headers=self._headers()
+            )
         except httpx.HTTPError:
             raise InviteProvisioningError("Could not send the invite.") from None
         if response.status_code in (200, 201):
@@ -114,14 +125,12 @@ class SupabaseUserInviter:
     def resend(self, email: str, *, data: dict | None = None) -> None:
         body = {"type": "invite", "email": email, **({"data": data} if data else {})}
         try:
-            with httpx.Client(
-                timeout=self._timeout, transport=self._transport
-            ) as client:
-                response = client.post(
-                    self._generate_link_url,
-                    json=body,
-                    headers=self._headers(),
-                )
+            response = self._send(
+                "POST",
+                self._generate_link_url,
+                json=body,
+                headers=self._headers(),
+            )
         except httpx.HTTPError:
             raise InviteProvisioningError("Could not send the invite.") from None
         if response.status_code not in (200, 201):

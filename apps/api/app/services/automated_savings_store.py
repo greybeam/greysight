@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 import httpx
 
+from app.services.http_pool import get_sync_client, request_timeout
+
 
 StoreFailureKind = Literal[
     "transport", "http_status", "invalid_json", "malformed_row", "not_found"
@@ -108,26 +110,30 @@ class SupabaseAutomatedSavingsStore:
             headers["prefer"] = prefer
         return headers
 
-    def _client(self) -> httpx.Client:
-        return httpx.Client(timeout=self._timeout_seconds, transport=self._transport)
+    def _send(self, method: str, url: str, **kwargs: object) -> httpx.Response:
+        timeout = request_timeout(self._timeout_seconds)
+        if self._transport is not None:
+            with httpx.Client(transport=self._transport, timeout=timeout) as client:
+                return client.request(method, url, timeout=timeout, **kwargs)
+        return get_sync_client().request(method, url, timeout=timeout, **kwargs)
 
     # -- settings -----------------------------------------------------
 
     def get_settings(self, organization_id: str) -> SettingsRow:
         try:
-            with self._client() as client:
-                response = client.get(
-                    self._settings_url,
-                    params={
-                        "organization_id": f"eq.{organization_id}",
-                        "select": (
-                            "organization_id,agreed_at,global_enabled,"
-                            "grant_present,grant_checked_at"
-                        ),
-                        "limit": "1",
-                    },
-                    headers=self._headers(),
-                )
+            response = self._send(
+                "GET",
+                self._settings_url,
+                params={
+                    "organization_id": f"eq.{organization_id}",
+                    "select": (
+                        "organization_id,agreed_at,global_enabled,"
+                        "grant_present,grant_checked_at"
+                    ),
+                    "limit": "1",
+                },
+                headers=self._headers(),
+            )
         except httpx.HTTPError:
             raise AutomatedSavingsStoreError(kind="transport") from None
         if response.status_code != 200:
@@ -167,15 +173,15 @@ class SupabaseAutomatedSavingsStore:
     def _upsert_settings(self, organization_id: str, fields: dict[str, Any]) -> None:
         payload = {"organization_id": organization_id, **fields}
         try:
-            with self._client() as client:
-                response = client.post(
-                    self._settings_url,
-                    params={"on_conflict": "organization_id"},
-                    json=payload,
-                    headers=self._headers(
-                        prefer="resolution=merge-duplicates,return=minimal"
-                    ),
-                )
+            response = self._send(
+                "POST",
+                self._settings_url,
+                params={"on_conflict": "organization_id"},
+                json=payload,
+                headers=self._headers(
+                    prefer="resolution=merge-duplicates,return=minimal"
+                ),
+            )
         except httpx.HTTPError:
             raise AutomatedSavingsStoreError(kind="transport") from None
         if response.status_code not in (200, 201, 204):
@@ -185,18 +191,18 @@ class SupabaseAutomatedSavingsStore:
 
     def list_warehouses(self, organization_id: str) -> list[EnrollmentRow]:
         try:
-            with self._client() as client:
-                response = client.get(
-                    self._warehouses_url,
-                    params={
-                        "organization_id": f"eq.{organization_id}",
-                        "select": (
-                            "organization_id,warehouse_name,enabled,"
-                            "warehouse_created_on,updated_at"
-                        ),
-                    },
-                    headers=self._headers(),
-                )
+            response = self._send(
+                "GET",
+                self._warehouses_url,
+                params={
+                    "organization_id": f"eq.{organization_id}",
+                    "select": (
+                        "organization_id,warehouse_name,enabled,"
+                        "warehouse_created_on,updated_at"
+                    ),
+                },
+                headers=self._headers(),
+            )
         except httpx.HTTPError:
             raise AutomatedSavingsStoreError(kind="transport") from None
         if response.status_code != 200:
@@ -218,12 +224,12 @@ class SupabaseAutomatedSavingsStore:
             "p_warehouse_created_on": warehouse_created_on,
         }
         try:
-            with self._client() as client:
-                response = client.post(
-                    self._upsert_enrollment_url,
-                    json=payload,
-                    headers=self._headers(),
-                )
+            response = self._send(
+                "POST",
+                self._upsert_enrollment_url,
+                json=payload,
+                headers=self._headers(),
+            )
         except httpx.HTTPError:
             raise AutomatedSavingsStoreError(kind="transport") from None
         if response.status_code not in (200, 201, 204):
@@ -235,12 +241,12 @@ class SupabaseAutomatedSavingsStore:
             "p_warehouse_name": warehouse_name,
         }
         try:
-            with self._client() as client:
-                response = client.post(
-                    self._disable_enrollment_url,
-                    json=payload,
-                    headers=self._headers(),
-                )
+            response = self._send(
+                "POST",
+                self._disable_enrollment_url,
+                json=payload,
+                headers=self._headers(),
+            )
         except httpx.HTTPError:
             raise AutomatedSavingsStoreError(kind="transport") from None
         if response.status_code != 200:
@@ -288,8 +294,7 @@ class SupabaseAutomatedSavingsStore:
 
     def _call_read_rpc(self, url: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
         try:
-            with self._client() as client:
-                response = client.post(url, json=payload, headers=self._headers())
+            response = self._send("POST", url, json=payload, headers=self._headers())
         except httpx.HTTPError:
             raise AutomatedSavingsStoreError(kind="transport") from None
         if response.status_code != 200:

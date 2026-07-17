@@ -1,5 +1,7 @@
+import contextlib
 import json
 
+import anyio
 import httpx
 import pytest
 
@@ -9,6 +11,99 @@ from app.services.automated_savings_store import (
     EventRow,
     SupabaseAutomatedSavingsStore,
 )
+from app.services.dashboard_run_cache import SupabaseRunCacheStore
+from app.services.http_pool import clear_clients, get_sync_client, install_clients
+
+
+@contextlib.contextmanager
+def _installed_sync_pool(handler):
+    clear_clients()
+    sync_client = httpx.Client(transport=httpx.MockTransport(handler))
+    auth = httpx.AsyncClient()
+    async_client = httpx.AsyncClient()
+    install_clients(auth=auth, async_client=async_client, sync_client=sync_client)
+    try:
+        yield sync_client
+    finally:
+        clear_clients()
+        sync_client.close()
+        anyio.run(auth.aclose)
+        anyio.run(async_client.aclose)
+
+
+def test_savings_store_reuses_pooled_sync_client_without_closing() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=[])
+
+    with _installed_sync_pool(handler) as sync_client:
+        store = SupabaseAutomatedSavingsStore(
+            supabase_url="https://project.supabase.co",
+            service_role_key="service-role-key",
+        )
+        store.get_settings("org-1")
+        assert get_sync_client() is sync_client
+        assert not sync_client.is_closed
+        assert len(requests) == 1
+
+
+def test_two_sequential_savings_calls_reuse_open_shared_client() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=[])
+
+    with _installed_sync_pool(handler) as sync_client:
+        store = SupabaseAutomatedSavingsStore(
+            supabase_url="https://project.supabase.co",
+            service_role_key="service-role-key",
+        )
+        store.get_settings("org-1")
+        assert not sync_client.is_closed
+        store.list_warehouses("org-1")
+        assert not sync_client.is_closed
+        assert get_sync_client() is sync_client
+        assert len(requests) == 2
+
+        run_store = SupabaseRunCacheStore(
+            supabase_url="https://project.supabase.co",
+            service_role_key="service-role-key",
+        )
+        run_store.delete("org-1")
+        assert not sync_client.is_closed
+        assert get_sync_client() is sync_client
+        assert len(requests) == 3
+
+
+def test_pooled_requests_isolate_credentials_per_request() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=[])
+
+    with _installed_sync_pool(handler) as sync_client:
+        store_a = SupabaseAutomatedSavingsStore(
+            supabase_url="https://project.supabase.co",
+            service_role_key="key-a",
+        )
+        store_b = SupabaseAutomatedSavingsStore(
+            supabase_url="https://project.supabase.co",
+            service_role_key="key-b",
+        )
+        store_a.get_settings("org-1")
+        store_b.get_settings("org-1")
+
+        assert requests[0].headers["apikey"] == "key-a"
+        assert requests[0].headers["authorization"] == "Bearer key-a"
+        assert requests[1].headers["apikey"] == "key-b"
+        assert requests[1].headers["authorization"] == "Bearer key-b"
+        # The shared pool carries no per-request credentials.
+        assert "apikey" not in sync_client.headers
+        assert "authorization" not in sync_client.headers
 
 
 def _store(handler) -> SupabaseAutomatedSavingsStore:
