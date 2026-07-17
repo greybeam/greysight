@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   cleanup,
   fireEvent,
@@ -9,8 +10,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AccountChromeProvider } from "../../lib/account-context";
 import type { WarehouseRow } from "../../lib/automated-savings-api";
+import { queryKeys } from "../../lib/query-keys";
+import { createTestQueryClient } from "../../lib/query-test-utils";
 import { DashboardApiError } from "../../lib/dashboard-errors";
 import { AutomatedSavingsShell } from "./automated-savings-shell";
+
+// A client that never expires or garbage-collects entries, so remounts and
+// org switches exercise the shared cache rather than silently refetching.
+function persistentClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, gcTime: Infinity, staleTime: Infinity },
+    },
+  });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
 
 const fetchStatusMock = vi.fn();
 const fetchWarehousesMock = vi.fn();
@@ -61,18 +82,21 @@ function shellAccountValue(activeOrganizationId: string) {
   };
 }
 
-function shellForOrganization(activeOrganizationId: string) {
+function shellForOrganization(
+  activeOrganizationId: string,
+  client: QueryClient,
+) {
   return (
-    <AccountChromeProvider
-      value={shellAccountValue(activeOrganizationId)}
-    >
-      <AutomatedSavingsShell />
-    </AccountChromeProvider>
+    <QueryClientProvider client={client}>
+      <AccountChromeProvider value={shellAccountValue(activeOrganizationId)}>
+        <AutomatedSavingsShell />
+      </AccountChromeProvider>
+    </QueryClientProvider>
   );
 }
 
-function renderShell() {
-  return render(shellForOrganization("org-1"));
+function renderShell(client: QueryClient = createTestQueryClient()) {
+  return render(shellForOrganization("org-1", client));
 }
 
 const baseRow: WarehouseRow = {
@@ -490,10 +514,11 @@ describe("AutomatedSavingsShell", () => {
       return new Promise((resolve) => { resolveOrgTwoStatus = resolve; });
     });
     fetchWarehousesMock.mockResolvedValue([{ ...baseRow, name: "WH_ORG_2" }]);
-    const view = renderShell();
+    const client = createTestQueryClient();
+    const view = render(shellForOrganization("org-1", client));
     fireEvent.click(await screen.findByRole("button", { name: /agree/i }));
 
-    view.rerender(shellForOrganization("org-2"));
+    view.rerender(shellForOrganization("org-2", client));
     await waitFor(() =>
       expect(fetchStatusMock).toHaveBeenCalledWith("org-2", { accessToken: "tok" }),
     );
@@ -510,5 +535,94 @@ describe("AutomatedSavingsShell", () => {
       .toBeInTheDocument();
     expect(fetchStatusMock.mock.calls.filter(([orgId]) => orgId === "org-1"))
       .toHaveLength(1);
+  });
+
+  it("serves cached status and warehouses on remount without refetching", async () => {
+    fetchStatusMock.mockResolvedValue({
+      agreed: true,
+      globalEnabled: true,
+      grantPresent: true,
+      grantCheckedAt: null,
+      roleName: null,
+    });
+    fetchWarehousesMock.mockResolvedValue([baseRow]);
+    const client = persistentClient();
+
+    const first = render(shellForOrganization("org-1", client));
+    await screen.findByRole("table", { name: /warehouses/i });
+    expect(fetchStatusMock).toHaveBeenCalledTimes(1);
+    expect(fetchWarehousesMock).toHaveBeenCalledTimes(1);
+    first.unmount();
+
+    render(shellForOrganization("org-1", client));
+    // Fresh cached data paints immediately — no "Loading configuration" panel —
+    // and neither reader fires a second request.
+    expect(
+      screen.getByRole("table", { name: /warehouses/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/loading configuration/i)).not.toBeInTheDocument();
+    expect(fetchStatusMock).toHaveBeenCalledTimes(1);
+    expect(fetchWarehousesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps cached config visible while a remount revalidates in the background", async () => {
+    const client = createTestQueryClient();
+    client.setQueryData(queryKeys.autoSavings.status("test-user", "org-1"), {
+      agreed: true,
+      globalEnabled: true,
+      grantPresent: true,
+      grantCheckedAt: null,
+      roleName: null,
+    });
+    client.setQueryData(queryKeys.autoSavings.warehouses("test-user", "org-1"), [
+      baseRow,
+    ]);
+    // Deferred so the revalidation never settles during the assertions: the
+    // cached UI must remain, not flip to a loading panel.
+    const statusDeferred = deferred<never>();
+    const warehousesDeferred = deferred<never>();
+    fetchStatusMock.mockReturnValue(statusDeferred.promise);
+    fetchWarehousesMock.mockReturnValue(warehousesDeferred.promise);
+
+    render(shellForOrganization("org-1", client));
+
+    expect(
+      screen.getByRole("table", { name: /warehouses/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/loading configuration/i)).not.toBeInTheDocument();
+  });
+
+  it("never shows the previous org's warehouses while the next org is unresolved", async () => {
+    const client = createTestQueryClient();
+    fetchStatusMock.mockResolvedValue({
+      agreed: true,
+      globalEnabled: true,
+      grantPresent: true,
+      grantCheckedAt: null,
+      roleName: null,
+    });
+    const orgTwoWarehouses = deferred<WarehouseRow[]>();
+    fetchWarehousesMock.mockImplementation((orgId: string) =>
+      orgId === "org-1"
+        ? Promise.resolve([{ ...baseRow, name: "WH_ORG_1" }])
+        : orgTwoWarehouses.promise,
+    );
+
+    const view = render(shellForOrganization("org-1", client));
+    await screen.findByRole("switch", { name: "WH_ORG_1" });
+
+    view.rerender(shellForOrganization("org-2", client));
+    // org-2's warehouses are still pending: the shell shows its loading panel,
+    // never the stale org-1 rows.
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("switch", { name: "WH_ORG_1" }),
+      ).not.toBeInTheDocument(),
+    );
+
+    orgTwoWarehouses.resolve([{ ...baseRow, name: "WH_ORG_2" }]);
+    expect(
+      await screen.findByRole("switch", { name: "WH_ORG_2" }),
+    ).toBeInTheDocument();
   });
 });

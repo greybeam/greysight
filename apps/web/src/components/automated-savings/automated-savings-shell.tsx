@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useAccountChrome } from "../../lib/account-context";
 import {
@@ -11,6 +12,8 @@ import {
   type AutomatedSavingsStatus,
   type WarehouseRow,
 } from "../../lib/automated-savings-api";
+import { queryKeys } from "../../lib/query-keys";
+import { useQueryIdentity } from "../../lib/query-identity";
 import { DashboardApiError } from "../../lib/dashboard-errors";
 import { AppHeader } from "../dashboard/app-header";
 import DashboardFailureMessage from "../dashboard/dashboard-failure-message";
@@ -26,7 +29,6 @@ import { SuspensionsChart } from "./suspensions-chart";
 import { WarehouseTable } from "./warehouse-table";
 
 type LoadState = "idle" | "loading" | "ready" | "error";
-type LoadOptions = { refreshAccess?: boolean };
 type LoadFailure = { message: string; reportable: boolean };
 
 function autoSavingsFailure(error: unknown): LoadFailure {
@@ -89,90 +91,102 @@ export function AutomatedSavingsShell() {
     account?.organizations.find((org) => org.id === orgId)?.role ?? null;
   const isAdmin = role === "owner" || role === "admin";
 
-  const [status, setStatus] = useState<AutomatedSavingsStatus | null>(null);
-  const [warehouses, setWarehouses] = useState<WarehouseRow[]>([]);
-  const [loadState, setLoadState] = useState<LoadState>("idle");
-  const [loadFailure, setLoadFailure] = useState<LoadFailure | null>(null);
-  const [checking, setChecking] = useState(false);
+  const identity = useQueryIdentity();
+  const identitySnapshot = identity.snapshot;
+  const userId = identitySnapshot.userId;
+  const queryClient = useQueryClient();
+
+  // Read the access token at call time rather than keying queries on it: Supabase
+  // rotates it roughly hourly, and a rotation must not invalidate cache entries
+  // or restart in-flight reads.
+  const accessTokenRef = useRef(accessToken);
+  accessTokenRef.current = accessToken;
+
+  const statusKey = queryKeys.autoSavings.status(userId, orgId ?? "");
+  const warehousesKey = queryKeys.autoSavings.warehouses(userId, orgId ?? "");
+
+  const statusQuery = useQuery({
+    queryKey: statusKey,
+    queryFn: () => fetchStatus(orgId!, { accessToken: accessTokenRef.current }),
+    enabled: Boolean(orgId),
+  });
+  // Access is a manual, on-demand check: it stays disabled until the user asks
+  // for it (Check access / Refresh) or the post-agreement flow refetches it.
+  const accessQuery = useQuery({
+    queryKey: queryKeys.autoSavings.access(userId, orgId ?? ""),
+    queryFn: () => checkAccess(orgId!, { accessToken: accessTokenRef.current }),
+    enabled: false,
+  });
+  const warehousesQuery = useQuery({
+    queryKey: warehousesKey,
+    queryFn: () =>
+      fetchWarehouses(orgId!, { accessToken: accessTokenRef.current }),
+    enabled: Boolean(orgId && statusQuery.data?.agreed),
+  });
+
+  // Merge the on-demand access-grant fields over the base status at render time
+  // only; the merged shape is never written back under either source key.
+  const baseStatus = statusQuery.data ?? null;
+  const access = accessQuery.data ?? null;
+  const status: AutomatedSavingsStatus | null =
+    baseStatus && access
+      ? {
+          ...baseStatus,
+          grantPresent: access.grantPresent,
+          grantCheckedAt: access.grantCheckedAt,
+          roleName: access.roleName,
+        }
+      : baseStatus;
+  const warehouses: WarehouseRow[] = warehousesQuery.data ?? [];
+
   const [globalSwitching, setGlobalSwitching] = useState(false);
   const [controlError, setControlError] = useState<string | null>(null);
-  // null = "not yet initialized for this org's load" — the init effect below
-  // sets a one-time default from the first ready snapshot so that enabling a
-  // warehouse mid-setup doesn't yank the pane closed out from under the user.
+  // null = "not yet initialized for this org" — the init effect below sets a
+  // one-time default from the first ready snapshot so that enabling a warehouse
+  // mid-setup doesn't yank the pane closed out from under the user.
   const [configOpen, setConfigOpen] = useState<boolean | null>(null);
-  const loadSequenceRef = useRef(0);
-  const currentOrgIdRef = useRef<string | null>(null);
   const checkOperationRef = useRef<object | null>(null);
   const globalOperationRef = useRef<object | null>(null);
 
-  const load = useCallback(async (options: LoadOptions = {}) => {
-    const requestSequence = ++loadSequenceRef.current;
-    const requestOrgId = orgId;
-    if (!requestOrgId) return;
-    const isCurrentRequest = () =>
-      loadSequenceRef.current === requestSequence &&
-      currentOrgIdRef.current === requestOrgId;
-
-    setLoadState("loading");
-    setLoadFailure(null);
-    setStatus(null);
-    setWarehouses([]);
+  useEffect(() => {
+    // Reset per-org UI state when the workspace changes. The queries themselves
+    // switch cache entries automatically via their identity-scoped keys.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setConfigOpen(null);
+    setControlError(null);
+    setGlobalSwitching(false);
     checkOperationRef.current = null;
     globalOperationRef.current = null;
-    setChecking(false);
-    setGlobalSwitching(false);
-    setControlError(null);
-    try {
-      let nextStatus = await fetchStatus(requestOrgId, { accessToken });
-      if (!isCurrentRequest()) return;
-      let accessCheckFailed = false;
-      if (nextStatus.agreed && options.refreshAccess) {
-        try {
-          const access = await checkAccess(requestOrgId, { accessToken });
-          if (!isCurrentRequest()) return;
-          nextStatus = {
-            ...nextStatus,
-            grantPresent: access.grantPresent,
-            grantCheckedAt: access.grantCheckedAt,
-            roleName: access.roleName,
-          };
-        } catch {
-          if (!isCurrentRequest()) return;
-          accessCheckFailed = true;
-        }
-      }
-      let rows: WarehouseRow[] = [];
-      if (nextStatus.agreed) {
-        rows = await fetchWarehouses(requestOrgId, { accessToken });
-        if (!isCurrentRequest()) return;
-      }
-      setStatus(nextStatus);
-      setWarehouses(rows);
-      setLoadState("ready");
-      if (accessCheckFailed) {
-        setControlError("Couldn’t check Snowflake access. Please try again.");
-      }
-    } catch (error) {
-      if (!isCurrentRequest()) return;
-      setLoadFailure(autoSavingsFailure(error));
-      setLoadState("error");
-    }
-  }, [orgId, accessToken]);
+  }, [orgId]);
 
-  useEffect(() => {
-    currentOrgIdRef.current = orgId;
-    // This effect synchronizes the selected workspace with its remote status.
-    // The load function owns the visible loading state for initial load, org
-    // switches, retries, and successful agreement refreshes.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void load();
-    return () => {
-      // Supersede in-flight reads and mutations before the next workspace load.
-      loadSequenceRef.current += 1;
-      if (currentOrgIdRef.current === orgId) currentOrgIdRef.current = null;
-    };
-  }, [load, orgId]);
+  // Derive the coarse load state from the two initial reads. Cached data stays
+  // visible during background refetches: an error panel appears only when a read
+  // fails *and* there is nothing cached to show.
+  let loadState: LoadState;
+  if (!orgId) {
+    loadState = "idle";
+  } else if (statusQuery.isError && baseStatus === null) {
+    loadState = "error";
+  } else if (baseStatus === null) {
+    loadState = "loading";
+  } else if (baseStatus.agreed) {
+    if (warehousesQuery.isError && warehousesQuery.data === undefined) {
+      loadState = "error";
+    } else if (warehousesQuery.data === undefined) {
+      loadState = "loading";
+    } else {
+      loadState = "ready";
+    }
+  } else {
+    loadState = "ready";
+  }
+
+  const activeError =
+    statusQuery.isError && baseStatus === null
+      ? statusQuery.error
+      : warehousesQuery.error;
+  const loadFailure: LoadFailure | null =
+    loadState === "error" ? autoSavingsFailure(activeError) : null;
 
   const enabledCount = warehouses.filter((warehouse) => warehouse.enabled).length;
   const hasEnabledConfig = enabledCount > 0;
@@ -187,94 +201,88 @@ export function AutomatedSavingsShell() {
     }
   }, [loadState, status, configOpen, hasEnabledConfig]);
 
+  const checking = accessQuery.isFetching;
+
+  function handleRetry() {
+    void statusQuery.refetch();
+    if (statusQuery.data?.agreed) void warehousesQuery.refetch();
+  }
+
   async function handleGlobalToggle() {
     if (!orgId || !isAdmin || !status?.agreed || globalOperationRef.current) {
       return;
     }
-    const operationOrgId = orgId;
-    const operationSequence = loadSequenceRef.current;
     const operation = {};
-    const isCurrentOperation = () =>
-      currentOrgIdRef.current === operationOrgId &&
-      loadSequenceRef.current === operationSequence;
+    const captured = identity.capture();
     const nextEnabled = !status.globalEnabled;
     globalOperationRef.current = operation;
     setGlobalSwitching(true);
     setControlError(null);
     try {
-      await setGlobalSwitch(operationOrgId, nextEnabled, { accessToken });
-      if (!isCurrentOperation()) return;
-      setStatus((current) =>
+      await setGlobalSwitch(orgId, nextEnabled, {
+        accessToken: accessTokenRef.current,
+      });
+      if (!identity.isCurrent(captured)) return;
+      queryClient.setQueryData<AutomatedSavingsStatus>(statusKey, (current) =>
         current?.agreed ? { ...current, globalEnabled: nextEnabled } : current,
       );
     } catch {
-      if (isCurrentOperation()) {
-        setControlError(
-          "Couldn’t update Auto Savings. Please try again.",
-        );
+      if (identity.isCurrent(captured)) {
+        setControlError("Couldn’t update Auto Savings. Please try again.");
       }
     } finally {
       if (globalOperationRef.current === operation) {
         globalOperationRef.current = null;
-        if (isCurrentOperation()) setGlobalSwitching(false);
+        if (identity.isCurrent(captured)) setGlobalSwitching(false);
       }
     }
   }
 
   async function handleCheckAccess() {
     if (!orgId || !status?.agreed || checkOperationRef.current) return;
-    const operationOrgId = orgId;
-    const operationSequence = loadSequenceRef.current;
     const operation = {};
-    const isCurrentOperation = () =>
-      currentOrgIdRef.current === operationOrgId &&
-      loadSequenceRef.current === operationSequence;
     checkOperationRef.current = operation;
-    setChecking(true);
     setControlError(null);
     try {
-      const result = await checkAccess(operationOrgId, { accessToken });
-      if (!isCurrentOperation()) return;
-      setStatus((current) =>
-        current?.agreed
-          ? {
-              ...current,
-              grantPresent: result.grantPresent,
-              grantCheckedAt: result.grantCheckedAt,
-              roleName: result.roleName,
-            }
-          : current,
-      );
-    } catch {
-      if (isCurrentOperation()) {
-        setControlError("Couldn’t check Snowflake access. Please try again.");
-      }
+      await accessQuery.refetch();
     } finally {
       if (checkOperationRef.current === operation) {
         checkOperationRef.current = null;
-        if (isCurrentOperation()) setChecking(false);
       }
     }
   }
 
-  const agreementGeneration = loadSequenceRef.current;
-  function handleAgreementComplete() {
-    if (
-      !orgId ||
-      currentOrgIdRef.current !== orgId ||
-      loadSequenceRef.current !== agreementGeneration
-    ) {
-      return;
-    }
-    void load({ refreshAccess: true });
+  async function handleAgreementComplete() {
+    const captured = identitySnapshot;
+    if (!orgId || !identity.isCurrent(captured)) return;
+    const result = await statusQuery.refetch();
+    if (!identity.isCurrent(captured)) return;
+    // Warehouses refetch automatically once the newly-agreed status enables that
+    // query; access is manual, so refresh it explicitly after agreement.
+    if (result.data?.agreed) void accessQuery.refetch();
   }
 
   function handleRowChange(row: WarehouseRow) {
-    if (!orgId || currentOrgIdRef.current !== orgId) return;
-    setWarehouses((prev) =>
-      prev.map((existing) => (existing.name === row.name ? row : existing)),
+    if (!orgId) return;
+    queryClient.setQueryData<WarehouseRow[]>(warehousesKey, (prev) =>
+      (prev ?? []).map((existing) =>
+        existing.name === row.name ? row : existing,
+      ),
     );
   }
+
+  const handleRefresh = useCallback(async () => {
+    await warehousesQuery.refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [warehousesKey]);
+
+  // A failed access check surfaces the same control-level error the previous
+  // imperative flow set; a successful retry clears it because isError flips back.
+  const shownControlError =
+    controlError ??
+    (accessQuery.isError
+      ? "Couldn’t check Snowflake access. Please try again."
+      : null);
 
   const grantSql = status ? buildGrantSql(status.roleName) : null;
 
@@ -329,7 +337,7 @@ export function AutomatedSavingsShell() {
           <button
             type="button"
             className="mt-3 rounded-md bg-chart-purple px-4 py-2 text-sm font-medium text-white hover:opacity-90"
-            onClick={() => void load()}
+            onClick={handleRetry}
           >
             Retry
           </button>
@@ -380,9 +388,9 @@ export function AutomatedSavingsShell() {
               </button>
             </div>
 
-            {controlError ? (
+            {shownControlError ? (
               <p className="text-sm font-medium text-red-400" role="alert">
-                {controlError}
+                {shownControlError}
               </p>
             ) : null}
 
@@ -425,7 +433,7 @@ export function AutomatedSavingsShell() {
                   orgId={orgId}
                   warehouses={warehouses}
                   onChange={handleRowChange}
-                  onRefresh={load}
+                  onRefresh={handleRefresh}
                 />
               </div>
             </details>

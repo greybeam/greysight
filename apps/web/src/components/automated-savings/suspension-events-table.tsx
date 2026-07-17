@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   Table,
   TableBody,
@@ -13,8 +14,9 @@ import {
 import {
   fetchSuspensionEvents,
   type SuspensionEvent,
-  type SuspensionEventsPage,
 } from "../../lib/automated-savings-api";
+import { queryKeys } from "../../lib/query-keys";
+import { useQueryIdentity } from "../../lib/query-identity";
 import { LoadStatePanel } from "../../lib/use-org-scoped-fetch";
 import { Tooltip } from "../ui/tooltip";
 
@@ -147,112 +149,70 @@ export function SuspensionEventsTable({
   orgId,
   accessToken,
 }: SuspensionEventsTableProps) {
+  const { snapshot } = useQueryIdentity();
   // Keyset pagination: `cursorStack[i]` is the cursor used to fetch page `i`
   // (page 0 is always fetched with cursor `null`). "Previous" is derived
   // purely client-side by replaying the cursor already recorded for that
   // page — the API only exposes a forward `nextCursor`, no "previous" cursor.
   const [cursorStack, setCursorStack] = useState<(string | null)[]>([null]);
   const [pageIndex, setPageIndex] = useState(0);
-  const [page, setPage] = useState<SuspensionEventsPage | null>(null);
-  const [loadState, setLoadState] = useState<"loading" | "ready" | "error">(
-    "loading",
-  );
-  const [navigating, setNavigating] = useState(false);
-  const [navError, setNavError] = useState(false);
-  // React state updates are async, so two rapid clicks could both observe
-  // navigating === false; this ref is the synchronous in-flight guard for
-  // prev/next navigation.
+  // React state updates are async, so two rapid clicks could both observe an
+  // idle pager; this ref is the synchronous in-flight guard for prev/next
+  // navigation, released once the selected page query settles.
   const navInFlightRef = useRef(false);
-  const requestSequenceRef = useRef(0);
-  // Read at fetch time instead of depending on it directly: Supabase rotates
-  // the access token roughly hourly, and depending on `accessToken` here
-  // would restart pagination on every rotation.
+  // Read at fetch time instead of keying on it: Supabase rotates the access
+  // token roughly hourly, and keying on `accessToken` would split the cache and
+  // restart pagination on every rotation.
   const accessTokenRef = useRef(accessToken);
-  useEffect(() => {
-    accessTokenRef.current = accessToken;
-  });
+  accessTokenRef.current = accessToken;
 
-  const loadPage = useCallback(
-    (index: number, cursor: string | null, { initial = false } = {}) => {
-      const seq = ++requestSequenceRef.current;
-      if (initial) {
-        setLoadState("loading");
-      } else {
-        setNavError(false);
-      }
+  const cursor = cursorStack[pageIndex] ?? null;
+  const pageQuery = useQuery({
+    queryKey: queryKeys.autoSavings.events(snapshot.userId, orgId, cursor),
+    queryFn: () =>
       fetchSuspensionEvents(orgId, cursor, {
         accessToken: accessTokenRef.current,
-      })
-        .then((result) => {
-          if (requestSequenceRef.current !== seq) return;
-          setPage(result);
-          setPageIndex(index);
-          setLoadState("ready");
-        })
-        .catch(() => {
-          if (requestSequenceRef.current !== seq) return;
-          if (initial) {
-            setLoadState("error");
-          } else {
-            setNavError(true);
-          }
-        })
-        .finally(() => {
-          if (requestSequenceRef.current !== seq) return;
-          navInFlightRef.current = false;
-          setNavigating(false);
-        });
-    },
-    [orgId],
-  );
+      }),
+  });
 
   useEffect(() => {
-    // Reset to the loading state before the async fetch resolves so a stale
-    // prior org's content is never shown while the new org's data loads.
-    // This is derived-state synchronization with the fetch, not a cascading
-    // render loop. The shell remounts this component (via `key`) on org
-    // switch, so a mount-only effect keyed on `orgId` is sufficient here.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setCursorStack([null]);
-    setPageIndex(0);
-    setPage(null);
-    setNavError(false);
-    setNavigating(false);
-    navInFlightRef.current = false;
-    loadPage(0, null, { initial: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orgId]);
+    // Release the navigation guard once the selected page's query is no longer
+    // fetching — whether it resolved, errored, or was served instantly from
+    // cache on a revisit.
+    if (!pageQuery.isFetching) {
+      navInFlightRef.current = false;
+    }
+  });
 
+  const page = pageQuery.data ?? null;
   const events = page?.events ?? [];
+  const loadState: "loading" | "ready" | "error" = pageQuery.isPending
+    ? "loading"
+    : pageQuery.isError
+      ? "error"
+      : "ready";
+  const navigating = pageQuery.isFetching;
 
   function handleRetry() {
-    setCursorStack([null]);
-    setPageIndex(0);
-    setPage(null);
-    setNavError(false);
-    setNavigating(false);
-    navInFlightRef.current = false;
-    loadPage(0, null, { initial: true });
+    void pageQuery.refetch();
   }
 
   function handlePrev() {
     if (navInFlightRef.current || pageIndex === 0) return;
     navInFlightRef.current = true;
-    setNavigating(true);
-    loadPage(pageIndex - 1, cursorStack[pageIndex - 1]);
+    setPageIndex(pageIndex - 1);
   }
 
   function handleNext() {
     if (navInFlightRef.current || !page?.nextCursor) return;
     navInFlightRef.current = true;
-    setNavigating(true);
     const nextCursor = page.nextCursor;
     // Overwrite this page's forward cursor and drop anything deeper than it,
     // instead of only pushing when new — otherwise navigating back and then
     // forward again after new events arrive would replay a stale, deeper
     // cursor on a later Previous.
     setCursorStack((stack) => [...stack.slice(0, pageIndex + 1), nextCursor]);
-    loadPage(pageIndex + 1, nextCursor);
+    setPageIndex(pageIndex + 1);
   }
 
   const showPager = pageIndex > 0 || Boolean(page?.nextCursor);
@@ -325,11 +285,6 @@ export function SuspensionEventsTable({
             </Table>
             {showPager ? (
               <div className="mt-4 flex items-center justify-end gap-2">
-                {navError ? (
-                  <span role="alert" className="mr-auto text-sm text-red-400">
-                    Couldn’t load that page. Please try again.
-                  </span>
-                ) : null}
                 <span className="text-xs text-slate-500">
                   Page {pageIndex + 1}
                 </span>

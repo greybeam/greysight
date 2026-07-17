@@ -8,6 +8,8 @@ import {
   type SuspensionStatsResponse,
 } from "../../lib/automated-savings-api";
 import { LoadStatePanel, useOrgScopedFetch } from "../../lib/use-org-scoped-fetch";
+import { queryKeys } from "../../lib/query-keys";
+import { useQueryIdentity } from "../../lib/query-identity";
 import { createChartTooltip } from "../dashboard/chart-tooltip";
 import { formatChartDateLabel } from "../dashboard/dashboard-design-system";
 import { getSeriesColors, orderCategoriesByTotal } from "../../lib/chart-colors";
@@ -71,12 +73,14 @@ function isAllZero(response: SuspensionStatsResponse): boolean {
 }
 
 export function SuspensionsChart({ orgId, accessToken }: SuspensionsChartProps) {
+  const { snapshot } = useQueryIdentity();
   const fetchStats = useCallback(
     (org: string, token: string | null) =>
       fetchSuspensionStats(org, STATS_DAYS, { accessToken: token }),
     [],
   );
   const { data, loadState, retry } = useOrgScopedFetch<SuspensionStatsResponse>(
+    queryKeys.autoSavings.stats(snapshot.userId, orgId, { days: STATS_DAYS }),
     orgId,
     accessToken,
     fetchStats,

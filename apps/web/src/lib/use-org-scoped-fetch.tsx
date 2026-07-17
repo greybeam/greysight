@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useRef } from "react";
+import { useQuery, type QueryKey } from "@tanstack/react-query";
 
 export type LoadState = "loading" | "ready" | "error";
 
@@ -10,64 +11,46 @@ export type OrgScopedFetchResult<T> = {
   retry: () => void;
 };
 
-// Owns the single-fetch lifecycle shared by every org-scoped panel: fetch on
-// mount and whenever `orgId` changes, drop out-of-order responses with a
-// request-sequence guard, and expose a stable `retry` for the error state's
-// Retry button.
+// A thin adapter over TanStack Query that preserves the `{ data, loadState,
+// retry }` contract every org-scoped panel already consumes, so callers keep
+// their loading/error/retry markup unchanged while their reads move into the
+// shared session cache.
 //
-// That guard is not dead weight even though callers key their panel on
-// `orgId` (remounting it on an org switch, which resets this hook's state
-// for free): a user can still click Retry more than once before the first
-// attempt resolves, starting a second fetch while the first is in flight.
-// Without the guard, the first request could resolve after the second and
-// overwrite its (newer, correct) result with stale data.
+// Callers supply the canonical query key (built from `queryKeys`), which scopes
+// the entry to the current user + org. Because the key already carries identity,
+// an org switch swaps to a different cache entry automatically — no manual
+// request-sequence guard is needed.
 //
-// `accessToken` and `fetchFn` are read from refs updated on every render
-// rather than being fetch dependencies, so a Supabase access-token rotation
-// while a panel is mounted does not re-run the fetch and reset the loaded
-// state.
+// `accessToken` and `fetchFn` are read from refs refreshed on every render
+// rather than living in the query key, so a Supabase access-token rotation while
+// a panel is mounted does not invalidate the cache entry or restart the fetch.
 export function useOrgScopedFetch<T>(
+  queryKey: QueryKey,
   orgId: string,
   accessToken: string | null,
   fetchFn: (orgId: string, accessToken: string | null) => Promise<T>,
 ): OrgScopedFetchResult<T> {
-  const [data, setData] = useState<T | null>(null);
-  const [loadState, setLoadState] = useState<LoadState>("loading");
-  const requestSequenceRef = useRef(0);
   const accessTokenRef = useRef(accessToken);
   const fetchFnRef = useRef(fetchFn);
-  useEffect(() => {
-    accessTokenRef.current = accessToken;
-    fetchFnRef.current = fetchFn;
+  accessTokenRef.current = accessToken;
+  fetchFnRef.current = fetchFn;
+
+  const query = useQuery({
+    queryKey,
+    queryFn: () => fetchFnRef.current(orgId, accessTokenRef.current),
   });
 
-  const load = useCallback(() => {
-    const requestSequence = ++requestSequenceRef.current;
-    setLoadState("loading");
-    setData(null);
-    fetchFnRef
-      .current(orgId, accessTokenRef.current)
-      .then((result) => {
-        if (requestSequenceRef.current !== requestSequence) return;
-        setData(result);
-        setLoadState("ready");
-      })
-      .catch(() => {
-        if (requestSequenceRef.current !== requestSequence) return;
-        setLoadState("error");
-      });
-  }, [orgId]);
-
-  useEffect(() => {
-    // Reset to the loading state before the async fetch resolves so a stale
-    // prior org's content is never shown while the new org's data loads.
-    // This is derived-state synchronization with the fetch, not a cascading
-    // render loop.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    load();
-  }, [load]);
-
-  return { data, loadState, retry: load };
+  return {
+    data: query.data ?? null,
+    loadState: query.isPending
+      ? "loading"
+      : query.isError
+        ? "error"
+        : "ready",
+    retry: () => {
+      void query.refetch();
+    },
+  };
 }
 
 export type LoadStatePanelProps = {
