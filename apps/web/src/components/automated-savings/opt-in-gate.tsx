@@ -82,6 +82,14 @@ export function OptInGate({ orgId, roleName, onAgreed }: OptInGateProps) {
     try {
       await agree(orgId, { accessToken: account?.accessToken ?? null });
       onAgreed(captured);
+      // For the current identity, onAgreed refetches status and this gate
+      // unmounts once agreed renders, so the lingering "submitting" is moot. But
+      // if the org/account switched to another still-unagreed workspace while the
+      // request was in flight, this same gate stays mounted for the NEW org —
+      // reset to idle so its button is usable instead of stuck disabled forever.
+      if (!queryIdentity.isCurrent(captured)) {
+        setStatus("idle");
+      }
     } catch {
       setStatus("error");
     }

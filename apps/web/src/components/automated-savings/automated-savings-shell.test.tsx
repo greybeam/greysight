@@ -663,6 +663,72 @@ describe("AutomatedSavingsShell", () => {
     ).toHaveLength(1);
   });
 
+  it("re-enables the opt-in gate after a stale agreement completes so the new org can agree", async () => {
+    // Identity is captured when agree STARTS (org-1). Switching to org-2 — which
+    // is ALSO unagreed, so the gate stays mounted — while the request is in
+    // flight must not leave the gate stuck "submitting" forever once org-1's
+    // stale agreement resolves; the new org must be able to agree on its own.
+    let resolveOrgOneAgree: (() => void) | undefined;
+    agreeMock.mockImplementation((orgId: string) =>
+      orgId === "org-1"
+        ? new Promise<void>((resolve) => {
+            resolveOrgOneAgree = resolve;
+          })
+        : Promise.resolve(),
+    );
+    fetchStatusMock.mockResolvedValue({
+      agreed: false,
+      globalEnabled: false,
+      grantPresent: false,
+      grantCheckedAt: null,
+      roleName: null,
+    });
+    fetchWarehousesMock.mockResolvedValue([baseRow]);
+    const client = createTestQueryClient();
+    // Pre-seed org-2's (also unagreed) status so switching to it paints the gate
+    // immediately — no intervening loading panel that would unmount the gate and
+    // mask the stuck-"submitting" bug. The gate stays mounted across the switch.
+    const unagreed = {
+      agreed: false,
+      globalEnabled: false,
+      grantPresent: false,
+      grantCheckedAt: null,
+      roleName: null,
+    };
+    client.setQueryData(
+      queryKeys.autoSavings.status("test-user", "org-2"),
+      unagreed,
+    );
+
+    const view = render(shellForOrganization("org-1", client));
+    fireEvent.click(await screen.findByRole("button", { name: /agree/i }));
+    expect(screen.getByRole("button", { name: /agree/i })).toBeDisabled();
+
+    view.rerender(shellForOrganization("org-2", client));
+    await waitFor(() =>
+      expect(fetchStatusMock).toHaveBeenCalledWith("org-2", {
+        accessToken: "tok",
+      }),
+    );
+    // Still the same mounted gate, still disabled from org-1's in-flight submit.
+    expect(screen.getByRole("button", { name: /agree/i })).toBeDisabled();
+
+    // The stale org-1 agreement resolves against a now-inactive identity — the
+    // gate must reset to idle so org-2's button is usable again.
+    resolveOrgOneAgree?.();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /agree/i }),
+      ).not.toBeDisabled(),
+    );
+
+    // org-2 can now submit its own agreement.
+    fireEvent.click(screen.getByRole("button", { name: /agree/i }));
+    await waitFor(() =>
+      expect(agreeMock).toHaveBeenCalledWith("org-2", { accessToken: "tok" }),
+    );
+  });
+
   it("serves cached status and warehouses on remount without refetching", async () => {
     fetchStatusMock.mockResolvedValue({
       agreed: true,
