@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import {
   act,
   cleanup,
@@ -10,6 +10,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { SuspensionEventsPage } from "../../lib/automated-savings-api";
+import { QueryTestProvider } from "../../lib/query-test-utils";
 import { SuspensionEventsTable } from "./suspension-events-table";
 
 const fetchSuspensionEvents = vi.hoisted(() => vi.fn());
@@ -32,12 +33,15 @@ function renderTable(
   props: { orgId?: string; accessToken?: string | null } = {},
 ) {
   return render(
-    <QueryClientProvider client={client}>
+    <QueryTestProvider
+      client={client}
+      identity={{ userId: "test-user", identityEpoch: 0, activeOrganizationId: "org-1" }}
+    >
       <SuspensionEventsTable
         orgId={props.orgId ?? "org-1"}
         accessToken={props.accessToken ?? "token"}
       />
-    </QueryClientProvider>,
+    </QueryTestProvider>,
   );
 }
 

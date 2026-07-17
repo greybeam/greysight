@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import {
   cleanup,
   fireEvent,
@@ -11,7 +11,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AccountChromeProvider } from "../../lib/account-context";
 import type { WarehouseRow } from "../../lib/automated-savings-api";
 import { queryKeys } from "../../lib/query-keys";
-import { createTestQueryClient } from "../../lib/query-test-utils";
+import {
+  createTestQueryClient,
+  QueryTestProvider,
+} from "../../lib/query-test-utils";
 import { DashboardApiError } from "../../lib/dashboard-errors";
 import { AutomatedSavingsShell } from "./automated-savings-shell";
 
@@ -87,11 +90,11 @@ function shellForOrganization(
   client: QueryClient,
 ) {
   return (
-    <QueryClientProvider client={client}>
+    <QueryTestProvider client={client}>
       <AccountChromeProvider value={shellAccountValue(activeOrganizationId)}>
         <AutomatedSavingsShell />
       </AccountChromeProvider>
-    </QueryClientProvider>
+    </QueryTestProvider>
   );
 }
 
