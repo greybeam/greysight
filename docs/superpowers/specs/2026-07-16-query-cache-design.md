@@ -62,11 +62,19 @@ Alternatives rejected:
 Clearing must cover **every** auth identity transition, not just the sign-out
 button:
 
-- `OrgShell` tracks the current `userId` (`session.user.id`). Whenever the
-  observed `userId` changes — via `handleSignOut`, the
-  `authClient.onAuthStateChange` subscription (`org-shell.tsx:115`; covers
-  cross-tab sign-out, token expiry, account switch), or initial session
-  resolution — call `queryClient.clear()`.
+- `OrgShell` tracks the current `userId` (`session.user.id`) and an
+  **identity epoch** (integer). Whenever the observed `userId` changes — via
+  `handleSignOut`, the `authClient.onAuthStateChange` subscription
+  (`org-shell.tsx:115`; covers cross-tab sign-out, token expiry, account
+  switch), or initial session resolution — call
+  `queryClient.cancelQueries()` then `queryClient.clear()`, and increment
+  the epoch. `clear()` alone is insufficient: in-flight query functions and
+  the imperative polling loops resolve after clearing and would repopulate
+  the cache with the previous identity's data.
+- Every imperative callback that writes to the cache (terminal poll results
+  via `setQueryData`, post-mutation invalidations) captures
+  `{userId, orgId, epoch}` when it starts and re-checks the current epoch
+  immediately before writing; on mismatch it drops the result.
 - Org **disconnect** removes that org's entries via
   `queryClient.removeQueries({ queryKey: scope(userId, orgId) })`.
 - Org **switch** requires no clearing: keys are prefixed by `orgId`, so the
@@ -150,10 +158,26 @@ call sites invalidate via `useQueryClient()`.
 
 ### Shared httpx clients
 
-- `_lifespan` in `apps/api/app/main.py` creates one `httpx.AsyncClient` and
-  one `httpx.Client` with explicit `httpx.Limits` (e.g.
-  `max_connections=20`, `max_keepalive_connections=10`) and closes them on
-  shutdown.
+- `_lifespan` in `apps/api/app/main.py` creates the pooled clients and
+  closes them on shutdown:
+  - One small dedicated `httpx.AsyncClient` for the **auth verifier**
+    (`auth.py` token verification runs on every authenticated request and
+    must not queue behind slow admin operations).
+  - One shared `httpx.AsyncClient` and one shared `httpx.Client` for the
+    remaining services.
+  - All clients get explicit `httpx.Limits` (e.g. `max_connections=20`,
+    `max_keepalive_connections=10`) **and** an explicit `httpx.Timeout`
+    including `pool=` so pool exhaustion fails fast instead of blocking.
+- **Credential-neutral pool invariant:** pooled clients are constructed with
+  no default `headers`, `auth`, `cookies`, or `params`, and shared-client
+  configuration is never mutated after construction. Every call site passes
+  credentials (`apikey`, `authorization`) per request via `headers=`, as
+  today. A client-level or mutated auth header on a shared client would
+  bleed credentials across concurrent tenants.
+- **Pool exhaustion maps to 503, not 401:** `auth.py:55` currently converts
+  any `httpx.HTTPError` into an authentication failure. `httpx.PoolTimeout`
+  (and kin) must instead surface as a 503 so saturation is not misreported
+  as invalid credentials.
 - **Import-time configuration mismatch (Codex finding 4):** services are
   configured at module import (`main.py:141-149`), before the lifespan runs.
   Resolution: a small `app/services/http_pool.py` holder module exposing
@@ -162,6 +186,10 @@ call sites invalidate via `useQueryClient()`.
   receiving one at construction. Construction-time params keep the existing
   `transport=` injection: when a `transport` is provided (tests), the service
   builds its own short-lived client exactly as today, bypassing the pool.
+  If `get_async_client()` / `get_sync_client()` is called before the
+  lifespan has populated the holder (and no `transport` override is in
+  play), it raises `RuntimeError` — never silently constructs an unpooled
+  fallback client that would mask a startup-ordering bug.
 - Services migrated (all current per-call constructors):
   `auth.py` (token verification — hottest path), `membership_directory.py`,
   `dashboard_run_cache.py`, `automated_savings_store.py`,
@@ -179,6 +207,9 @@ call sites invalidate via `useQueryClient()`.
   background refetch is in flight; data swaps on resolve.
 - Identity clearing: an `onAuthStateChange`-driven user change (not just the
   sign-out button) empties the cache.
+- Identity races (deferred promises): an in-flight query or poll resolving
+  *after* sign-out, account switch, or org switch does not repopulate the
+  cache — the epoch check drops the late result.
 - Org isolation: switching orgs never renders the previous org's data;
   paginated suspension-event keys are isolated per org and per cursor.
 - Mutation invalidation: `agree`, `setGlobalSwitch`, `toggleWarehouse` each
@@ -194,6 +225,13 @@ call sites invalidate via `useQueryClient()`.
   calls) when no `transport` override is given.
 - `transport=` injection still yields hermetic per-test clients.
 - Lifespan closes the pooled clients on shutdown.
+- Credential isolation: pooled clients carry no default auth headers after
+  construction and after requests; concurrent verifier/service-role calls
+  each receive only their own per-request headers.
+- Pool exhaustion: a saturated pool surfaces as 503 from the auth verifier,
+  not 401.
+- Holder guard: `get_async_client()` before lifespan population raises
+  `RuntimeError`.
 
 ## Acceptance criteria (from issue #65)
 
