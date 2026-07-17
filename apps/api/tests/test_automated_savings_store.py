@@ -1,5 +1,7 @@
 import contextlib
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import anyio
 import httpx
@@ -78,11 +80,19 @@ def test_two_sequential_savings_calls_reuse_open_shared_client() -> None:
         assert len(requests) == 3
 
 
-def test_pooled_requests_isolate_credentials_per_request() -> None:
-    requests: list[httpx.Request] = []
+def test_pooled_requests_isolate_credentials_when_concurrent() -> None:
+    # Both requests must be in-flight through the shared client at the same
+    # time; a Barrier inside the transport handler blocks each request until
+    # the other has also arrived, so neither can complete first.
+    lock = threading.Lock()
+    requests_by_key: dict[str, httpx.Request] = {}
+    barrier = threading.Barrier(2)
 
     def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
+        # Rendezvous: forces genuine concurrency before either response starts.
+        barrier.wait(timeout=5)
+        with lock:
+            requests_by_key[request.headers["apikey"]] = request
         return httpx.Response(200, json=[])
 
     with _installed_sync_pool(handler) as sync_client:
@@ -94,13 +104,20 @@ def test_pooled_requests_isolate_credentials_per_request() -> None:
             supabase_url="https://project.supabase.co",
             service_role_key="key-b",
         )
-        store_a.get_settings("org-1")
-        store_b.get_settings("org-1")
 
-        assert requests[0].headers["apikey"] == "key-a"
-        assert requests[0].headers["authorization"] == "Bearer key-a"
-        assert requests[1].headers["apikey"] == "key-b"
-        assert requests[1].headers["authorization"] == "Bearer key-b"
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(store_a.get_settings, "org-1"),
+                pool.submit(store_b.get_settings, "org-1"),
+            ]
+            for future in futures:
+                future.result(timeout=5)
+
+        # Each recorded request carries only its own credentials.
+        request_a = requests_by_key["key-a"]
+        request_b = requests_by_key["key-b"]
+        assert request_a.headers["authorization"] == "Bearer key-a"
+        assert request_b.headers["authorization"] == "Bearer key-b"
         # The shared pool carries no per-request credentials.
         assert "apikey" not in sync_client.headers
         assert "authorization" not in sync_client.headers
