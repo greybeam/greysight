@@ -586,7 +586,16 @@ function CostDashboardContent({
       applyDashboardView(finalView);
       prefetchRelativeWindows(finalView.run.id);
     } catch (error) {
-      if (runGeneration !== runGenerationRef.current) {
+      // A superseded run or a stale identity (sign-out / account / org switch)
+      // must never paint a failed dashboard onto the new identity. An org/user
+      // switch does not bump the run generation, so also guard on isCurrent and
+      // treat an identity-change cancellation as benign — the transition owns
+      // the repaint.
+      if (
+        runGeneration !== runGenerationRef.current ||
+        !identityRef.current.isCurrent(captured) ||
+        isIdentityChangedError(error)
+      ) {
         return;
       }
       setLoadState({ status: "failed", ...dashboardFailure(error) });

@@ -1803,7 +1803,7 @@ describe("CostDashboard", () => {
       );
     });
 
-    it("drops an in-flight range fetch after an identity switch + cache clear so TanStack cannot repopulate the old key", async () => {
+    it("drops an in-flight range fetch after an identity switch so TanStack cannot repopulate the old key", async () => {
       const dataView: DashboardView = {
         ...demoDashboardView,
         run: {
@@ -1840,8 +1840,10 @@ describe("CostDashboard", () => {
         ),
       );
 
-      // Identity epoch bumps and the cache is cleared, mirroring OrgShell's
-      // transitionUser (cancelQueries + clear).
+      // Identity epoch bumps (sign-out / account switch) while the range fetch
+      // is still in flight. The cache is NOT cleared here: the queryFn's
+      // throwIfIdentityChanged guard must be the only thing preventing TanStack
+      // from repopulating the stale 7-day key.
       view.rerender(
         <QueryTestProvider
           client={client}
@@ -1850,7 +1852,6 @@ describe("CostDashboard", () => {
           <CostDashboard demoMode={false} data={dataView} runtime={runtime} />
         </QueryTestProvider>,
       );
-      client.clear();
 
       await act(async () => {
         pending.resolve(dataView);
@@ -1969,6 +1970,50 @@ describe("CostDashboard", () => {
 
       // The queryFn throws an IdentityChangedError, which the default-view path
       // must treat as a benign cancellation — never a user-visible failed state.
+      expect(
+        screen.queryByText("Could not load dashboard data."),
+      ).not.toBeInTheDocument();
+    });
+
+    it("does not paint a Snowflake run failure that rejects after an identity switch", async () => {
+      // startDashboardRun is held in flight so the identity switch lands before
+      // it settles. An org/user switch does NOT bump the run generation nor
+      // cancel this promise, so the catch must guard on identity — otherwise a
+      // genuine rejection paints a failed dashboard onto the new identity.
+      const pending = createDeferred<DashboardRun>();
+      vi.mocked(startDashboardRun).mockReturnValue(pending.promise);
+
+      const client = createPersistentQueryClient();
+      const view = render(
+        <QueryTestProvider
+          client={client}
+          identity={{ activeOrganizationId: ORG_ID, identityEpoch: 0 }}
+        >
+          <CostDashboard demoMode={false} runtime={runtime} />
+        </QueryTestProvider>,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Run analysis" }));
+      await waitFor(() => expect(startDashboardRun).toHaveBeenCalled());
+
+      // Identity epoch bumps (sign-out / account / org switch) while the run
+      // request is still in flight.
+      view.rerender(
+        <QueryTestProvider
+          client={client}
+          identity={{ activeOrganizationId: ORG_ID, identityEpoch: 1 }}
+        >
+          <CostDashboard demoMode={false} runtime={runtime} />
+        </QueryTestProvider>,
+      );
+
+      await act(async () => {
+        pending.reject(new Error("run failure"));
+        await pending.promise.catch(() => undefined);
+      });
+
+      // The identity-guarded catch must not surface the failure for a run that
+      // belonged to the previous identity.
       expect(
         screen.queryByText("Could not load dashboard data."),
       ).not.toBeInTheDocument();
