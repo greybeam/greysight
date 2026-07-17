@@ -233,3 +233,190 @@ export async function checkAccess(
   );
   return parseCheckAccessResult(payload);
 }
+
+export type SuspensionStatsBucket = {
+  day: string;
+  counts: Record<string, number>;
+};
+
+export type SuspensionStatsResponse = {
+  days: number;
+  warehouses: string[];
+  buckets: SuspensionStatsBucket[];
+};
+
+export type SuspensionEvent = {
+  id: string;
+  createdAt: string;
+  warehouseName: string;
+  action: string;
+  reason: string;
+  observedStartedClusters: number | null;
+  observedResumedOn: string | null;
+  observedAt: string;
+};
+
+export type SuspensionEventsPage = {
+  events: SuspensionEvent[];
+  nextCursor: string | null;
+};
+
+const MALFORMED = "Malformed automated-savings API response";
+
+function asNonEmptyString(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(MALFORMED);
+  }
+  return value;
+}
+
+// Requires an explicit timezone offset (`Z`/`z` or `±HH:MM`/`±HHMM`) so a
+// timezone-naive timestamp — which JS's Date parsing would silently treat as
+// local time — is rejected rather than mislabeled.
+const TIMEZONE_OFFSET_PATTERN = /([Zz]|[+-]\d{2}:?\d{2})$/;
+
+// Extracts the leading `YYYY-MM-DD` date portion of an ISO-8601 timestamp so
+// it can be round-trip-checked by `asCalendarDay` — this is what catches
+// rollover dates like "2026-02-30T..." that `new Date` would otherwise
+// silently normalize (to March 2) instead of rejecting.
+const ISO_TIMESTAMP_DATE_PATTERN = /^(\d{4}-\d{2}-\d{2})T/;
+
+// Requires a canonical `YYYY-MM-DD` calendar day and rejects dates that JS
+// would otherwise roll over (e.g. "2026-02-30" rolls to March 2) by
+// round-tripping through toISOString and comparing back to the input.
+function asCalendarDay(value: unknown): string {
+  const text = asNonEmptyString(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    throw new Error(MALFORMED);
+  }
+  const parsed = new Date(`${text}T00:00:00Z`);
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.toISOString().slice(0, 10) !== text
+  ) {
+    throw new Error(MALFORMED);
+  }
+  return text;
+}
+
+function asTimestamp(value: unknown): string {
+  const text = asNonEmptyString(value);
+  const dateMatch = ISO_TIMESTAMP_DATE_PATTERN.exec(text);
+  if (
+    !dateMatch ||
+    Number.isNaN(new Date(text).getTime()) ||
+    !TIMEZONE_OFFSET_PATTERN.test(text)
+  ) {
+    throw new Error(MALFORMED);
+  }
+  // Reuse the same calendar-day validation the bucket-`day` parser uses so a
+  // rollover date (e.g. "2026-02-30") is rejected here too, instead of being
+  // silently normalized by `new Date`.
+  asCalendarDay(dateMatch[1]);
+  return text;
+}
+
+function requirePresent(record: Record<string, unknown>, key: string): void {
+  if (!(key in record)) {
+    throw new Error(MALFORMED);
+  }
+}
+
+function asNullable<T>(value: unknown, parse: (value: unknown) => T): T | null {
+  return value === null || value === undefined ? null : parse(value);
+}
+
+function asCount(value: unknown): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new Error(MALFORMED);
+  }
+  return value;
+}
+
+// The single snake_case → camelCase boundary for suspension events.
+export function parseSuspensionEvent(raw: unknown): SuspensionEvent {
+  const record = asRecord(raw);
+  // These keys are nullable in the contract, but a MISSING key is not the
+  // same as an explicit `null` — require presence before treating an absent
+  // value as the same as null.
+  requirePresent(record, "observed_started_clusters");
+  requirePresent(record, "observed_resumed_on");
+  return {
+    id: asNonEmptyString(record.id),
+    createdAt: asTimestamp(record.created_at),
+    warehouseName: asNonEmptyString(record.warehouse_name),
+    action: asNonEmptyString(record.action),
+    reason: asNonEmptyString(record.reason),
+    observedStartedClusters: asNullable(
+      record.observed_started_clusters,
+      asCount,
+    ),
+    observedResumedOn: asNullable(record.observed_resumed_on, asTimestamp),
+    observedAt: asTimestamp(record.observed_at),
+  };
+}
+
+function asCountsRecord(value: unknown): Record<string, number> {
+  const record = asRecord(value);
+  const counts: Record<string, number> = {};
+  for (const [key, count] of Object.entries(record)) {
+    counts[key] = asCount(count);
+  }
+  return counts;
+}
+
+export function parseSuspensionStatsBucket(raw: unknown): SuspensionStatsBucket {
+  const record = asRecord(raw);
+  return {
+    day: asCalendarDay(record.day),
+    counts: asCountsRecord(record.counts),
+  };
+}
+
+export async function fetchSuspensionStats(
+  orgId: string,
+  days: number,
+  options: AutomatedSavingsApiOptions = {},
+): Promise<SuspensionStatsResponse> {
+  const payload = await fetchJson(
+    `/api/automated-savings/${orgId}/stats/suspensions?days=${days}`,
+    {},
+    options,
+  );
+  const record = asRecord(payload);
+  if (typeof record.days !== "number") {
+    throw new Error(MALFORMED);
+  }
+  if (!Array.isArray(record.warehouses)) {
+    throw new Error(MALFORMED);
+  }
+  if (!Array.isArray(record.buckets)) {
+    throw new Error(MALFORMED);
+  }
+  return {
+    days: record.days,
+    warehouses: record.warehouses.map(asNonEmptyString),
+    buckets: record.buckets.map(parseSuspensionStatsBucket),
+  };
+}
+
+export async function fetchSuspensionEvents(
+  orgId: string,
+  cursor: string | null = null,
+  options: AutomatedSavingsApiOptions = {},
+): Promise<SuspensionEventsPage> {
+  const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+  const payload = await fetchJson(
+    `/api/automated-savings/${orgId}/events${query}`,
+    {},
+    options,
+  );
+  const record = asRecord(payload);
+  if (!Array.isArray(record.events)) {
+    throw new Error(MALFORMED);
+  }
+  return {
+    events: record.events.map(parseSuspensionEvent),
+    nextCursor: asNullable(record.next_cursor, asNonEmptyString),
+  };
+}

@@ -5,7 +5,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AccountChromeProvider } from "../../lib/account-context";
 import type { WarehouseRow } from "../../lib/automated-savings-api";
@@ -18,6 +18,11 @@ const checkAccessMock = vi.fn();
 const setGlobalSwitchMock = vi.fn();
 const agreeMock = vi.fn();
 const toggleWarehouseMock = vi.fn();
+// The shell mounts SuspensionsChart and SuspensionEventsTable once opted in;
+// stub their data calls so those components render quietly instead of
+// surfacing their own error alerts and breaking role="alert" queries below.
+const fetchSuspensionStatsMock = vi.fn();
+const fetchSuspensionEventsMock = vi.fn();
 
 vi.mock("../../lib/automated-savings-api", async () => {
   const actual = await vi.importActual<
@@ -31,6 +36,10 @@ vi.mock("../../lib/automated-savings-api", async () => {
     setGlobalSwitch: (...args: unknown[]) => setGlobalSwitchMock(...args),
     agree: (...args: unknown[]) => agreeMock(...args),
     toggleWarehouse: (...args: unknown[]) => toggleWarehouseMock(...args),
+    fetchSuspensionStats: (...args: unknown[]) =>
+      fetchSuspensionStatsMock(...args),
+    fetchSuspensionEvents: (...args: unknown[]) =>
+      fetchSuspensionEventsMock(...args),
   };
 });
 
@@ -81,6 +90,18 @@ const baseRow: WarehouseRow = {
 };
 
 describe("AutomatedSavingsShell", () => {
+  beforeEach(() => {
+    fetchSuspensionStatsMock.mockResolvedValue({
+      days: 7,
+      warehouses: [],
+      buckets: [],
+    });
+    fetchSuspensionEventsMock.mockResolvedValue({
+      events: [],
+      nextCursor: null,
+    });
+  });
+
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
@@ -189,6 +210,103 @@ describe("AutomatedSavingsShell", () => {
     expect(
       screen.queryByRole("link", { name: /report this issue/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("hides analytics and expands the config pane when no warehouse is enabled", async () => {
+    fetchStatusMock.mockResolvedValue({
+      agreed: true,
+      globalEnabled: true,
+      grantPresent: true,
+      grantCheckedAt: null,
+      roleName: null,
+    });
+    fetchWarehousesMock.mockResolvedValue([{ ...baseRow, enabled: false }]);
+
+    renderShell();
+
+    expect(
+      await screen.findByRole("table", { name: /warehouses/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("table", { name: /suspension events/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/enable a warehouse below to start saving idle compute/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/0 of 1 enabled/i)).toBeInTheDocument();
+    const details = screen.getByText("Warehouse configuration").closest("details");
+    expect(details).toHaveAttribute("open");
+  });
+
+  it("keeps the config pane open when the first warehouse is enabled from within it", async () => {
+    // The pane starts open because no warehouse is enabled yet; enabling the
+    // first one must not auto-collapse it out from under the user (the
+    // `configOpen` default is frozen from the first ready snapshot — see the
+    // effect in automated-savings-shell.tsx).
+    fetchStatusMock.mockResolvedValue({
+      agreed: true,
+      globalEnabled: true,
+      grantPresent: true,
+      grantCheckedAt: null,
+      roleName: null,
+    });
+    fetchWarehousesMock
+      .mockResolvedValueOnce([{ ...baseRow, enabled: false }])
+      .mockResolvedValueOnce([{ ...baseRow, enabled: true }]);
+    toggleWarehouseMock.mockResolvedValue(undefined);
+
+    renderShell();
+
+    const detailsBefore = (
+      await screen.findByText("Warehouse configuration")
+    ).closest("details");
+    expect(detailsBefore).toHaveAttribute("open");
+    expect(screen.queryByText("Suspension events")).not.toBeInTheDocument();
+
+    const rowSwitch = await screen.findByRole("switch", { name: "WH1" });
+    fireEvent.click(rowSwitch);
+
+    await waitFor(() => expect(toggleWarehouseMock).toHaveBeenCalledWith(
+      "org-1",
+      "WH1",
+      true,
+      { accessToken: "tok" },
+    ));
+    // Analytics (chart + events table sections) only mount once
+    // status.agreed && hasEnabledConfig — the events table renders "No
+    // recorded suspensions yet" here since fetchSuspensionEventsMock resolves
+    // an empty page by default, so assert on the section heading rather than
+    // the (absent) table role.
+    await waitFor(() =>
+      expect(screen.getByText("Suspension events")).toBeInTheDocument(),
+    );
+
+    const detailsAfter = screen
+      .getByText("Warehouse configuration")
+      .closest("details");
+    expect(detailsAfter).toHaveAttribute("open");
+  });
+
+  it("shows analytics and the enabled count when a warehouse is enabled", async () => {
+    fetchStatusMock.mockResolvedValue({
+      agreed: true,
+      globalEnabled: true,
+      grantPresent: true,
+      grantCheckedAt: null,
+      roleName: null,
+    });
+    fetchWarehousesMock.mockResolvedValue([baseRow]);
+
+    renderShell();
+
+    expect(
+      await screen.findByRole("table", { name: /warehouses/i }),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(fetchSuspensionStatsMock).toHaveBeenCalled());
+    await waitFor(() => expect(fetchSuspensionEventsMock).toHaveBeenCalled());
+    expect(screen.getByText(/1 of 1 enabled/i)).toBeInTheDocument();
+    const details = screen.getByText("Warehouse configuration").closest("details");
+    expect(details).not.toHaveAttribute("open");
   });
 
   it("reflects status.globalEnabled and flips it via the global switch", async () => {

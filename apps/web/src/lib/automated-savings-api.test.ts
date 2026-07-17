@@ -4,6 +4,8 @@ import {
   checkAccess,
   fetchStatus,
   fetchWarehouses,
+  parseSuspensionEvent,
+  parseSuspensionStatsBucket,
   setGlobalSwitch,
   toggleWarehouse,
 } from "./automated-savings-api";
@@ -165,5 +167,107 @@ describe("automated-savings-api", () => {
     expect(result).toEqual({
       grantPresent: false, grantCheckedAt: "2026-01-01T00:00:00Z", roleName: "GREYSIGHT_ROLE",
     });
+  });
+});
+
+const validEvent = {
+  id: "42",
+  created_at: "2026-07-15T10:00:00+00:00",
+  warehouse_name: "COMPUTE_WH",
+  action: "suspend",
+  reason: "idle",
+  observed_started_clusters: 1,
+  observed_resumed_on: "2026-07-15T08:00:00+00:00",
+  observed_at: "2026-07-15T09:59:00+00:00",
+};
+
+describe("parseSuspensionEvent", () => {
+  it("maps snake_case fields and preserves nullables", () => {
+    expect(parseSuspensionEvent(validEvent)).toEqual({
+      id: "42",
+      createdAt: "2026-07-15T10:00:00+00:00",
+      warehouseName: "COMPUTE_WH",
+      action: "suspend",
+      reason: "idle",
+      observedStartedClusters: 1,
+      observedResumedOn: "2026-07-15T08:00:00+00:00",
+      observedAt: "2026-07-15T09:59:00+00:00",
+    });
+    expect(
+      parseSuspensionEvent({
+        ...validEvent,
+        observed_started_clusters: null,
+        observed_resumed_on: null,
+      }),
+    ).toMatchObject({ observedStartedClusters: null, observedResumedOn: null });
+  });
+
+  it.each([
+    ["numeric id", { ...validEvent, id: 42 }],
+    ["missing id", { ...validEvent, id: undefined }],
+    ["empty warehouse", { ...validEvent, warehouse_name: "" }],
+    ["non-string timestamp", { ...validEvent, observed_at: 12345 }],
+    ["unparseable timestamp", { ...validEvent, created_at: "yesterday" }],
+    ["timezone-naive timestamp", { ...validEvent, observed_at: "2026-07-15T09:59:00" }],
+    ["rollover calendar date", { ...validEvent, observed_at: "2026-02-30T09:59:00Z" }],
+    ["string clusters", { ...validEvent, observed_started_clusters: "1" }],
+    ["non-object", "not-an-event"],
+  ])("rejects %s", (_label, raw) => {
+    expect(() => parseSuspensionEvent(raw)).toThrow(
+      "Malformed automated-savings API response",
+    );
+  });
+
+  it.each([
+    ["observed_started_clusters", { ...validEvent }],
+    ["observed_resumed_on", { ...validEvent }],
+  ])("rejects a missing nullable key %s", (key, base) => {
+    const raw = { ...base } as Record<string, unknown>;
+    delete raw[key];
+    expect(() => parseSuspensionEvent(raw)).toThrow(
+      "Malformed automated-savings API response",
+    );
+  });
+});
+
+describe("parseSuspensionStatsBucket", () => {
+  it("parses a valid bucket", () => {
+    expect(
+      parseSuspensionStatsBucket({
+        day: "2026-07-15",
+        counts: { ANALYTICS_WH: 0, COMPUTE_WH: 3 },
+      }),
+    ).toEqual({ day: "2026-07-15", counts: { ANALYTICS_WH: 0, COMPUTE_WH: 3 } });
+  });
+
+  it("parses an empty counts record", () => {
+    expect(
+      parseSuspensionStatsBucket({ day: "2026-07-15", counts: {} }),
+    ).toEqual({ day: "2026-07-15", counts: {} });
+  });
+
+  it.each([
+    ["missing day", { counts: { COMPUTE_WH: 3 } }],
+    ["empty day", { day: "", counts: { COMPUTE_WH: 3 } }],
+    ["non-canonical day format", { day: "07-15-2026", counts: { COMPUTE_WH: 3 } }],
+    ["calendar-invalid day", { day: "2026-02-30", counts: { COMPUTE_WH: 3 } }],
+    ["non-record counts", { day: "2026-07-15", counts: "not-a-record" }],
+    ["missing counts", { day: "2026-07-15" }],
+    [
+      "negative count value",
+      { day: "2026-07-15", counts: { COMPUTE_WH: -1 } },
+    ],
+    [
+      "non-integer count value",
+      { day: "2026-07-15", counts: { COMPUTE_WH: 1.5 } },
+    ],
+    [
+      "string count value",
+      { day: "2026-07-15", counts: { COMPUTE_WH: "3" } },
+    ],
+  ])("rejects %s", (_label, raw) => {
+    expect(() => parseSuspensionStatsBucket(raw)).toThrow(
+      "Malformed automated-savings API response",
+    );
   });
 });

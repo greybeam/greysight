@@ -21,6 +21,8 @@ import {
   OptInGate,
   UNKNOWN_ROLE_PLACEHOLDER,
 } from "./opt-in-gate";
+import { SuspensionEventsTable } from "./suspension-events-table";
+import { SuspensionsChart } from "./suspensions-chart";
 import { WarehouseTable } from "./warehouse-table";
 
 type LoadState = "idle" | "loading" | "ready" | "error";
@@ -94,6 +96,10 @@ export function AutomatedSavingsShell() {
   const [checking, setChecking] = useState(false);
   const [globalSwitching, setGlobalSwitching] = useState(false);
   const [controlError, setControlError] = useState<string | null>(null);
+  // null = "not yet initialized for this org's load" — the init effect below
+  // sets a one-time default from the first ready snapshot so that enabling a
+  // warehouse mid-setup doesn't yank the pane closed out from under the user.
+  const [configOpen, setConfigOpen] = useState<boolean | null>(null);
   const loadSequenceRef = useRef(0);
   const currentOrgIdRef = useRef<string | null>(null);
   const checkOperationRef = useRef<object | null>(null);
@@ -111,6 +117,7 @@ export function AutomatedSavingsShell() {
     setLoadFailure(null);
     setStatus(null);
     setWarehouses([]);
+    setConfigOpen(null);
     checkOperationRef.current = null;
     globalOperationRef.current = null;
     setChecking(false);
@@ -166,6 +173,19 @@ export function AutomatedSavingsShell() {
       if (currentOrgIdRef.current === orgId) currentOrgIdRef.current = null;
     };
   }, [load, orgId]);
+
+  const enabledCount = warehouses.filter((warehouse) => warehouse.enabled).length;
+  const hasEnabledConfig = enabledCount > 0;
+
+  useEffect(() => {
+    if (loadState === "ready" && status?.agreed && configOpen === null) {
+      // Freeze the collapsible's default from the first ready snapshot only —
+      // otherwise enabling a warehouse mid-setup would collapse the pane out
+      // from under the user the instant hasEnabledConfig flips to true.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setConfigOpen(!hasEnabledConfig);
+    }
+  }, [loadState, status, configOpen, hasEnabledConfig]);
 
   async function handleGlobalToggle() {
     if (!orgId || !isAdmin || !status?.agreed || globalOperationRef.current) {
@@ -366,14 +386,64 @@ export function AutomatedSavingsShell() {
               </p>
             ) : null}
 
-            <WarehouseTable
-              accessToken={accessToken}
-              isAdmin={isAdmin && status.agreed}
-              orgId={orgId}
-              warehouses={warehouses}
-              onChange={handleRowChange}
-              onRefresh={load}
-            />
+            <details
+              className="group/config rounded-lg border border-hairline bg-surface"
+              open={configOpen ?? !hasEnabledConfig}
+              onToggle={(event) => setConfigOpen(event.currentTarget.open)}
+            >
+              <summary className="flex list-none items-center justify-between gap-3 p-4 text-left [&::-webkit-details-marker]:hidden cursor-pointer">
+                <span className="text-sm font-semibold text-slate-100">
+                  Warehouse configuration
+                </span>
+                <span className="flex items-center gap-2 text-xs text-slate-400">
+                  {enabledCount} of {warehouses.length} enabled
+                  <svg
+                    aria-hidden="true"
+                    className="h-4 w-4 shrink-0 text-slate-500 transition-transform group-open/config:rotate-180"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      d="M6 9l6 6 6-6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </span>
+              </summary>
+              <div className="border-t border-hairline p-4">
+                {!hasEnabledConfig ? (
+                  <p className="mb-3 text-sm text-slate-400">
+                    Enable a warehouse below to start saving idle compute.
+                  </p>
+                ) : null}
+                <WarehouseTable
+                  accessToken={accessToken}
+                  isAdmin={isAdmin && status.agreed}
+                  orgId={orgId}
+                  warehouses={warehouses}
+                  onChange={handleRowChange}
+                  onRefresh={load}
+                />
+              </div>
+            </details>
+
+            {status.agreed && hasEnabledConfig ? (
+              <>
+                <SuspensionsChart
+                  key={`chart-${orgId}`}
+                  accessToken={accessToken}
+                  orgId={orgId}
+                />
+                <SuspensionEventsTable
+                  key={`events-${orgId}`}
+                  accessToken={accessToken}
+                  orgId={orgId}
+                />
+              </>
+            ) : null}
           </div>
           {!status.agreed ? (
             <BlockingOptInModal>

@@ -50,15 +50,18 @@ body {
 
 /*
  * 1px dark gap between stacked bar segments. The stacked spend charts render on
- * Recharts (ComposedChart), where each segment is a `recharts-rectangle` <path>,
- * which we stroke with the card surface color (#1C1C1C). The stroke is centered
- * on the edge, so a shared boundary between two stacked segments reads as a ~1px
- * dark gap, while the outermost stack/side edges blend into the matching card
- * background and stay invisible. crispEdges keeps the 1px line sharp instead of
- * anti-aliasing it into a soft smudge. Scoped to charts that opt in via
- * `.bar-segment-gap`.
+ * raw Recharts (ComposedChart), where each segment is a `recharts-rectangle`
+ * <path>, which we stroke with the card surface color (#1C1C1C). Tremor's
+ * <BarChart> (e.g. the suspensions chart) renders each segment via a custom
+ * shape function that outputs a plain <rect> instead of a <path>, so the rule
+ * targets both elements. The stroke is centered on the edge, so a shared
+ * boundary between two stacked segments reads as a ~1px dark gap, while the
+ * outermost stack/side edges blend into the matching card background and stay
+ * invisible. crispEdges keeps the 1px line sharp instead of anti-aliasing it
+ * into a soft smudge. Scoped to charts that opt in via `.bar-segment-gap`.
  */
-.bar-segment-gap .recharts-bar-rectangle path {
+.bar-segment-gap .recharts-bar-rectangle path,
+.bar-segment-gap .recharts-bar-rectangle rect {
   stroke: #1c1c1c;
   stroke-width: 1px;
   shape-rendering: crispEdges;
