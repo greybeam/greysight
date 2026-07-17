@@ -31,6 +31,15 @@ class MembershipLookupUnavailable(MembershipLookupError):
     """
 
 
+def _is_upstream_unavailable(status_code: int) -> bool:
+    """True for statuses that signal an upstream failure rather than bad input.
+
+    HTTP 429 (rate limited) and any 5xx are transient infrastructure problems,
+    so callers should surface them as 503 rather than as an auth rejection.
+    """
+    return status_code == 429 or 500 <= status_code <= 599
+
+
 MembershipLookup = Callable[
     [str], tuple[Organization, ...] | Awaitable[tuple[Organization, ...]]
 ]
@@ -96,6 +105,10 @@ class SupabaseServiceRoleMembershipLookup:
         except httpx.HTTPError as exc:
             raise MembershipLookupError() from exc
 
+        if _is_upstream_unavailable(response.status_code):
+            # 429/5xx are infrastructure failures (rate limiting, upstream
+            # outage), not bad data: surface as unavailable so callers can 503.
+            raise MembershipLookupUnavailable()
         if response.status_code != 200:
             raise MembershipLookupError()
 

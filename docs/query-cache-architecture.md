@@ -91,9 +91,13 @@ path. Additional invariants:
 - **Range normalization.** `normalizedRange` collapses semantically identical
   ranges (e.g. `{}` and `{ windowDays: 30 }`) to byte-identical keys so the cache
   doesn't split into redundant entries.
-- **No secrets in keys, by type.** `QueryKeyParamValue` restricts param values to
-  primitives (`string | number | boolean | null | undefined`), so an access token
-  or credential object structurally cannot be smuggled into a key.
+- **No credential objects in keys, by type.** `QueryKeyParamValue` restricts param
+  values to primitives (`string | number | boolean | null | undefined`), so a
+  credential *object* structurally cannot be smuggled into a key. String params
+  (`userId`, `orgId`, `runId`, `cursor`, and any token strings) are still valid
+  `QueryKeyParamValue`s, so the type does **not** prevent a secret *string* from
+  entering a key — keeping raw secrets out of key strings is a matter of
+  convention, enforced by only constructing keys from the registry.
 - **Demo sentinels.** Unauthenticated/demo contexts use the fixed `demo-user` /
   `demo-org` sentinels (`DEMO_USER_ID` / `DEMO_ORG_ID`), giving demo data a stable,
   non-colliding scope that never mixes with a real user's org data.
@@ -173,8 +177,13 @@ entirely — so tests never touch (or need to install) the shared clients.
 - `httpx.TransportError` (including `PoolTimeout`) from the auth verifier → HTTP
   503 "Authentication service unavailable"; from the membership lookup →
   `MembershipLookupUnavailable` → 503.
-- Invalid tokens, malformed payloads, and bad claims stay **401** — infrastructure
-  failure is never masked as an auth error, and vice versa.
+- **Upstream 429/5xx responses** are treated the same way: an HTTP 429 or any 5xx
+  status from the Supabase auth verifier or the membership lookup is an
+  infrastructure failure (rate limiting, upstream outage), so it surfaces as 503,
+  not 401.
+- Invalid tokens, malformed payloads, bad claims, and other client-side rejections
+  (e.g. upstream 400/401/403/404) stay **401** — infrastructure failure is never
+  masked as an auth error, and vice versa.
 - **Timeout policy:** each request uses a per-request timeout with pool
   acquisition capped at `POOL_TIMEOUT_SECONDS` (1s), via `request_timeout`.
 

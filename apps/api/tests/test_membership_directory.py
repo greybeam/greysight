@@ -61,9 +61,23 @@ def test_returns_organizations_for_user() -> None:
     assert requests[0].headers["authorization"] == "Bearer service-role-key"
 
 
-def test_non_200_raises_lookup_error() -> None:
-    with pytest.raises(MembershipLookupError):
-        anyio.run(_lookup(lambda _r: httpx.Response(500, json={})), "user-123")
+@pytest.mark.parametrize("status_code", [429, 500, 502, 503])
+def test_upstream_5xx_or_429_raises_unavailable(status_code: int) -> None:
+    with pytest.raises(MembershipLookupUnavailable):
+        anyio.run(
+            _lookup(lambda _r: httpx.Response(status_code, json={})), "user-123"
+        )
+
+
+@pytest.mark.parametrize("status_code", [400, 401, 403, 404])
+def test_upstream_4xx_raises_lookup_error(status_code: int) -> None:
+    with pytest.raises(MembershipLookupError) as exc_info:
+        anyio.run(
+            _lookup(lambda _r: httpx.Response(status_code, json={})), "user-123"
+        )
+    # Client-side rejections stay the base lookup error (auth maps to 401),
+    # not the unavailable subclass (which maps to 503).
+    assert not isinstance(exc_info.value, MembershipLookupUnavailable)
 
 
 def test_transport_error_raises_lookup_error() -> None:

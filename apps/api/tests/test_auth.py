@@ -285,6 +285,45 @@ def test_supabase_auth_server_verifier_rejects_invalid_token() -> None:
     assert exc_info.value.status_code == 401
 
 
+@pytest.mark.parametrize("status_code", [429, 500, 502, 503])
+def test_supabase_auth_server_verifier_maps_upstream_5xx_to_503(
+    status_code: int,
+) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code, json={"message": "upstream"})
+
+    verifier = SupabaseAuthServerVerifier(
+        supabase_url="https://project.supabase.co",
+        supabase_anon_key="anon-key",
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        anyio.run(validate_supabase_session, "opaque-token", verifier)
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "Authentication service unavailable"
+
+
+@pytest.mark.parametrize("status_code", [400, 403, 404])
+def test_supabase_auth_server_verifier_keeps_client_errors_401(
+    status_code: int,
+) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code, json={"message": "nope"})
+
+    verifier = SupabaseAuthServerVerifier(
+        supabase_url="https://project.supabase.co",
+        supabase_anon_key="anon-key",
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        anyio.run(validate_supabase_session, "opaque-token", verifier)
+
+    assert exc_info.value.status_code == 401
+
+
 def test_supabase_auth_server_verifier_maps_transport_errors_to_503() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("private network detail")

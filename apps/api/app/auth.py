@@ -67,6 +67,11 @@ class SupabaseAuthServerVerifier:
             raise _authentication_service_unavailable() from exc
         except httpx.HTTPError as exc:
             raise _authentication_required() from exc
+        if _is_upstream_unavailable(response.status_code):
+            # 429/5xx from the auth server are infrastructure failures (rate
+            # limiting, upstream outage), not invalid credentials: surface as
+            # 503 so clients can retry instead of treating it as a bad token.
+            raise _authentication_service_unavailable()
         if response.status_code != status.HTTP_200_OK:
             raise _authentication_required()
 
@@ -241,6 +246,15 @@ def _authentication_required() -> HTTPException:
         detail="Authentication required",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+
+def _is_upstream_unavailable(status_code: int) -> bool:
+    """True for statuses that signal an upstream failure rather than bad input.
+
+    HTTP 429 (rate limited) and any 5xx are transient infrastructure problems,
+    so callers should surface them as 503 rather than as an auth rejection.
+    """
+    return status_code == 429 or 500 <= status_code <= 599
 
 
 def _authentication_service_unavailable() -> HTTPException:
