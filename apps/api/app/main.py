@@ -19,7 +19,7 @@ from app.routes.onboarding import router as onboarding_router
 from app.routes.organizations import router as organizations_router
 from app.routes.session import router as session_router
 from app.routes.snowflake import router as snowflake_router
-from app.services import query_concurrency
+from app.services import auth_cache, query_concurrency
 from app.services.http_pool import (
     HTTP_LIMITS,
     clear_clients,
@@ -149,6 +149,7 @@ def _configure_automated_savings_store(settings: Settings) -> None:
 settings = Settings()
 auth.configure_supabase_session_verifier(settings)
 auth.configure_membership_lookup(settings)
+auth_cache.configure_auth_cache(settings)
 _configure_org_provisioner(settings)
 _configure_org_disconnector(settings)
 _configure_invitations(settings)
@@ -199,9 +200,15 @@ async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
         auth=auth_client, async_client=async_client, sync_client=sync_client
     )
     try:
+        # Rebind cache state to this event loop; the TTL itself comes from the
+        # module-scope configure_auth_cache call and is preserved here.
+        await auth_cache.reset()
         query_concurrency.configure(settings.query_concurrency)
         yield
     finally:
+        # Cancel and drain in-flight auth fetches BEFORE closing the pooled
+        # clients they are mid-request against.
+        await auth_cache.reset()
         clear_clients()
         await auth_client.aclose()
         await async_client.aclose()
