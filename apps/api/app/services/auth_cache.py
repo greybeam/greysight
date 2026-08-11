@@ -263,13 +263,28 @@ def invalidate_all_memberships() -> None:
 
 
 async def reset() -> None:
-    """Drop all cached state. Preserves the configured TTL and clocks.
+    """Clear all cached and in-flight state; preserve the configured TTL.
 
-    Async because later tasks add in-flight asyncio tasks that must be
-    cancelled and drained here. Reconfiguration is configure_auth_cache's
-    job alone, so a test that deliberately set a TTL keeps it.
+    Cancels in-flight tasks and *awaits* them before returning. The lifespan
+    calls this before closing the pooled HTTP clients: a task still mid-
+    request against a closing client produces spurious shutdown errors, and a
+    fire-and-forget cancel() without a drain does not prevent that. Draining
+    also consumes each task's exception, so a cancelled-waiter task never
+    resurfaces as an unretrieved-exception warning.
+
+    Reconfiguration is configure_auth_cache's job alone, so a test that
+    deliberately set a TTL keeps it.
     """
     global _membership_generation
+
+    tasks = [*_verify_inflight.values(), *_membership_inflight.values()]
+    _verify_inflight.clear()
+    _membership_inflight.clear()
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
     with _lock:
         if _verify_cache is not None:
             _verify_cache.clear()

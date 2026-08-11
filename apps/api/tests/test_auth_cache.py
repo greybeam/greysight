@@ -744,3 +744,143 @@ def test_verify_and_membership_single_flight_are_isolated() -> None:
         assert organizations == (ORG_B,)
 
     anyio.run(scenario)
+
+
+def test_reset_cancels_and_drains_in_flight_tasks() -> None:
+    configure(30.0)
+
+    async def scenario() -> None:
+        gate = asyncio.Event()
+        observed: list[str] = []
+
+        async def fetch() -> VerifiedIdentity:
+            try:
+                await gate.wait()
+            except asyncio.CancelledError:
+                observed.append("cancelled")
+                raise
+            return VerifiedIdentity(user_id="user_123")
+
+        waiter = asyncio.ensure_future(auth_cache.cached_verify("token-a", fetch))
+        # Two yields, not one: the first only lets cached_verify register the
+        # single-flight task, the second lets that task actually enter fetch()
+        # and block on the gate. Cancelling a task that has not started yet
+        # would never reach the fetch's CancelledError handler.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert auth_cache._verify_inflight  # noqa: SLF001 — state assertion
+
+        await auth_cache.reset()
+
+        assert observed == ["cancelled"]
+        assert auth_cache._verify_inflight == {}  # noqa: SLF001
+        assert auth_cache._membership_inflight == {}  # noqa: SLF001
+
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+
+    anyio.run(scenario)
+
+
+def test_reset_drains_a_membership_flight_and_leaves_no_pending_task() -> None:
+    configure(30.0)
+
+    async def scenario() -> None:
+        gate = asyncio.Event()
+
+        async def fetch() -> tuple[Organization, ...]:
+            await gate.wait()
+            return (ORG_A,)
+
+        waiter = asyncio.ensure_future(auth_cache.cached_memberships("user_1", fetch))
+        await asyncio.sleep(0)
+
+        await auth_cache.reset()
+
+        assert auth_cache._membership_inflight == {}  # noqa: SLF001
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+
+    anyio.run(scenario)
+
+
+def test_a_fully_abandoned_failing_flight_leaves_no_unretrieved_exception() -> None:
+    """The done-callback must consume the exception of an orphaned task.
+
+    "Task exception was never retrieved" is reported to the event loop's
+    exception handler at GC time, not through the warnings module — so this
+    installs a handler and forces collection. It must NOT await the failing
+    task: awaiting would retrieve the exception itself and make the assertion
+    vacuous.
+    """
+    import gc
+
+    configure(30.0)
+    handled: list[dict] = []
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        loop.set_exception_handler(lambda _loop, context: handled.append(context))
+        gate = asyncio.Event()
+
+        async def failing() -> VerifiedIdentity:
+            await gate.wait()
+            raise HTTPException(status_code=503, detail="unavailable")
+
+        waiter = asyncio.ensure_future(auth_cache.cached_verify("token-a", failing))
+        await asyncio.sleep(0)
+
+        # Abandon the only waiter, then let the underlying shielded task fail
+        # with nobody left to observe it.
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        gate.set()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        await auth_cache.reset()
+        del waiter
+        gc.collect()
+        await asyncio.sleep(0)
+
+    anyio.run(scenario)
+
+    assert [
+        context
+        for context in handled
+        if "never retrieved" in str(context.get("message", ""))
+    ] == []
+
+
+def test_reset_guards_task_exception_on_a_cancelled_task() -> None:
+    """Task.exception() raises CancelledError; the done-callback must guard it.
+
+    An unguarded call turns cleanup into a new error path, which surfaces as
+    an "Exception in callback" report to the loop exception handler.
+    """
+    configure(30.0)
+    handled: list[dict] = []
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        loop.set_exception_handler(lambda _loop, context: handled.append(context))
+        gate = asyncio.Event()
+
+        async def fetch() -> VerifiedIdentity:
+            await gate.wait()
+            return VerifiedIdentity(user_id="user_123")
+
+        waiter = asyncio.ensure_future(auth_cache.cached_verify("token-a", fetch))
+        await asyncio.sleep(0)
+
+        # reset() cancels the underlying task, firing the done-callback on a
+        # cancelled task.
+        await auth_cache.reset()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        await asyncio.sleep(0)
+
+    anyio.run(scenario)
+
+    assert handled == []
