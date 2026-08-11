@@ -3,7 +3,8 @@
 Email OTP (Spec A) login for Greysight: emailed code → entered on the
 sign-in page → client-side code verification → verified Supabase session →
 bearer token attached to API calls → the API (the trust boundary) enforces auth
-and org membership live on every request. (Magic links are deprecated; the
+and org membership on every request from a cached, TTL-bounded lookup (see
+`docs/security-model.md`). (Magic links are deprecated; the
 click-gated `/auth/confirm` route remains only for links from already-sent
 emails.)
 
@@ -22,7 +23,7 @@ public-safe (they ship to the browser); API vars stay on the API host only.
 | Where | Env vars |
 | --- | --- |
 | Web (e.g. Vercel) | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_AUTH_REQUIRED`, `NEXT_PUBLIC_AUTH_CODE_LENGTH` (all public-safe) |
-| API (Vercel Python functions **or** Render/Fly/Cloud Run) | `SUPABASE_URL`, `SUPABASE_ANON_KEY` (token auth via `/auth/v1/user`), `SUPABASE_SERVICE_ROLE_KEY` (live membership lookup), `GREYSIGHT_CORS_ALLOWED_ORIGINS` (must list the web origin, else cross-origin bearer calls fail), `SNOWFLAKE_*` (server-only) |
+| API (Vercel Python functions **or** Render/Fly/Cloud Run) | `SUPABASE_URL`, `SUPABASE_ANON_KEY` (token auth via `/auth/v1/user`), `SUPABASE_SERVICE_ROLE_KEY` (service-role membership lookup, cached — see `docs/security-model.md`), `GREYSIGHT_CORS_ALLOWED_ORIGINS` (must list the web origin, else cross-origin bearer calls fail), `SNOWFLAKE_*` (server-only) |
 
 **Which dashboard key goes in which var.** New Supabase projects label the keys
 "Publishable" and "Secret" (Dashboard > Project Settings > API keys); our env
@@ -37,9 +38,9 @@ Notes:
 
 - `SUPABASE_SERVICE_ROLE_KEY` takes the **Secret key** (`sb_secret_…`), **not**
   the publishable key. It is **REQUIRED when `AUTH_REQUIRED=true`** — the API uses
-  it for the live membership lookup against `organization_memberships` and fails
-  closed at startup if it is missing. Pasting the publishable key here breaks the
-  lookup: it cannot bypass RLS, so the user sees no orgs.
+  it for the (cached) service-role lookup against `organization_memberships` and
+  fails closed at startup if it is missing. Pasting the publishable key here
+  breaks the lookup: it cannot bypass RLS, so the user sees no orgs.
 - `SUPABASE_JWT_SECRET` is **not** required in v1 (no local JWT decode; tokens
   are verified by calling Supabase `/auth/v1/user`).
 - Never expose `SUPABASE_SERVICE_ROLE_KEY` to the browser — it bypasses RLS.
@@ -111,9 +112,11 @@ The flow:
 4. **Atomic org creation.** On a successful connection, a single
    `security definer` RPC creates the organization, the owner membership, the
    Snowflake connection row, and the Vault-stored secret **atomically** — all or
-   nothing. A one-org guard rejects a second org for the same user. The API's
-   live membership lookup picks up the new org on the user's next request and the
-   dashboard loads against the org's own credentials.
+   nothing. A one-org guard rejects a second org for the same user. Connecting
+   invalidates that user's cached membership, so the acting user sees the new
+   org on their very next request; other users/processes pick it up within one
+   `GREYSIGHT_AUTH_CACHE_TTL_SECONDS` (see `docs/security-model.md`). The
+   dashboard then loads against the org's own credentials.
 
 ### Where Snowflake credentials come from
 
