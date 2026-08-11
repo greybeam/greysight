@@ -526,3 +526,193 @@ def test_require_org_admin_rejects_member() -> None:
     with pytest.raises(HTTPException) as exc:
         require_org_admin(context, "org-1")
     assert exc.value.status_code == 403
+
+
+def test_validation_caches_the_verifier_call_on_the_production_path(
+    monkeypatch,
+) -> None:
+    """No verifier= override, so this exercises the cached production path."""
+    from app.config import Settings
+    from app.services import auth_cache
+
+    auth_cache.configure_auth_cache(Settings(GREYSIGHT_AUTH_CACHE_TTL_SECONDS=30))
+    calls: list[int] = []
+
+    async def verifier(token: str) -> dict[str, object]:
+        calls.append(1)
+        return {"sub": "user_123"}
+
+    monkeypatch.setattr("app.auth.supabase_session_verifier", verifier)
+    monkeypatch.setattr("app.auth.membership_lookup", None)
+
+    anyio.run(validate_supabase_session, "opaque-token")
+    context = anyio.run(validate_supabase_session, "opaque-token")
+
+    assert len(calls) == 1
+    assert context.user_id == "user_123"
+
+
+def test_validation_caches_the_membership_lookup_on_the_production_path(
+    monkeypatch,
+) -> None:
+    from app.config import Settings
+    from app.services import auth_cache
+    from app.services.membership_directory import Organization
+
+    auth_cache.configure_auth_cache(Settings(GREYSIGHT_AUTH_CACHE_TTL_SECONDS=30))
+    calls: list[int] = []
+
+    async def verifier(token: str) -> dict[str, object]:
+        return {"sub": "user_123"}
+
+    async def lookup(user_id: str) -> tuple[Organization, ...]:
+        calls.append(1)
+        return (Organization(id="org-1", name="Acme"),)
+
+    monkeypatch.setattr("app.auth.supabase_session_verifier", verifier)
+    monkeypatch.setattr("app.auth.membership_lookup", lookup)
+
+    anyio.run(validate_supabase_session, "opaque-token")
+    context = anyio.run(validate_supabase_session, "opaque-token")
+
+    assert len(calls) == 1
+    assert context.memberships == frozenset({"org-1"})
+
+
+def test_a_malformed_verifier_payload_raises_401_and_caches_nothing(
+    monkeypatch,
+) -> None:
+    from app.config import Settings
+    from app.services import auth_cache
+
+    auth_cache.configure_auth_cache(Settings(GREYSIGHT_AUTH_CACHE_TTL_SECONDS=30))
+    calls: list[int] = []
+
+    async def verifier(token: str) -> dict[str, object]:
+        calls.append(1)
+        return {"sub": None}  # 200 upstream, unusable body
+
+    monkeypatch.setattr("app.auth.supabase_session_verifier", verifier)
+    monkeypatch.setattr("app.auth.membership_lookup", None)
+
+    for _ in range(2):
+        with pytest.raises(HTTPException) as exc_info:
+            anyio.run(validate_supabase_session, "opaque-token")
+        assert exc_info.value.status_code == 401
+
+    assert len(calls) == 2
+
+
+def test_a_503_from_the_verifier_is_never_cached(monkeypatch) -> None:
+    from app.config import Settings
+    from app.services import auth_cache
+
+    auth_cache.configure_auth_cache(Settings(GREYSIGHT_AUTH_CACHE_TTL_SECONDS=30))
+    calls: list[int] = []
+
+    async def verifier(token: str) -> dict[str, object]:
+        calls.append(1)
+        raise HTTPException(
+            status_code=503, detail="Authentication service unavailable"
+        )
+
+    monkeypatch.setattr("app.auth.supabase_session_verifier", verifier)
+
+    for _ in range(2):
+        with pytest.raises(HTTPException) as exc_info:
+            anyio.run(validate_supabase_session, "opaque-token")
+        assert exc_info.value.status_code == 503
+
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    "override",
+    ["both", "verifier-only", "lookup-only"],
+)
+def test_any_explicit_override_bypasses_both_caches(monkeypatch, override) -> None:
+    """Either argument disables caching entirely, not just its own hop."""
+    from app.config import Settings
+    from app.services import auth_cache
+    from app.services.membership_directory import Organization
+
+    auth_cache.configure_auth_cache(Settings(GREYSIGHT_AUTH_CACHE_TTL_SECONDS=30))
+    verifier_calls: list[int] = []
+    lookup_calls: list[int] = []
+
+    async def verifier(token: str) -> dict[str, object]:
+        verifier_calls.append(1)
+        return {"sub": "user_123"}
+
+    async def lookup(user_id: str) -> tuple[Organization, ...]:
+        lookup_calls.append(1)
+        return (Organization(id="org-1", name="Acme"),)
+
+    # The un-overridden hop still has to reach an upstream, so wire the same
+    # doubles in as the module globals and let the override decide the path.
+    monkeypatch.setattr("app.auth.supabase_session_verifier", verifier)
+    monkeypatch.setattr("app.auth.membership_lookup", lookup)
+
+    passed_verifier = verifier if override in ("both", "verifier-only") else None
+    passed_lookup = lookup if override in ("both", "lookup-only") else None
+
+    anyio.run(validate_supabase_session, "opaque-token", passed_verifier, passed_lookup)
+    anyio.run(validate_supabase_session, "opaque-token", passed_verifier, passed_lookup)
+
+    assert len(verifier_calls) == 2
+    assert len(lookup_calls) == 2
+
+
+@pytest.mark.parametrize(
+    "raised,expected_status",
+    [
+        ("MembershipLookupError", 401),
+        ("MembershipLookupUnavailable", 503),
+    ],
+)
+def test_concurrent_waiters_get_the_same_translated_membership_failure(
+    monkeypatch, raised, expected_status
+) -> None:
+    """503-vs-401 translation must survive single-flight on the production path.
+
+    This drives validate_supabase_session with no overrides, so the failure
+    crosses the real _fetch_organizations translation boundary rather than
+    being asserted below it.
+    """
+    import asyncio
+
+    from app.config import Settings
+    from app.services import auth_cache, membership_directory
+
+    auth_cache.configure_auth_cache(Settings(GREYSIGHT_AUTH_CACHE_TTL_SECONDS=30))
+    error_type = getattr(membership_directory, raised)
+    lookup_calls: list[int] = []
+
+    async def verifier(token: str) -> dict[str, object]:
+        return {"sub": "user_123"}
+
+    monkeypatch.setattr("app.auth.supabase_session_verifier", verifier)
+
+    async def scenario() -> list[BaseException]:
+        gate = asyncio.Event()
+
+        async def lookup(user_id: str) -> tuple:
+            lookup_calls.append(1)
+            await gate.wait()
+            raise error_type()
+
+        monkeypatch.setattr("app.auth.membership_lookup", lookup)
+
+        waiters = [
+            asyncio.ensure_future(validate_supabase_session("opaque-token"))
+            for _ in range(4)
+        ]
+        await asyncio.sleep(0)
+        gate.set()
+        return await asyncio.gather(*waiters, return_exceptions=True)
+
+    results = anyio.run(scenario)
+
+    assert [r.status_code for r in results] == [expected_status] * 4
+    # Single-flight collapsed them; the failure was not cached either.
+    assert len(lookup_calls) == 1

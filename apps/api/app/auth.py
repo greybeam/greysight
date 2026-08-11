@@ -9,6 +9,11 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import Settings
+from app.services.auth_cache import (
+    VerifiedIdentity,
+    cached_memberships,
+    cached_verify,
+)
 from app.services.http_pool import get_auth_client, request_timeout
 from app.services.membership_directory import (
     MembershipLookup,
@@ -185,19 +190,40 @@ async def validate_supabase_session(
     if selected_verifier is None:
         raise _authentication_required()
 
-    claims_result = selected_verifier(stripped_token)
-    claims = (
-        await claims_result if inspect.isawaitable(claims_result) else claims_result
-    )
-    if not isinstance(claims, Mapping):
-        raise _authentication_required()
+    async def verify() -> VerifiedIdentity:
+        # sub validation lives inside the cached fetch boundary: a 200 with a
+        # malformed body raises 401 and never populates the cache.
+        claims_result = selected_verifier(stripped_token)
+        claims = (
+            await claims_result if inspect.isawaitable(claims_result) else claims_result
+        )
+        if not isinstance(claims, Mapping):
+            raise _authentication_required()
+        user_id = claims.get("sub")
+        if not isinstance(user_id, str) or not user_id.strip():
+            raise _authentication_required()
+        return VerifiedIdentity(user_id=user_id.strip())
 
-    user_id = claims.get("sub")
-    if not isinstance(user_id, str) or not user_id.strip():
-        raise _authentication_required()
+    # Either explicit argument bypasses BOTH caches, not just the matching
+    # one: the override seam exists so injected test doubles always see their
+    # own upstream invoked, and a caller that overrides only the lookup would
+    # otherwise still be served a cached identity from an unrelated test.
+    bypass_cache = verifier is not None or lookup is not None
 
-    normalized_user_id = user_id.strip()
-    organizations = await _fetch_organizations(normalized_user_id, lookup)
+    if bypass_cache:
+        identity = await verify()
+    else:
+        identity = await cached_verify(stripped_token, verify)
+
+    normalized_user_id = identity.user_id
+
+    if bypass_cache:
+        organizations = await _fetch_organizations(normalized_user_id, lookup)
+    else:
+        organizations = await cached_memberships(
+            normalized_user_id,
+            lambda: _fetch_organizations(normalized_user_id, None),
+        )
 
     return AuthContext(
         user_id=normalized_user_id,
