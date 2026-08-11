@@ -20,11 +20,22 @@ With `AUTH_REQUIRED=true`, the backend validates bearer tokens through Supabase
 Auth when `SUPABASE_URL` and `SUPABASE_ANON_KEY` are configured. If either value
 is missing, API auth fails closed.
 
-Authenticated organization membership comes from a **live membership lookup**.
-`auth.py` queries `organization_memberships` with the service-role key on every
-request rather than trusting Supabase JWT claims, so membership grants and
-revocations take effect immediately. Dashboard run routes reject organization IDs
-the requesting user is not a live member of.
+Authenticated organization membership comes from a **service-role lookup against
+`organization_memberships`**, never from Supabase JWT claims. Both that lookup and
+the token verification are cached in-process for
+`GREYSIGHT_AUTH_CACHE_TTL_SECONDS` (default 30s, `0` disables caching), so a
+grant or revocation takes effect within **at most one TTL** rather than
+instantly. Cached entries are additionally bounded by the token's own `exp`, and
+only successful verifications and lookups are cached — a 401 or 503 never
+populates or extends an entry.
+
+Connecting a Snowflake account invalidates that user's cached memberships, and
+disconnecting one flushes every cached membership. Both hooks are
+**per-process**: other workers and replicas keep their entries until TTL, and a
+membership attached by an invitation (whose route does not know the invitee's
+user id) can be missing for up to one TTL — that delays access rather than
+leaking it. Dashboard run routes still reject organization IDs the requesting
+user is not a member of.
 
 Shared preview, staging, and production environments should use
 `AUTH_REQUIRED=true`.

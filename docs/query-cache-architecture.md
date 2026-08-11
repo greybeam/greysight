@@ -193,10 +193,20 @@ entirely — so tests never touch (or need to install) the shared clients.
 - **Timeout policy:** each request uses a per-request timeout with pool
   acquisition capped at `POOL_TIMEOUT_SECONDS` (1s), via `request_timeout`.
 
-### Explicitly deferred
+### Cached auth round-trips
 
-Caching the authenticated round-trips is **out of scope** for this work and left
-to a separate, security-sensitive issue. Today every authenticated request still
-makes one Supabase verifier call plus one live membership lookup. Membership is
-read live on every request by design (see `docs/security-model.md`), so any cache
-here needs its own invalidation/revocation story.
+Both authenticated round-trips — the Supabase verifier call and the membership
+lookup — are cached in-process by `app/services/auth_cache.py`, keyed separately
+(`sha256(token)` and `user_id`) under `GREYSIGHT_AUTH_CACHE_TTL_SECONDS`
+(default 30s; `0` disables caching entirely). Concurrent requests on the same key
+collapse onto one upstream fetch, which matters for the parallel burst a
+dashboard load fires against the 20-connection HTTP pool.
+
+Revocation story: the TTL *is* the maximum revocation window. Only successes are
+cached, there is no stale-on-error fallback (that would suppress the 503
+semantics above and extend the window), a cached identity additionally expires at
+the token's own `exp`, and connect/disconnect invalidate eagerly. Local JWT
+verification was rejected precisely because a locally verified token stays valid
+until its `exp` (~1h), well past any TTL. Invalidation is per-process; see
+`docs/security-model.md` for the accepted limitations. Design:
+`docs/superpowers/specs/2026-08-10-auth-cache-design.md`.
