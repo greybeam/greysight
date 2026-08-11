@@ -44,3 +44,11 @@ class TtlCache:
             self._entries[key] = (self._clock() + self._ttl_seconds, value)
             while len(self._entries) > self._max_entries:
                 self._entries.popitem(last=False)
+
+    def delete(self, key: Hashable) -> None:
+        with self._lock:
+            self._entries.pop(key, None)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
