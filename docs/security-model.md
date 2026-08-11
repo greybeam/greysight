@@ -37,6 +37,15 @@ user id) can be missing for up to one TTL — that delays access rather than
 leaking it. Dashboard run routes still reject organization IDs the requesting
 user is not a member of.
 
+A second, narrower gap is accepted by design: if an invalidation lands while
+the cache is already retrying a fetch that a prior invalidation interrupted,
+the retried result is returned to that one request without re-checking the
+generation counter, and is never cached. That single request can see a
+membership set revoked microseconds earlier; the next request reads
+correctly. This is preferred over a retry loop, which could livelock under
+repeated invalidation, or a fail-closed 503, which would turn sub-second
+staleness into a user-visible error.
+
 Shared preview, staging, and production environments should use
 `AUTH_REQUIRED=true`.
 
