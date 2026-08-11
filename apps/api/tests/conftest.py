@@ -17,6 +17,18 @@ _AUTH_CACHE_CONFIG_GLOBALS = (
 )
 
 
+@pytest.fixture
+def anyio_backend() -> str:
+    """Pin anyio's pytest plugin to a single backend.
+
+    The plugin's own ``anyio_backend`` fixture is parametrised over every
+    installed backend, which would both duplicate test ids and require trio.
+    Only asyncio is installed here, and the auth cache is asyncio-specific
+    (``asyncio.Task``/``asyncio.shield``), so pin it.
+    """
+    return "asyncio"
+
+
 @contextlib.contextmanager
 def installed_sync_pool(handler):
     """Install a pooled sync client backed by ``handler`` for the block.
