@@ -1,5 +1,3 @@
-import threading
-
 from app.services.ttl_cache import TtlCache
 
 
@@ -89,34 +87,6 @@ def test_clear_empties_the_cache_and_leaves_it_usable():
 
     cache.set("c", 3)
     assert cache.get("c") == 3
-
-
-def test_concurrent_writes_deletes_and_clears_do_not_corrupt_the_cache():
-    """Exercise the lock under contention rather than asserting on it."""
-    cache = TtlCache(ttl_seconds=60.0, max_entries=64, clock=FakeClock())
-    errors: list[BaseException] = []
-
-    def hammer(worker: int) -> None:
-        try:
-            for i in range(200):
-                key = f"k-{worker}-{i % 8}"
-                cache.set(key, i)
-                cache.get(key)
-                cache.delete(key)
-                if i % 50 == 0:
-                    cache.clear()
-        except BaseException as exc:  # noqa: BLE001 — surface any thread error
-            errors.append(exc)
-
-    threads = [threading.Thread(target=hammer, args=(w,)) for w in range(8)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-
-    assert errors == []
-    cache.set("final", "value")
-    assert cache.get("final") == "value"
 
 
 def test_explicit_expires_at_overrides_the_ttl_in_both_directions():

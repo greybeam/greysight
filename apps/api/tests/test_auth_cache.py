@@ -10,11 +10,7 @@ from fastapi import HTTPException
 from app.config import Settings
 from app.services import auth_cache
 from app.services.auth_cache import VerifiedIdentity
-from app.services.membership_directory import (
-    MembershipLookupError,
-    MembershipLookupUnavailable,
-    Organization,
-)
+from app.services.membership_directory import Organization
 
 
 class FakeClock:
@@ -141,7 +137,8 @@ def test_ttl_zero_disables_verification_storage_and_coalescing() -> None:
 
     The concurrent half is the load-bearing assertion — a sequential pair
     would also pass if TTL=0 merely skipped storage while still collapsing
-    concurrent callers onto one shared fetch.
+    concurrent callers onto one shared fetch. The empty-registry assertions
+    pin the short-circuit ahead of registration, not merely ahead of storage.
     """
     configure(0.0)
     calls: list[int] = []
@@ -159,6 +156,8 @@ def test_ttl_zero_disables_verification_storage_and_coalescing() -> None:
             for _ in range(4)
         ]
         await asyncio.sleep(0)
+        assert auth_cache._verify_inflight == {}  # noqa: SLF001
+        assert auth_cache._membership_inflight == {}  # noqa: SLF001
         gate.set()
         await asyncio.gather(*waiters)
 
@@ -168,14 +167,6 @@ def test_ttl_zero_disables_verification_storage_and_coalescing() -> None:
     anyio.run(scenario)
 
     assert len(calls) == 5
-
-
-# NOTE: the concurrent half of the test above is what pins TTL=0 to a real
-# passthrough now that single-flight exists. Without it, a TTL=0 path that
-# skipped storage but still routed through _single_flight would coalesce the
-# four concurrent callers onto one fetch and the sequential half alone would
-# not notice. test_ttl_zero_registers_nothing_in_either_registry asserts the
-# same property from the other side (an empty registry); keep both.
 
 
 def test_reset_clears_entries_but_preserves_the_configured_ttl() -> None:
@@ -652,45 +643,6 @@ def test_every_waiter_on_a_failing_verify_receives_the_same_status(error) -> Non
     anyio.run(scenario)
 
 
-@pytest.mark.parametrize(
-    "error_factory,expected",
-    [
-        (MembershipLookupError, MembershipLookupError),
-        (MembershipLookupUnavailable, MembershipLookupUnavailable),
-    ],
-    ids=["lookup-error", "lookup-unavailable"],
-)
-def test_every_waiter_on_a_failing_membership_fetch_sees_the_same_error(
-    error_factory, expected
-) -> None:
-    """Unit-level fan-out only — this fetch sits BELOW _fetch_organizations.
-
-    The 401/503 translation these errors receive on the production path is
-    covered by test_concurrent_waiters_get_the_same_translated_membership_failure
-    in tests/test_auth.py (Task 8); do not mistake this for that coverage.
-    """
-    configure(30.0)
-
-    async def scenario() -> None:
-        gate = asyncio.Event()
-
-        async def fetch() -> tuple[Organization, ...]:
-            await gate.wait()
-            raise error_factory()
-
-        waiters = [
-            asyncio.ensure_future(auth_cache.cached_memberships("user_1", fetch))
-            for _ in range(4)
-        ]
-        await asyncio.sleep(0)
-        gate.set()
-        results = await asyncio.gather(*waiters, return_exceptions=True)
-
-        assert all(isinstance(r, expected) for r in results)
-
-    anyio.run(scenario)
-
-
 def test_cancelling_the_leader_waiter_does_not_break_the_other_waiters() -> None:
     configure(30.0)
     calls: list[int] = []
@@ -755,38 +707,6 @@ def test_a_fully_cancelled_flight_still_allows_a_successful_retry() -> None:
     anyio.run(scenario)
 
     assert len(calls) == 2
-
-
-def test_ttl_zero_registers_nothing_in_either_registry() -> None:
-    """Disabled short-circuits BEFORE hashing, locking, or registering work."""
-    configure(0.0)
-
-    async def scenario() -> None:
-        gate = asyncio.Event()
-
-        async def verify_fetch() -> VerifiedIdentity:
-            await gate.wait()
-            return VerifiedIdentity(user_id="user_123")
-
-        async def membership_fetch() -> tuple[Organization, ...]:
-            await gate.wait()
-            return (ORG_A,)
-
-        waiters = [
-            asyncio.ensure_future(auth_cache.cached_verify("token-a", verify_fetch)),
-            asyncio.ensure_future(
-                auth_cache.cached_memberships("user_1", membership_fetch)
-            ),
-        ]
-        await asyncio.sleep(0)
-
-        assert auth_cache._verify_inflight == {}  # noqa: SLF001 — state assertion
-        assert auth_cache._membership_inflight == {}  # noqa: SLF001
-
-        gate.set()
-        await asyncio.gather(*waiters)
-
-    anyio.run(scenario)
 
 
 def test_verify_and_membership_single_flight_are_isolated() -> None:

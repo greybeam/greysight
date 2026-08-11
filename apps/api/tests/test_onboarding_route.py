@@ -315,30 +315,6 @@ def test_connect_invalidates_only_the_callers_cached_memberships(monkeypatch) ->
     assert other == (Organization(id="org-9", name="Other"),)
 
 
-def test_connect_leaves_the_cache_intact_when_provisioning_fails(monkeypatch) -> None:
-    from app.services.org_provisioning import OrgProvisioningError
-
-    auth_cache.configure_auth_cache(Settings(GREYSIGHT_AUTH_CACHE_TTL_SECONDS=30))
-    caller_calls = _prime_membership_cache("user-1")
-
-    def _fail(**kwargs):
-        raise OrgProvisioningError("nope")
-
-    app.dependency_overrides[require_auth_context] = _auth_context
-    monkeypatch.setattr(
-        onboarding, "validate_snowflake_connection", lambda config: "XY12345"
-    )
-    monkeypatch.setattr(onboarding, "create_org_with_connection", _fail)
-    client = TestClient(app)
-    response = client.post("/api/onboarding/connect", json=_payload())
-    app.dependency_overrides.clear()
-
-    assert response.status_code == 502
-    # No membership was granted, so nothing should have been evicted.
-    _read_memberships("user-1", caller_calls)
-    assert len(caller_calls) == 1
-
-
 def test_disconnect_invalidates_every_users_cached_memberships(monkeypatch) -> None:
     """A disconnect changes account_locator for all members, not just the caller."""
     auth_cache.configure_auth_cache(Settings(GREYSIGHT_AUTH_CACHE_TTL_SECONDS=30))

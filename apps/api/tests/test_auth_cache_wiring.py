@@ -11,34 +11,6 @@ def test_module_scope_wiring_configures_both_caches() -> None:
     assert auth_cache._membership_cache is not None  # noqa: SLF001
 
 
-def test_lifespan_resets_the_cache_on_startup_and_shutdown(monkeypatch) -> None:
-    import app.main
-
-    resets: list[str] = []
-    closed: list[str] = []
-
-    async def fake_reset() -> None:
-        resets.append("reset")
-
-    monkeypatch.setattr(app.main.auth_cache, "reset", fake_reset)
-
-    real_clear_clients = app.main.clear_clients
-
-    def tracking_clear_clients() -> None:
-        closed.append("clients-closed")
-        real_clear_clients()
-
-    monkeypatch.setattr(app.main, "clear_clients", tracking_clear_clients)
-
-    with TestClient(app.main.app):
-        assert resets == ["reset"]
-
-    assert resets == ["reset", "reset"]
-    # Shutdown order: drain in-flight auth fetches before the clients they use
-    # are torn down.
-    assert closed == ["clients-closed"]
-
-
 def test_lifespan_reset_runs_before_clients_close(monkeypatch) -> None:
     import app.main
 
