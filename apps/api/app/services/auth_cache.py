@@ -13,6 +13,7 @@ import base64
 import binascii
 import hashlib
 import json
+import math
 import threading
 import time
 from collections.abc import Awaitable, Callable
@@ -202,7 +203,17 @@ def _unverified_exp(token: str) -> float | None:
     exp = payload.get("exp")
     if isinstance(exp, bool) or not isinstance(exp, (int, float)):
         return None
-    return float(exp)
+    try:
+        exp_seconds = float(exp)
+    except OverflowError:
+        # An arbitrarily large integer literal is legal JSON; float() rejects
+        # it. This runs on an unverified payload, so it must not raise.
+        return None
+    if not math.isfinite(exp_seconds):
+        # json.loads accepts Infinity/NaN. Either would poison every later
+        # deadline comparison, so treat them as unreadable too.
+        return None
+    return exp_seconds
 
 
 async def cached_memberships(

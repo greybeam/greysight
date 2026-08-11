@@ -329,6 +329,63 @@ def test_non_numeric_exp_falls_back_to_the_plain_ttl(exp: object) -> None:
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize(
+    "exp",
+    [
+        pytest.param(int("9" * 4000), id="oversized-int"),
+        pytest.param(float("inf"), id="infinity"),
+        pytest.param(float("-inf"), id="negative-infinity"),
+        pytest.param(float("nan"), id="nan"),
+    ],
+)
+def test_an_unrepresentable_exp_falls_back_to_the_plain_ttl(exp: object) -> None:
+    """An `exp` no float can hold is unreadable, not a 500.
+
+    A 4000-digit integer raises OverflowError out of float(); the
+    JSON-extension literals decode to non-finite floats that would poison
+    every later comparison. Both are attacker-supplied — this runs before any
+    signature check — and both must degrade to the plain TTL like every other
+    unreadable exp.
+    """
+    clock, _ = configure(30.0)
+    calls, fetch = make_verifier()
+    token = jwt_with_exp(exp)
+
+    assert auth_cache._unverified_exp(token) is None  # noqa: SLF001
+
+    async def scenario() -> None:
+        await auth_cache.cached_verify(token, fetch)
+        clock.now = 29.0
+        await auth_cache.cached_verify(token, fetch)
+
+    anyio.run(scenario)
+
+    assert len(calls) == 1
+
+
+def test_a_payload_that_is_not_a_json_object_falls_back_to_the_plain_ttl() -> None:
+    """A payload segment may decode to any JSON value, not just an object."""
+    clock, _ = configure(30.0)
+    calls, fetch = make_verifier()
+
+    def segment(payload: object) -> str:
+        raw = json.dumps(payload).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    token = f"{segment({'alg': 'HS256'})}.{segment(['exp', 1])}.sig"
+
+    assert auth_cache._unverified_exp(token) is None  # noqa: SLF001
+
+    async def scenario() -> None:
+        await auth_cache.cached_verify(token, fetch)
+        clock.now = 29.0
+        await auth_cache.cached_verify(token, fetch)
+
+    anyio.run(scenario)
+
+    assert len(calls) == 1
+
+
 ORG_A = Organization(id="org-a", name="Acme")
 ORG_B = Organization(id="org-b", name="Beta")
 
