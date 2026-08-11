@@ -170,9 +170,12 @@ def test_ttl_zero_disables_verification_storage_and_coalescing() -> None:
     assert len(calls) == 5
 
 
-# NOTE: the concurrent half of the test above passes trivially at this task —
-# single-flight does not exist yet. It is written now so Task 6 cannot regress
-# it; Task 6 adds the matching "registers nothing" assertion.
+# NOTE: the concurrent half of the test above is what pins TTL=0 to a real
+# passthrough now that single-flight exists. Without it, a TTL=0 path that
+# skipped storage but still routed through _single_flight would coalesce the
+# four concurrent callers onto one fetch and the sequential half alone would
+# not notice. test_ttl_zero_registers_nothing_in_either_registry asserts the
+# same property from the other side (an empty registry); keep both.
 
 
 def test_reset_clears_entries_but_preserves_the_configured_ttl() -> None:
@@ -191,6 +194,26 @@ def test_reset_clears_entries_but_preserves_the_configured_ttl() -> None:
     # 2 = one before reset, one after; the third call is a hit because the
     # 45s TTL survived reset().
     assert len(calls) == 2
+
+
+def test_both_caches_are_built_bounded_at_max_entries() -> None:
+    """Both caches must be *bounded*, and bounded at the declared constant.
+
+    Keys are attacker-influenceable (a sha256 of any presented bearer token,
+    and any user id that reaches a lookup), so an unbounded cache is an
+    unbounded-memory-growth path. Asserting only `max_entries == MAX_ENTRIES`
+    would pass with MAX_ENTRIES raised to a nonsense value, so pin the
+    constant too.
+    """
+    configure(30.0)
+
+    assert auth_cache.MAX_ENTRIES == 1024
+    verify_cache = auth_cache._verify_cache  # noqa: SLF001 — bound assertion
+    membership_cache = auth_cache._membership_cache  # noqa: SLF001
+    assert verify_cache is not None
+    assert membership_cache is not None
+    assert verify_cache._max_entries == auth_cache.MAX_ENTRIES  # noqa: SLF001
+    assert membership_cache._max_entries == auth_cache.MAX_ENTRIES  # noqa: SLF001
 
 
 def test_token_is_never_used_as_a_cache_key() -> None:
@@ -804,53 +827,19 @@ def test_reset_drains_a_membership_flight_and_leaves_no_pending_task() -> None:
     anyio.run(scenario)
 
 
-def test_a_fully_abandoned_failing_flight_leaves_no_unretrieved_exception() -> None:
-    """The done-callback must consume the exception of an orphaned task.
-
-    "Task exception was never retrieved" is reported to the event loop's
-    exception handler at GC time, not through the warnings module — so this
-    installs a handler and forces collection. It must NOT await the failing
-    task: awaiting would retrieve the exception itself and make the assertion
-    vacuous.
-    """
-    import gc
-
-    configure(30.0)
-    handled: list[dict] = []
-
-    async def scenario() -> None:
-        loop = asyncio.get_running_loop()
-        loop.set_exception_handler(lambda _loop, context: handled.append(context))
-        gate = asyncio.Event()
-
-        async def failing() -> VerifiedIdentity:
-            await gate.wait()
-            raise HTTPException(status_code=503, detail="unavailable")
-
-        waiter = asyncio.ensure_future(auth_cache.cached_verify("token-a", failing))
-        await asyncio.sleep(0)
-
-        # Abandon the only waiter, then let the underlying shielded task fail
-        # with nobody left to observe it.
-        waiter.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await waiter
-        gate.set()
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-
-        await auth_cache.reset()
-        del waiter
-        gc.collect()
-        await asyncio.sleep(0)
-
-    anyio.run(scenario)
-
-    assert [
-        context
-        for context in handled
-        if "never retrieved" in str(context.get("message", ""))
-    ] == []
+# NOT TESTED, DELIBERATELY: the `task.exception()` call in auth_cache._release
+# is defensive-only and has no reachable behaviour to assert on this
+# interpreter. _single_flight hands every caller an asyncio.shield of the task,
+# and shield itself always retrieves the inner task's exception — either via
+# _inner_done_callback (the normal path) or, once the outer future is
+# cancelled, via the _log_on_exception callback that _outer_done_callback
+# swaps in. Verified by stripping `task.exception()` from _release and
+# re-running: every test in this file still passes, and an abandoned failing
+# flight's task still shows its exception as retrieved. A test asserting that
+# no "Task exception was never retrieved" report reaches the loop's exception
+# handler would therefore be measuring shield, not _release. The `if not
+# task.cancelled()` guard around that call IS load-bearing and is covered by
+# test_reset_guards_task_exception_on_a_cancelled_task below.
 
 
 def test_reset_guards_task_exception_on_a_cancelled_task() -> None:
