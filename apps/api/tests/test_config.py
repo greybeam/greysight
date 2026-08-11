@@ -144,3 +144,44 @@ def test_estimated_credit_price_empty_env_uses_default(
     settings = Settings()
 
     assert settings.estimated_credit_price_usd == 3.0
+
+
+def test_auth_cache_ttl_defaults_to_thirty_seconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GREYSIGHT_AUTH_CACHE_TTL_SECONDS", raising=False)
+
+    settings = Settings()
+
+    assert settings.auth_cache_ttl_seconds == 30.0
+
+
+def test_auth_cache_ttl_is_read_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GREYSIGHT_AUTH_CACHE_TTL_SECONDS", "12.5")
+
+    settings = Settings()
+
+    assert settings.auth_cache_ttl_seconds == 12.5
+
+
+def test_auth_cache_ttl_zero_is_accepted_as_the_disable_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GREYSIGHT_AUTH_CACHE_TTL_SECONDS", "0")
+
+    settings = Settings()
+
+    assert settings.auth_cache_ttl_seconds == 0.0
+
+
+@pytest.mark.parametrize("value", ["-1", "301"])
+def test_auth_cache_ttl_rejects_out_of_range_values(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("GREYSIGHT_AUTH_CACHE_TTL_SECONDS", value)
+
+    with pytest.raises(ValidationError):
+        Settings()

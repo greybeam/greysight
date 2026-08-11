@@ -58,6 +58,12 @@ class Settings(BaseSettings):
         le=64,
         validation_alias=AliasChoices("GREYSIGHT_QUERY_CONCURRENCY"),
     )
+    auth_cache_ttl_seconds: float = Field(
+        default=30.0,
+        ge=0,
+        le=300,
+        validation_alias=AliasChoices("GREYSIGHT_AUTH_CACHE_TTL_SECONDS"),
+    )
 
     @field_validator(
         "storage_price_usd_per_tb_month",
