@@ -2,6 +2,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import threading
 
 import anyio
 import pytest
@@ -996,3 +997,107 @@ def test_a_far_future_token_exp_cannot_lengthen_the_fetch_start_deadline() -> No
     anyio.run(scenario)
 
     assert len(calls) == 2
+
+
+class HandoffLock:
+    """``auth_cache._lock`` with one scripted release-point handoff.
+
+    The first release *after* the membership fetch has returned hands control
+    to the invalidator thread and blocks until it is done. Under a correct
+    atomic compare-and-publish that release is the end of one critical
+    section, so the invalidation necessarily lands after the publish and
+    removes it. Split the section and the same release falls between the
+    compare and the publish, so the invalidation is silently overwritten.
+    """
+
+    def __init__(
+        self,
+        fetch_done: threading.Event,
+        publishing: threading.Event,
+        invalidated: threading.Event,
+        handoffs: list[bool],
+    ) -> None:
+        self._lock = threading.Lock()
+        self._fetch_done = fetch_done
+        self._publishing = publishing
+        self._invalidated = invalidated
+        self._handoffs = handoffs
+        self._armed = True
+
+    def acquire(self, *args, **kwargs):
+        return self._lock.acquire(*args, **kwargs)
+
+    def release(self) -> None:
+        handing_off = self._armed and self._fetch_done.is_set()
+        if handing_off:
+            # Disarm before releasing: the invalidator takes this same lock.
+            self._armed = False
+        self._lock.release()
+        if handing_off:
+            self._publishing.set()
+            self._handoffs.append(self._invalidated.wait(timeout=10.0))
+
+    def __enter__(self) -> bool:
+        return self.acquire()
+
+    def __exit__(self, *exc_info) -> bool:
+        self.release()
+        return False
+
+
+def test_an_invalidation_between_the_compare_and_the_publish_is_not_lost() -> None:
+    """A stale value must not be published around an interleaved invalidation.
+
+    The narrow race: the fetch completes, the generation compares equal, and
+    only *then* does invalidate_user land. If the compare and the publish are
+    not one critical section, the delete happens first and the stale value is
+    written after it, then served for a full TTL.
+
+    Driven by a real thread and events, never by sleeps. The invalidator is
+    started from inside the fetch, so the generation snapshot has already been
+    taken, and it is parked until the scripted handoff releases it.
+    """
+    configure(30.0)
+    calls: list[int] = []
+    fetch_done = threading.Event()
+    publishing = threading.Event()
+    invalidated = threading.Event()
+    handoffs: list[bool] = []
+    reached_handoff: list[bool] = []
+
+    def invalidator() -> None:
+        reached_handoff.append(publishing.wait(timeout=10.0))
+        auth_cache.invalidate_user("user_1")
+        invalidated.set()
+
+    thread = threading.Thread(target=invalidator, name="invalidator")
+
+    async def fetch() -> tuple[Organization, ...]:
+        calls.append(1)
+        if len(calls) == 1:
+            thread.start()
+            fetch_done.set()
+        return (ORG_A,)
+
+    real_lock = auth_cache._lock  # noqa: SLF001 — the seam under test
+    auth_cache._lock = HandoffLock(  # noqa: SLF001
+        fetch_done, publishing, invalidated, handoffs
+    )
+
+    async def scenario() -> None:
+        assert await auth_cache.cached_memberships("user_1", fetch) == (ORG_A,)
+
+        thread.join(timeout=10.0)
+        assert not thread.is_alive(), "the invalidator thread never finished"
+        assert reached_handoff == [True], "the handoff point was never reached"
+        assert handoffs == [True], "the invalidation never completed"
+
+        # The invalidated user must not be served a value published around
+        # that invalidation: the next read has to hit the upstream again.
+        assert await auth_cache.cached_memberships("user_1", fetch) == (ORG_A,)
+        assert len(calls) == 2, "a value invalidated mid-publish was served"
+
+    try:
+        anyio.run(scenario)
+    finally:
+        auth_cache._lock = real_lock  # noqa: SLF001
