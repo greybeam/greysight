@@ -8,6 +8,7 @@ import pytest
 from app.config import Settings
 from app.services import auth_cache
 from app.services.auth_cache import VerifiedIdentity
+from app.services.membership_directory import Organization
 
 
 class FakeClock:
@@ -297,3 +298,184 @@ def test_non_numeric_exp_falls_back_to_the_plain_ttl(exp: object) -> None:
     anyio.run(scenario)
 
     assert len(calls) == 1
+
+
+ORG_A = Organization(id="org-a", name="Acme")
+ORG_B = Organization(id="org-b", name="Beta")
+
+
+def make_lookup(*orgs: Organization) -> tuple[list[int], object]:
+    calls: list[int] = []
+
+    async def fetch() -> tuple[Organization, ...]:
+        calls.append(1)
+        return orgs
+
+    return calls, fetch
+
+
+def test_membership_hit_within_ttl_makes_one_upstream_call() -> None:
+    clock, _ = configure(30.0)
+    calls, fetch = make_lookup(ORG_A)
+
+    async def scenario() -> None:
+        assert await auth_cache.cached_memberships("user_1", fetch) == (ORG_A,)
+        clock.now = 29.0
+        assert await auth_cache.cached_memberships("user_1", fetch) == (ORG_A,)
+
+    anyio.run(scenario)
+
+    assert len(calls) == 1
+
+
+def test_membership_refetches_after_ttl_expiry() -> None:
+    clock, _ = configure(30.0)
+    calls, fetch = make_lookup(ORG_A)
+
+    async def scenario() -> None:
+        await auth_cache.cached_memberships("user_1", fetch)
+        clock.now = 30.1
+        await auth_cache.cached_memberships("user_1", fetch)
+
+    anyio.run(scenario)
+
+    assert len(calls) == 2
+
+
+def test_distinct_users_do_not_cross_contaminate() -> None:
+    configure(30.0)
+
+    async def scenario() -> None:
+        _, fetch_a = make_lookup(ORG_A)
+        _, fetch_b = make_lookup(ORG_B)
+        assert await auth_cache.cached_memberships("user_1", fetch_a) == (ORG_A,)
+        assert await auth_cache.cached_memberships("user_2", fetch_b) == (ORG_B,)
+        assert await auth_cache.cached_memberships("user_1", fetch_b) == (ORG_A,)
+
+    anyio.run(scenario)
+
+
+def test_failed_membership_lookup_is_never_cached() -> None:
+    configure(30.0)
+    calls: list[int] = []
+
+    async def scenario() -> None:
+        async def failing() -> tuple[Organization, ...]:
+            calls.append(1)
+            raise RuntimeError("upstream said no")
+
+        for _ in range(2):
+            with pytest.raises(RuntimeError):
+                await auth_cache.cached_memberships("user_1", failing)
+
+    anyio.run(scenario)
+
+    assert len(calls) == 2
+
+
+def test_ttl_zero_disables_membership_storage_and_coalescing() -> None:
+    """Concurrent callers must each reach the fetch, not share one."""
+    configure(0.0)
+    calls: list[int] = []
+
+    async def scenario() -> None:
+        gate = asyncio.Event()
+
+        async def fetch() -> tuple[Organization, ...]:
+            calls.append(1)
+            await gate.wait()
+            return (ORG_A,)
+
+        waiters = [
+            asyncio.ensure_future(auth_cache.cached_memberships("user_1", fetch))
+            for _ in range(4)
+        ]
+        await asyncio.sleep(0)
+        gate.set()
+        await asyncio.gather(*waiters)
+
+        await auth_cache.cached_memberships("user_1", fetch)
+
+    anyio.run(scenario)
+
+    assert len(calls) == 5
+
+
+def test_invalidate_user_forces_a_refetch_for_that_user_only() -> None:
+    configure(30.0)
+    calls_1, fetch_1 = make_lookup(ORG_A)
+    calls_2, fetch_2 = make_lookup(ORG_B)
+
+    async def scenario() -> None:
+        await auth_cache.cached_memberships("user_1", fetch_1)
+        await auth_cache.cached_memberships("user_2", fetch_2)
+        auth_cache.invalidate_user("user_1")
+        await auth_cache.cached_memberships("user_1", fetch_1)
+        await auth_cache.cached_memberships("user_2", fetch_2)
+
+    anyio.run(scenario)
+
+    assert len(calls_1) == 2
+    assert len(calls_2) == 1
+
+
+def test_invalidate_all_memberships_forces_a_refetch_for_everyone() -> None:
+    configure(30.0)
+    calls_1, fetch_1 = make_lookup(ORG_A)
+    calls_2, fetch_2 = make_lookup(ORG_B)
+
+    async def scenario() -> None:
+        await auth_cache.cached_memberships("user_1", fetch_1)
+        await auth_cache.cached_memberships("user_2", fetch_2)
+        auth_cache.invalidate_all_memberships()
+        await auth_cache.cached_memberships("user_1", fetch_1)
+        await auth_cache.cached_memberships("user_2", fetch_2)
+
+    anyio.run(scenario)
+
+    assert len(calls_1) == 2
+    assert len(calls_2) == 2
+
+
+@pytest.mark.parametrize(
+    "invalidate",
+    [
+        lambda: auth_cache.invalidate_user("user_1"),
+        lambda: auth_cache.invalidate_all_memberships(),
+    ],
+    ids=["invalidate_user", "invalidate_all"],
+)
+def test_invalidation_mid_fetch_does_not_publish_the_stale_value(invalidate) -> None:
+    """The classic race: fetch starts, invalidation lands, fetch returns stale."""
+    configure(30.0)
+    results = [(ORG_A,), (ORG_B,)]
+    calls: list[int] = []
+
+    async def scenario() -> None:
+        async def fetch() -> tuple[Organization, ...]:
+            calls.append(1)
+            if len(calls) == 1:
+                # Invalidate while this first (now-stale) fetch is in flight.
+                invalidate()
+            return results[min(len(calls), len(results)) - 1]
+
+        # The stale first result is returned to this caller but NOT cached,
+        # and a single bounded refetch supplies the value that is returned.
+        assert await auth_cache.cached_memberships("user_1", fetch) == (ORG_B,)
+        assert len(calls) == 2
+
+        # Nothing was published, so the next call fetches again.
+        assert await auth_cache.cached_memberships("user_1", fetch) == (ORG_B,)
+        assert len(calls) == 3
+
+    anyio.run(scenario)
+
+
+def test_reset_zeroes_the_generation_counter() -> None:
+    configure(30.0)
+    auth_cache.invalidate_all_memberships()
+    assert auth_cache._membership_generation > 0  # noqa: SLF001 — state assertion
+
+    anyio.run(auth_cache.reset)
+
+    assert auth_cache._membership_generation == 0  # noqa: SLF001

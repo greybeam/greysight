@@ -12,11 +12,13 @@ import base64
 import binascii
 import hashlib
 import json
+import threading
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from app.config import Settings
+from app.services.membership_directory import Organization
 from app.services.ttl_cache import TtlCache
 
 MAX_ENTRIES = 1024
@@ -42,6 +44,14 @@ _membership_cache: TtlCache | None = None
 _monotonic_clock: Callable[[], float] = time.monotonic
 _wall_clock: Callable[[], float] = time.time
 
+# One process-wide counter guarded by an auth_cache-owned outer lock. TtlCache
+# keeps its own internal lock for its own atomicity, but every membership-cache
+# mutation and every generation read/bump made here happens inside this lock —
+# that is what makes compare-and-publish atomic with respect to invalidation.
+# A per-user map was rejected: it grows without bound, and mutations are rare.
+_lock = threading.Lock()
+_membership_generation = 0
+
 
 def configure_auth_cache(
     settings: Settings,
@@ -54,11 +64,15 @@ def configure_auth_cache(
     The monotonic clock is passed through to the TtlCache instances so the
     cache and the token-expiry deadline share one clock.
     """
-    global _ttl_seconds, _verify_cache, _monotonic_clock, _wall_clock
+    global _ttl_seconds, _verify_cache, _membership_cache
+    global _monotonic_clock, _wall_clock
     _ttl_seconds = float(settings.auth_cache_ttl_seconds)
     _monotonic_clock = monotonic_clock
     _wall_clock = wall_clock
     _verify_cache = TtlCache(
+        ttl_seconds=_ttl_seconds, max_entries=MAX_ENTRIES, clock=monotonic_clock
+    )
+    _membership_cache = TtlCache(
         ttl_seconds=_ttl_seconds, max_entries=MAX_ENTRIES, clock=monotonic_clock
     )
 
@@ -129,6 +143,69 @@ def _unverified_exp(token: str) -> float | None:
     return float(exp)
 
 
+async def cached_memberships(
+    user_id: str,
+    fetch: Callable[[], Awaitable[tuple[Organization, ...]]],
+) -> tuple[Organization, ...]:
+    if _ttl_seconds <= 0 or _membership_cache is None:
+        return await fetch()
+
+    hit = _membership_cache.get(user_id)
+    if hit is not None:
+        return hit
+    return await _fetch_memberships(user_id, fetch)
+
+
+async def _fetch_memberships(
+    user_id: str,
+    fetch: Callable[[], Awaitable[tuple[Organization, ...]]],
+) -> tuple[Organization, ...]:
+    with _lock:
+        generation = _membership_generation
+
+    organizations = tuple(await fetch())
+
+    with _lock:
+        # One atomic compare-and-publish. Re-checking the generation and then
+        # calling set() under separate lock acquisitions would reintroduce
+        # exactly the race this exists to close.
+        if _membership_generation == generation and _membership_cache is not None:
+            _membership_cache.set(user_id, organizations)
+            return organizations
+
+    # Invalidated mid-flight: never publish. One bounded refetch (not a loop,
+    # which could livelock under repeated invalidation), returned uncached.
+    return tuple(await fetch())
+
+
+def invalidate_user(user_id: str) -> None:
+    """Drop one user's memberships. Safe to call from a sync threadpool route.
+
+    Touches only lock-guarded TtlCache state and the generation counter —
+    never the in-flight registries, which belong to the event loop.
+    """
+    global _membership_generation
+    with _lock:
+        if _membership_cache is not None:
+            _membership_cache.delete(user_id)
+        _membership_generation += 1
+
+
+def invalidate_all_memberships() -> None:
+    """Flush every user's memberships. Safe from a sync threadpool route.
+
+    A cached Organization carries account_locator and connection_status, so a
+    disconnect goes stale for every member of the org, not just the caller.
+    There is no org->user reverse index and disconnects are infrequent, so a
+    global flush beats maintaining one.
+    """
+    global _membership_generation
+    with _lock:
+        if _membership_cache is not None:
+            _membership_cache.clear()
+        _membership_generation += 1
+
+
 async def reset() -> None:
     """Drop all cached state. Preserves the configured TTL and clocks.
 
@@ -136,8 +213,13 @@ async def reset() -> None:
     cancelled and drained here. Reconfiguration is configure_auth_cache's
     job alone, so a test that deliberately set a TTL keeps it.
     """
-    if _verify_cache is not None:
-        _verify_cache.clear()
+    global _membership_generation
+    with _lock:
+        if _verify_cache is not None:
+            _verify_cache.clear()
+        if _membership_cache is not None:
+            _membership_cache.clear()
+        _membership_generation = 0
 
 
 def _token_key(token: str) -> str:
