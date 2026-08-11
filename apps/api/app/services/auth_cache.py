@@ -8,6 +8,7 @@ stale-on-error fallback.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import hashlib
@@ -52,6 +53,14 @@ _wall_clock: Callable[[], float] = time.time
 _lock = threading.Lock()
 _membership_generation = 0
 
+# Two registries, not one: a single map keyed by bare strings would let the
+# verify key space (sha256 hex) and the membership key space (user ids)
+# collide. Both are touched only from the event loop — check-and-create is
+# synchronous, so it is atomic under asyncio and needs no lock. Sync
+# threadpool invalidators must never touch them.
+_verify_inflight: dict[str, "asyncio.Task[VerifiedIdentity]"] = {}
+_membership_inflight: dict[str, "asyncio.Task[tuple[Organization, ...]]"] = {}
+
 
 def configure_auth_cache(
     settings: Settings,
@@ -90,14 +99,59 @@ async def cached_verify(
     if hit is not None and not _is_expired(hit):
         return hit
 
+    return await _single_flight(
+        _verify_inflight, key, lambda: _verify_and_store(key, token, fetch)
+    )
+
+
+async def _verify_and_store(
+    key: str,
+    token: str,
+    fetch: Callable[[], Awaitable[VerifiedIdentity]],
+) -> VerifiedIdentity:
     identity = await fetch()
     identity = VerifiedIdentity(
         user_id=identity.user_id,
         expires_at_monotonic=_expiry_deadline(token),
     )
-    if not _is_expired(identity):
+    if _verify_cache is not None and not _is_expired(identity):
         _verify_cache.set(key, identity)
     return identity
+
+
+def _single_flight(
+    registry: dict[str, "asyncio.Task"],
+    key: str,
+    factory: Callable[[], Awaitable],
+) -> Awaitable:
+    """Collapse concurrent work on one key onto one task.
+
+    Callers await a shield so a cancelled waiter neither kills the leader nor
+    strands the other waiters, and CancelledError cannot leak through an
+    `except Exception` and leave waiters blocked. Exceptions propagate
+    identically to every waiter, preserving 401-vs-503 per waiter.
+    """
+    task = registry.get(key)
+    if task is None:
+        task = asyncio.ensure_future(factory())
+        registry[key] = task
+        task.add_done_callback(lambda finished: _release(registry, key, finished))
+    return asyncio.shield(task)
+
+
+def _release(
+    registry: dict[str, "asyncio.Task"],
+    key: str,
+    task: "asyncio.Task",
+) -> None:
+    if registry.get(key) is task:
+        del registry[key]
+    # Consume the exception so a task whose waiters were all cancelled does
+    # not surface as "Task exception was never retrieved" at GC time. The
+    # guard is required: Task.exception() *raises* CancelledError on a
+    # cancelled task, which would turn cleanup into a new error path.
+    if not task.cancelled():
+        task.exception()
 
 
 def _is_expired(identity: VerifiedIdentity) -> bool:
@@ -153,7 +207,9 @@ async def cached_memberships(
     hit = _membership_cache.get(user_id)
     if hit is not None:
         return hit
-    return await _fetch_memberships(user_id, fetch)
+    return await _single_flight(
+        _membership_inflight, user_id, lambda: _fetch_memberships(user_id, fetch)
+    )
 
 
 async def _fetch_memberships(

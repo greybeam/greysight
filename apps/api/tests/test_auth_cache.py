@@ -1,14 +1,20 @@
 import asyncio
 import base64
+import hashlib
 import json
 
 import anyio
 import pytest
+from fastapi import HTTPException
 
 from app.config import Settings
 from app.services import auth_cache
 from app.services.auth_cache import VerifiedIdentity
-from app.services.membership_directory import Organization
+from app.services.membership_directory import (
+    MembershipLookupError,
+    MembershipLookupUnavailable,
+    Organization,
+)
 
 
 class FakeClock:
@@ -479,3 +485,262 @@ def test_reset_zeroes_the_generation_counter() -> None:
     anyio.run(auth_cache.reset)
 
     assert auth_cache._membership_generation == 0  # noqa: SLF001
+
+
+def test_concurrent_same_token_requests_collapse_to_one_upstream_call() -> None:
+    configure(30.0)
+    calls: list[int] = []
+
+    async def scenario() -> None:
+        gate = asyncio.Event()
+
+        async def fetch() -> VerifiedIdentity:
+            calls.append(1)
+            await gate.wait()
+            return VerifiedIdentity(user_id="user_123")
+
+        waiters = [
+            asyncio.ensure_future(auth_cache.cached_verify("token-a", fetch))
+            for _ in range(5)
+        ]
+        await asyncio.sleep(0)
+        gate.set()
+        results = await asyncio.gather(*waiters)
+
+        assert [r.user_id for r in results] == ["user_123"] * 5
+
+    anyio.run(scenario)
+
+    assert len(calls) == 1
+
+
+def test_concurrent_same_user_membership_requests_collapse() -> None:
+    configure(30.0)
+    calls: list[int] = []
+
+    async def scenario() -> None:
+        gate = asyncio.Event()
+
+        async def fetch() -> tuple[Organization, ...]:
+            calls.append(1)
+            await gate.wait()
+            return (ORG_A,)
+
+        waiters = [
+            asyncio.ensure_future(auth_cache.cached_memberships("user_1", fetch))
+            for _ in range(5)
+        ]
+        await asyncio.sleep(0)
+        gate.set()
+        results = await asyncio.gather(*waiters)
+
+        assert results == [(ORG_A,)] * 5
+
+    anyio.run(scenario)
+
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        HTTPException(status_code=401, detail="Authentication required"),
+        HTTPException(status_code=503, detail="Authentication service unavailable"),
+    ],
+    ids=["401", "503"],
+)
+def test_every_waiter_on_a_failing_verify_receives_the_same_status(error) -> None:
+    configure(30.0)
+
+    async def scenario() -> None:
+        gate = asyncio.Event()
+
+        async def fetch() -> VerifiedIdentity:
+            await gate.wait()
+            raise error
+
+        waiters = [
+            asyncio.ensure_future(auth_cache.cached_verify("token-a", fetch))
+            for _ in range(4)
+        ]
+        await asyncio.sleep(0)
+        gate.set()
+        results = await asyncio.gather(*waiters, return_exceptions=True)
+
+        assert [r.status_code for r in results] == [error.status_code] * 4
+
+    anyio.run(scenario)
+
+
+@pytest.mark.parametrize(
+    "error_factory,expected",
+    [
+        (MembershipLookupError, MembershipLookupError),
+        (MembershipLookupUnavailable, MembershipLookupUnavailable),
+    ],
+    ids=["lookup-error", "lookup-unavailable"],
+)
+def test_every_waiter_on_a_failing_membership_fetch_sees_the_same_error(
+    error_factory, expected
+) -> None:
+    """Unit-level fan-out only — this fetch sits BELOW _fetch_organizations.
+
+    The 401/503 translation these errors receive on the production path is
+    covered by test_concurrent_waiters_get_the_same_translated_membership_failure
+    in tests/test_auth.py (Task 8); do not mistake this for that coverage.
+    """
+    configure(30.0)
+
+    async def scenario() -> None:
+        gate = asyncio.Event()
+
+        async def fetch() -> tuple[Organization, ...]:
+            await gate.wait()
+            raise error_factory()
+
+        waiters = [
+            asyncio.ensure_future(auth_cache.cached_memberships("user_1", fetch))
+            for _ in range(4)
+        ]
+        await asyncio.sleep(0)
+        gate.set()
+        results = await asyncio.gather(*waiters, return_exceptions=True)
+
+        assert all(isinstance(r, expected) for r in results)
+
+    anyio.run(scenario)
+
+
+def test_cancelling_the_leader_waiter_does_not_break_the_other_waiters() -> None:
+    configure(30.0)
+    calls: list[int] = []
+
+    async def scenario() -> None:
+        gate = asyncio.Event()
+
+        async def fetch() -> VerifiedIdentity:
+            calls.append(1)
+            await gate.wait()
+            return VerifiedIdentity(user_id="user_123")
+
+        leader = asyncio.ensure_future(auth_cache.cached_verify("token-a", fetch))
+        follower = asyncio.ensure_future(auth_cache.cached_verify("token-a", fetch))
+        await asyncio.sleep(0)
+
+        leader.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await leader
+
+        gate.set()
+        # The shielded underlying task survived its cancelled waiter.
+        assert (await follower).user_id == "user_123"
+
+        # A later retry is served from the cache the surviving task populated.
+        assert (await auth_cache.cached_verify("token-a", fetch)).user_id == "user_123"
+
+    anyio.run(scenario)
+
+    assert len(calls) == 1
+
+
+def test_a_fully_cancelled_flight_still_allows_a_successful_retry() -> None:
+    configure(30.0)
+    calls: list[int] = []
+
+    async def scenario() -> None:
+        gate = asyncio.Event()
+
+        async def failing() -> VerifiedIdentity:
+            calls.append(1)
+            await gate.wait()
+            raise HTTPException(status_code=503, detail="unavailable")
+
+        waiter = asyncio.ensure_future(auth_cache.cached_verify("token-a", failing))
+        await asyncio.sleep(0)
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        gate.set()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        async def succeeding() -> VerifiedIdentity:
+            calls.append(1)
+            return VerifiedIdentity(user_id="user_123")
+
+        assert (
+            await auth_cache.cached_verify("token-a", succeeding)
+        ).user_id == "user_123"
+
+    anyio.run(scenario)
+
+    assert len(calls) == 2
+
+
+def test_ttl_zero_registers_nothing_in_either_registry() -> None:
+    """Disabled short-circuits BEFORE hashing, locking, or registering work."""
+    configure(0.0)
+
+    async def scenario() -> None:
+        gate = asyncio.Event()
+
+        async def verify_fetch() -> VerifiedIdentity:
+            await gate.wait()
+            return VerifiedIdentity(user_id="user_123")
+
+        async def membership_fetch() -> tuple[Organization, ...]:
+            await gate.wait()
+            return (ORG_A,)
+
+        waiters = [
+            asyncio.ensure_future(auth_cache.cached_verify("token-a", verify_fetch)),
+            asyncio.ensure_future(
+                auth_cache.cached_memberships("user_1", membership_fetch)
+            ),
+        ]
+        await asyncio.sleep(0)
+
+        assert auth_cache._verify_inflight == {}  # noqa: SLF001 — state assertion
+        assert auth_cache._membership_inflight == {}  # noqa: SLF001
+
+        gate.set()
+        await asyncio.gather(*waiters)
+
+    anyio.run(scenario)
+
+
+def test_verify_and_membership_single_flight_are_isolated() -> None:
+    """A colliding key in the other key space must never be served across."""
+    configure(30.0)
+    # Use the sha256 of a token as a *user id*, so a single shared registry
+    # keyed by bare strings would hand one caller the other's value.
+    token = "token-a"
+    colliding_user_id = hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    async def scenario() -> None:
+        gate = asyncio.Event()
+
+        async def verify_fetch() -> VerifiedIdentity:
+            await gate.wait()
+            return VerifiedIdentity(user_id="user_from_verify")
+
+        async def membership_fetch() -> tuple[Organization, ...]:
+            await gate.wait()
+            return (ORG_B,)
+
+        verify_waiter = asyncio.ensure_future(
+            auth_cache.cached_verify(token, verify_fetch)
+        )
+        membership_waiter = asyncio.ensure_future(
+            auth_cache.cached_memberships(colliding_user_id, membership_fetch)
+        )
+        await asyncio.sleep(0)
+        gate.set()
+
+        identity = await verify_waiter
+        organizations = await membership_waiter
+
+        assert identity.user_id == "user_from_verify"
+        assert organizations == (ORG_B,)
+
+    anyio.run(scenario)
