@@ -4,8 +4,17 @@ import anyio
 import httpx
 import pytest
 
-from app.services import query_concurrency
+from app.services import auth_cache, query_concurrency
 from app.services.http_pool import clear_clients, install_clients
+
+# Configuration globals reset() deliberately does NOT touch.
+_AUTH_CACHE_CONFIG_GLOBALS = (
+    "_ttl_seconds",
+    "_verify_cache",
+    "_membership_cache",
+    "_monotonic_clock",
+    "_wall_clock",
+)
 
 
 @contextlib.contextmanager
@@ -39,3 +48,28 @@ def _restore_default_query_executor():
     """
     yield
     query_concurrency.configure(query_concurrency.DEFAULT_MAX_WORKERS)
+
+
+@pytest.fixture(autouse=True)
+def _reset_auth_cache():
+    """Clear cached entries AND restore configuration between tests.
+
+    reset() preserves the configured TTL and clocks by design, so a test that
+    installs a fake clock through configure_auth_cache would otherwise leak
+    frozen time into every test that runs after it.
+
+    Snapshot-and-restore rather than reconfigure: calling
+    configure_auth_cache(Settings()) here would leave the caches non-None no
+    matter what, which would make the module-scope wiring assertions in
+    test_auth_cache_wiring.py pass even if app.main forgot to configure the
+    cache at all. Restoring the snapshot preserves exactly what import-time
+    wiring left behind — including None, if it left nothing.
+    """
+    snapshot = {name: getattr(auth_cache, name) for name in _AUTH_CACHE_CONFIG_GLOBALS}
+    anyio.run(auth_cache.reset)
+    try:
+        yield
+    finally:
+        anyio.run(auth_cache.reset)
+        for name, value in snapshot.items():
+            setattr(auth_cache, name, value)
