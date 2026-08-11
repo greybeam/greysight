@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import json
 
 import anyio
 import pytest
@@ -196,3 +198,102 @@ def test_token_is_never_used_as_a_cache_key() -> None:
     keys = list(auth_cache._verify_cache._entries)  # noqa: SLF001 — key-shape check
     assert "super-secret-token" not in keys
     assert all(len(key) == 64 for key in keys)
+
+
+def jwt_with_exp(exp: object) -> str:
+    """A structurally valid JWT whose payload carries the given exp."""
+
+    def segment(payload: dict[str, object]) -> str:
+        raw = json.dumps(payload).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    return f"{segment({'alg': 'HS256'})}.{segment({'sub': 'user_123', 'exp': exp})}.sig"
+
+
+def test_token_exp_before_the_ttl_boundary_stops_being_served_at_exp() -> None:
+    clock, wall = configure(30.0)
+    calls, fetch = make_verifier()
+    # exp is 10s of wall-clock away, well inside the 30s TTL.
+    token = jwt_with_exp(wall.now + 10.0)
+
+    async def scenario() -> None:
+        await auth_cache.cached_verify(token, fetch)
+        clock.now = 9.9
+        await auth_cache.cached_verify(token, fetch)
+        assert len(calls) == 1
+        clock.now = 10.0
+        await auth_cache.cached_verify(token, fetch)
+
+    anyio.run(scenario)
+
+    assert len(calls) == 2
+
+
+def test_a_wall_clock_jump_does_not_extend_acceptance() -> None:
+    clock, wall = configure(30.0)
+    calls, fetch = make_verifier()
+    token = jwt_with_exp(wall.now + 10.0)
+
+    async def scenario() -> None:
+        await auth_cache.cached_verify(token, fetch)
+        # Wall clock jumps backwards an hour mid-TTL; the deadline is
+        # monotonic-only, so it cannot buy the entry extra life.
+        wall.now -= 3600.0
+        clock.now = 10.0
+        await auth_cache.cached_verify(token, fetch)
+
+    anyio.run(scenario)
+
+    assert len(calls) == 2
+
+
+def test_an_already_expired_token_is_verified_but_never_cached() -> None:
+    _, wall = configure(30.0)
+    calls, fetch = make_verifier()
+    token = jwt_with_exp(wall.now - 5.0)
+
+    async def scenario() -> None:
+        await auth_cache.cached_verify(token, fetch)
+        await auth_cache.cached_verify(token, fetch)
+
+    anyio.run(scenario)
+
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "not-a-jwt",
+        "only.two",
+        "aaa.!!!not-base64!!!.sig",
+    ],
+)
+def test_unparseable_tokens_fall_back_to_the_plain_ttl(token: str) -> None:
+    clock, _ = configure(30.0)
+    calls, fetch = make_verifier()
+
+    async def scenario() -> None:
+        await auth_cache.cached_verify(token, fetch)
+        clock.now = 29.0
+        await auth_cache.cached_verify(token, fetch)
+
+    anyio.run(scenario)
+
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("exp", ["soon", None, True])
+def test_non_numeric_exp_falls_back_to_the_plain_ttl(exp: object) -> None:
+    clock, _ = configure(30.0)
+    calls, fetch = make_verifier()
+    token = jwt_with_exp(exp)
+
+    async def scenario() -> None:
+        await auth_cache.cached_verify(token, fetch)
+        clock.now = 29.0
+        await auth_cache.cached_verify(token, fetch)
+
+    anyio.run(scenario)
+
+    assert len(calls) == 1

@@ -8,7 +8,10 @@ stale-on-error fallback.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
+import json
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -70,12 +73,60 @@ async def cached_verify(
 
     key = _token_key(token)
     hit = _verify_cache.get(key)
-    if hit is not None:
+    if hit is not None and not _is_expired(hit):
         return hit
 
     identity = await fetch()
-    _verify_cache.set(key, identity)
+    identity = VerifiedIdentity(
+        user_id=identity.user_id,
+        expires_at_monotonic=_expiry_deadline(token),
+    )
+    if not _is_expired(identity):
+        _verify_cache.set(key, identity)
     return identity
+
+
+def _is_expired(identity: VerifiedIdentity) -> bool:
+    deadline = identity.expires_at_monotonic
+    return deadline is not None and _monotonic_clock() >= deadline
+
+
+def _expiry_deadline(token: str) -> float | None:
+    """Convert the token's wall-clock ``exp`` into a monotonic deadline.
+
+    JWT ``exp`` is epoch seconds; TtlCache runs on time.monotonic. Comparing
+    them directly is a bug, so convert exactly once, here, and compare only
+    monotonic values afterwards — a wall-clock adjustment mid-TTL then cannot
+    extend acceptance.
+    """
+    exp_epoch = _unverified_exp(token)
+    if exp_epoch is None:
+        return None
+    return _monotonic_clock() + max(0.0, exp_epoch - _wall_clock())
+
+
+def _unverified_exp(token: str) -> float | None:
+    """Read ``exp`` from the JWT payload without verifying the signature.
+
+    Safe because the auth server has already verified this token and the
+    value is used only to *shorten* the cache window, never to extend it.
+    Anything unreadable falls back to the plain TTL.
+    """
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+    segment = parts[1]
+    padding = "=" * (-len(segment) % 4)
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(segment + padding))
+    except (ValueError, binascii.Error):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    exp = payload.get("exp")
+    if isinstance(exp, bool) or not isinstance(exp, (int, float)):
+        return None
+    return float(exp)
 
 
 async def reset() -> None:
