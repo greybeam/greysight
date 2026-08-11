@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, model_validator
 
 from app.auth import AuthContext, require_auth_context, require_org_admin
+from app.services.auth_cache import invalidate_all_memberships, invalidate_user
 from app.services.dashboard_run_cache import get_run_cache_store
 from app.services.snowflake_account import (
     InvalidSnowflakeAccountError,
@@ -71,6 +72,10 @@ def disconnect_snowflake(
     require_org_admin(auth_context, organization_id)
     disconnect_org_connection(organization_id)
     _drop_cached_run(organization_id)
+    # The cached Organization carries account_locator and connection_status,
+    # so a disconnect goes stale for every member of the org. There is no
+    # org->user reverse index and disconnects are infrequent, so flush all.
+    invalidate_all_memberships()
 
 
 def _drop_cached_run(organization_id: str) -> None:
@@ -189,4 +194,7 @@ def _validate_and_create(
         raise HTTPException(
             status_code=502, detail="Could not create the organization."
         ) from None
+    # Only after the RPC succeeds: the caller now has a membership the cache
+    # does not know about, and the frontend refetches orgs immediately.
+    invalidate_user(auth_context.user_id)
     return ConnectResponse(id=str(organization_id))

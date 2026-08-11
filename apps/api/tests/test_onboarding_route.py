@@ -1,11 +1,15 @@
+import anyio
 import pytest
 from fastapi.testclient import TestClient
 
 import app.services.connect_rate_limit as connect_rate_limit
 from app.auth import AuthContext, require_auth_context
+from app.config import Settings
 from app.main import app
 from app.routes import onboarding
+from app.services import auth_cache
 from app.services.connect_rate_limit import InMemoryConnectLimiter
+from app.services.membership_directory import Organization
 
 
 @pytest.fixture(autouse=True)
@@ -248,3 +252,122 @@ def test_disconnect_is_idempotent(monkeypatch) -> None:
     app.dependency_overrides.clear()
     assert first.status_code == 204
     assert second.status_code == 204
+
+
+def _prime_membership_cache(user_id: str, *orgs: Organization) -> list[int]:
+    """Seed the real membership cache for user_id; return its fetch counter."""
+    calls: list[int] = []
+
+    async def fetch() -> tuple[Organization, ...]:
+        calls.append(1)
+        return orgs
+
+    async def seed() -> None:
+        await auth_cache.cached_memberships(user_id, fetch)
+        # Confirm the seed actually landed: a second read must not refetch.
+        await auth_cache.cached_memberships(user_id, fetch)
+
+    anyio.run(seed)
+    assert calls == [1]
+    return calls
+
+
+def _read_memberships(user_id: str, calls: list[int], *orgs: Organization):
+    """Read through the cache again using the same counting fetch."""
+
+    async def fetch() -> tuple[Organization, ...]:
+        calls.append(1)
+        return orgs
+
+    return anyio.run(auth_cache.cached_memberships, user_id, fetch)
+
+
+def test_connect_invalidates_only_the_callers_cached_memberships(monkeypatch) -> None:
+    """The frontend refetches orgs immediately after connect, so evict eagerly."""
+    auth_cache.configure_auth_cache(Settings(GREYSIGHT_AUTH_CACHE_TTL_SECONDS=30))
+    caller_calls = _prime_membership_cache("user-1")
+    other_calls = _prime_membership_cache(
+        "user-2", Organization(id="org-9", name="Other")
+    )
+
+    app.dependency_overrides[require_auth_context] = _auth_context
+    monkeypatch.setattr(
+        onboarding, "validate_snowflake_connection", lambda config: "XY12345"
+    )
+    monkeypatch.setattr(
+        onboarding, "create_org_with_connection", lambda **kwargs: "org-123"
+    )
+    client = TestClient(app)
+    response = client.post("/api/onboarding/connect", json=_payload())
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 201
+
+    # The caller's entry is gone: the next read hits the upstream again.
+    _read_memberships("user-1", caller_calls)
+    assert len(caller_calls) == 2
+
+    # An unrelated user is untouched — connect grants one membership to one user.
+    other = _read_memberships(
+        "user-2", other_calls, Organization(id="org-9", name="Other")
+    )
+    assert len(other_calls) == 1
+    assert other == (Organization(id="org-9", name="Other"),)
+
+
+def test_connect_leaves_the_cache_intact_when_provisioning_fails(monkeypatch) -> None:
+    from app.services.org_provisioning import OrgProvisioningError
+
+    auth_cache.configure_auth_cache(Settings(GREYSIGHT_AUTH_CACHE_TTL_SECONDS=30))
+    caller_calls = _prime_membership_cache("user-1")
+
+    def _fail(**kwargs):
+        raise OrgProvisioningError("nope")
+
+    app.dependency_overrides[require_auth_context] = _auth_context
+    monkeypatch.setattr(
+        onboarding, "validate_snowflake_connection", lambda config: "XY12345"
+    )
+    monkeypatch.setattr(onboarding, "create_org_with_connection", _fail)
+    client = TestClient(app)
+    response = client.post("/api/onboarding/connect", json=_payload())
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 502
+    # No membership was granted, so nothing should have been evicted.
+    _read_memberships("user-1", caller_calls)
+    assert len(caller_calls) == 1
+
+
+def test_disconnect_invalidates_every_users_cached_memberships(monkeypatch) -> None:
+    """A disconnect changes account_locator for all members, not just the caller."""
+    auth_cache.configure_auth_cache(Settings(GREYSIGHT_AUTH_CACHE_TTL_SECONDS=30))
+    admin_org = Organization(
+        id="org-1", name="Acme", role="owner", account_locator="XY12345"
+    )
+    member_org = Organization(
+        id="org-1", name="Acme", role="member", account_locator="XY12345"
+    )
+    admin_calls = _prime_membership_cache("u", admin_org)
+    member_calls = _prime_membership_cache("user-2", member_org)
+
+    admin_ctx = AuthContext(
+        user_id="u",
+        auth_required=True,
+        memberships=frozenset({"org-1"}),
+        organizations=(admin_org,),
+    )
+    app.dependency_overrides[require_auth_context] = lambda: admin_ctx
+    monkeypatch.setattr(onboarding, "disconnect_org_connection", lambda org_id: None)
+    client = TestClient(app)
+    response = client.post("/api/onboarding/org-1/disconnect")
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 204
+
+    # Both the acting admin and an unrelated member of that org refetch, because
+    # the cached Organization carries the now-stale account_locator.
+    _read_memberships("u", admin_calls, admin_org)
+    _read_memberships("user-2", member_calls, member_org)
+    assert len(admin_calls) == 2
+    assert len(member_calls) == 2
