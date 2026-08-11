@@ -109,13 +109,21 @@ async def _verify_and_store(
     token: str,
     fetch: Callable[[], Awaitable[VerifiedIdentity]],
 ) -> VerifiedIdentity:
+    # Read the clock before awaiting: the upstream snapshots authorization
+    # state when the request starts, so a completion-relative deadline would
+    # make the real revocation window TTL + fetch duration.
+    started = _monotonic_clock()
     identity = await fetch()
-    identity = VerifiedIdentity(
-        user_id=identity.user_id,
-        expires_at_monotonic=_expiry_deadline(token),
-    )
+
+    deadline = started + _ttl_seconds
+    token_deadline = _expiry_deadline(token)
+    if token_deadline is not None:
+        # exp may only shorten the window, never lengthen it.
+        deadline = min(deadline, token_deadline)
+
+    identity = VerifiedIdentity(user_id=identity.user_id, expires_at_monotonic=deadline)
     if _verify_cache is not None and not _is_expired(identity):
-        _verify_cache.set(key, identity)
+        _verify_cache.set(key, identity, expires_at=deadline)
     return identity
 
 
@@ -219,14 +227,20 @@ async def _fetch_memberships(
     with _lock:
         generation = _membership_generation
 
+    # Same rule as the verify path: the window starts when the fetch starts.
+    started = _monotonic_clock()
     organizations = tuple(await fetch())
+    expires_at = started + _ttl_seconds
 
     with _lock:
         # One atomic compare-and-publish. Re-checking the generation and then
         # calling set() under separate lock acquisitions would reintroduce
         # exactly the race this exists to close.
         if _membership_generation == generation and _membership_cache is not None:
-            _membership_cache.set(user_id, organizations)
+            # A fetch slower than the whole TTL leaves nothing to publish; the
+            # value is still returned to this caller, just uncached.
+            if _monotonic_clock() < expires_at:
+                _membership_cache.set(user_id, organizations, expires_at=expires_at)
             return organizations
 
     # Invalidated mid-flight: never publish. One bounded refetch (not a loop,

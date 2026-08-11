@@ -873,3 +873,149 @@ def test_reset_guards_task_exception_on_a_cancelled_task() -> None:
     anyio.run(scenario)
 
     assert handled == []
+
+
+# --- The cache window is measured from fetch start, not fetch completion -----
+#
+# The upstream snapshots authorization state when the request *starts*, so an
+# entry published at completion with a completion-relative deadline is served
+# for TTL + fetch_duration. Both upstreams allow 10s timeouts, so a 30s TTL
+# would otherwise buy a ~40s revocation window. These tests pin the deadline to
+# fetch start on both paths.
+
+
+def slow_verifier(
+    clock: FakeClock,
+    duration: float,
+    *,
+    wall: FakeWallClock | None = None,
+) -> tuple[list[int], object]:
+    """A verifier whose fetch advances the injected clocks while it runs.
+
+    Both clocks advance together when a wall clock is supplied, because real
+    elapsed time moves both — a fetch that burned monotonic seconds without
+    burning wall seconds would make an `exp` deadline look further away than
+    it is.
+    """
+    calls: list[int] = []
+
+    async def fetch() -> VerifiedIdentity:
+        calls.append(1)
+        clock.now += duration
+        if wall is not None:
+            wall.now += duration
+        return VerifiedIdentity(user_id="user_123")
+
+    return calls, fetch
+
+
+def slow_lookup(clock: FakeClock, duration: float) -> tuple[list[int], object]:
+    calls: list[int] = []
+
+    async def fetch() -> tuple[Organization, ...]:
+        calls.append(1)
+        clock.now += duration
+        return (ORG_A,)
+
+    return calls, fetch
+
+
+def test_a_slow_verify_is_not_served_past_the_fetch_start_deadline() -> None:
+    clock, _ = configure(30.0)
+    calls, fetch = slow_verifier(clock, 10.0)
+
+    async def scenario() -> None:
+        # Fetch starts at t=0 and returns at t=10, so the entry must stop
+        # being served at t=30 — not at t=40.
+        await auth_cache.cached_verify("token-a", fetch)
+        clock.now = 29.9
+        await auth_cache.cached_verify("token-a", fetch)
+        assert len(calls) == 1, "an entry inside its window was refetched"
+        clock.now = 30.0
+        await auth_cache.cached_verify("token-a", fetch)
+
+    anyio.run(scenario)
+
+    assert len(calls) == 2
+
+
+def test_a_slow_membership_fetch_is_not_served_past_the_fetch_start_deadline() -> None:
+    clock, _ = configure(30.0)
+    calls, fetch = slow_lookup(clock, 10.0)
+
+    async def scenario() -> None:
+        await auth_cache.cached_memberships("user_1", fetch)
+        clock.now = 29.9
+        assert await auth_cache.cached_memberships("user_1", fetch) == (ORG_A,)
+        assert len(calls) == 1, "an entry inside its window was refetched"
+        clock.now = 30.0
+        await auth_cache.cached_memberships("user_1", fetch)
+
+    anyio.run(scenario)
+
+    assert len(calls) == 2
+
+
+def test_a_verify_slower_than_the_whole_ttl_is_never_cached() -> None:
+    clock, _ = configure(30.0)
+    calls, fetch = slow_verifier(clock, 31.0)
+
+    async def scenario() -> None:
+        await auth_cache.cached_verify("token-a", fetch)
+        # The deadline (t=30) already passed before the fetch returned, so
+        # nothing may be published at all.
+        assert auth_cache._verify_cache._entries == {}  # noqa: SLF001
+        await auth_cache.cached_verify("token-a", fetch)
+
+    anyio.run(scenario)
+
+    assert len(calls) == 2
+
+
+def test_a_membership_fetch_slower_than_the_whole_ttl_is_never_cached() -> None:
+    clock, _ = configure(30.0)
+    calls, fetch = slow_lookup(clock, 31.0)
+
+    async def scenario() -> None:
+        await auth_cache.cached_memberships("user_1", fetch)
+        assert auth_cache._membership_cache._entries == {}  # noqa: SLF001
+        await auth_cache.cached_memberships("user_1", fetch)
+
+    anyio.run(scenario)
+
+    assert len(calls) == 2
+
+
+def test_token_exp_still_shortens_a_fetch_start_deadline() -> None:
+    """`exp` may only shorten the window the fetch-start deadline sets."""
+    clock, wall = configure(30.0)
+    calls, fetch = slow_verifier(clock, 10.0, wall=wall)
+    # exp lands 5s after the fetch returns (t=15), well inside t=30.
+    token = jwt_with_exp(wall.now + 15.0)
+
+    async def scenario() -> None:
+        await auth_cache.cached_verify(token, fetch)
+        clock.now = 14.9
+        await auth_cache.cached_verify(token, fetch)
+        assert len(calls) == 1
+        clock.now = 15.0
+        await auth_cache.cached_verify(token, fetch)
+
+    anyio.run(scenario)
+
+    assert len(calls) == 2
+
+
+def test_a_far_future_token_exp_cannot_lengthen_the_fetch_start_deadline() -> None:
+    clock, wall = configure(30.0)
+    calls, fetch = slow_verifier(clock, 10.0, wall=wall)
+    token = jwt_with_exp(wall.now + 86_400.0)
+
+    async def scenario() -> None:
+        await auth_cache.cached_verify(token, fetch)
+        clock.now = 30.0
+        await auth_cache.cached_verify(token, fetch)
+
+    anyio.run(scenario)
+
+    assert len(calls) == 2

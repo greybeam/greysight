@@ -117,3 +117,35 @@ def test_concurrent_writes_deletes_and_clears_do_not_corrupt_the_cache():
     assert errors == []
     cache.set("final", "value")
     assert cache.get("final") == "value"
+
+
+def test_explicit_expires_at_overrides_the_ttl_in_both_directions():
+    """Callers that know when an entry was really earned may set the deadline."""
+    clock = FakeClock()
+    cache = TtlCache(ttl_seconds=60.0, max_entries=4, clock=clock)
+
+    cache.set("short", "value", expires_at=10.0)
+    cache.set("long", "value", expires_at=100.0)
+
+    clock.now = 9.9
+    assert cache.get("short") == "value"
+    clock.now = 10.0
+    assert cache.get("short") is None
+    clock.now = 99.9
+    assert cache.get("long") == "value"
+    clock.now = 100.0
+    assert cache.get("long") is None
+
+
+def test_explicit_expires_at_does_not_change_eviction_order():
+    """Eviction stays FIFO by insertion, not by deadline."""
+    clock = FakeClock()
+    cache = TtlCache(ttl_seconds=60.0, max_entries=2, clock=clock)
+
+    cache.set("a", 1, expires_at=1000.0)
+    cache.set("b", 2, expires_at=5.0)
+    cache.set("c", 3)
+
+    assert cache.get("a") is None
+    assert cache.get("b") == 2
+    assert cache.get("c") == 3

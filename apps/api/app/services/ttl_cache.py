@@ -38,10 +38,24 @@ class TtlCache:
                 return None
             return value
 
-    def set(self, key: Hashable, value: Any) -> None:
+    def set(
+        self, key: Hashable, value: Any, *, expires_at: float | None = None
+    ) -> None:
+        """Store a value, expiring it ttl_seconds from now by default.
+
+        ``expires_at`` overrides that with an absolute deadline on this
+        cache's clock. It exists for callers whose value was really earned
+        earlier than the moment they publish it — an entry filled from a slow
+        upstream fetch must expire relative to when the fetch *started*, or
+        its freshness window silently becomes TTL plus the fetch duration.
+        Insertion order, and therefore FIFO eviction, is unaffected.
+        """
         with self._lock:
             self._entries.pop(key, None)
-            self._entries[key] = (self._clock() + self._ttl_seconds, value)
+            deadline = (
+                self._clock() + self._ttl_seconds if expires_at is None else expires_at
+            )
+            self._entries[key] = (deadline, value)
             while len(self._entries) > self._max_entries:
                 self._entries.popitem(last=False)
 
