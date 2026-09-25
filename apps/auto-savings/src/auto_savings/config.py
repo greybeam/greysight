@@ -3,6 +3,10 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
+
+Backend = Literal["supabase", "duckdb"]
 
 
 def _int(name: str, default: int) -> int:
@@ -15,10 +19,23 @@ def _float(name: str, default: float) -> float:
     return float(raw) if raw not in (None, "") else default
 
 
+def _backend(name: str, default: Backend) -> Backend:
+    raw = (os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return default
+    if raw in ("supabase", "duckdb"):
+        return raw  # type: ignore[return-value]
+    raise ValueError(
+        f"{name} must be one of 'supabase' or 'duckdb', got {raw!r}"
+    )
+
+
 @dataclass(frozen=True)
 class WorkerConfig:
     supabase_url: str
     supabase_service_role_key: str
+    backend: Backend = "supabase"
+    duckdb_path: Path | None = None
     poll_interval_seconds: float = 3.0
     poll_timeout_seconds: float = 20.0
     socket_timeout_seconds: int = 15
@@ -51,6 +68,29 @@ class WorkerConfig:
     )
 
     def __post_init__(self) -> None:
+        # Backend guards run first so a misconfigured backend cannot be masked
+        # by a later interval error.
+        if self.backend == "duckdb":
+            if self.supabase_url or self.supabase_service_role_key:
+                # Fail loud: silently ignoring Supabase creds under duckdb mode
+                # would let a misconfigured deploy think it was writing to
+                # Supabase when it was writing to a local file.
+                raise ValueError(
+                    "AUTO_SAVINGS_BACKEND=duckdb forbids SUPABASE_URL and "
+                    "SUPABASE_SERVICE_ROLE_KEY; unset them or switch backend."
+                )
+            if self.duckdb_path is None:
+                raise ValueError(
+                    "AUTO_SAVINGS_BACKEND=duckdb requires "
+                    "AUTO_SAVINGS_DUCKDB_PATH to be set."
+                )
+        else:
+            if self.duckdb_path is not None:
+                raise ValueError(
+                    "AUTO_SAVINGS_DUCKDB_PATH is only valid when "
+                    "AUTO_SAVINGS_BACKEND=duckdb."
+                )
+
         # The socket read timeout MUST fire before the watchdog, or the watchdog trips
         # while the pool thread is still blocked → thread leak (Codex R2.1 MED).
         if self.socket_timeout_seconds >= self.poll_timeout_seconds:
@@ -76,9 +116,17 @@ class WorkerConfig:
 
     @classmethod
     def from_environment(cls) -> "WorkerConfig":
+        backend: Backend = _backend("AUTO_SAVINGS_BACKEND", "supabase")
+        duckdb_path_raw = os.environ.get("AUTO_SAVINGS_DUCKDB_PATH")
         return cls(
             supabase_url=os.environ.get("SUPABASE_URL", ""),
-            supabase_service_role_key=os.environ.get("SUPABASE_SERVICE_ROLE_KEY", ""),
+            supabase_service_role_key=os.environ.get(
+                "SUPABASE_SERVICE_ROLE_KEY", ""
+            ),
+            backend=backend,
+            duckdb_path=Path(duckdb_path_raw).expanduser()
+            if duckdb_path_raw
+            else None,
             poll_interval_seconds=_float("AUTO_SAVINGS_POLL_INTERVAL_SECONDS", 3.0),
             poll_timeout_seconds=_float("AUTO_SAVINGS_POLL_TIMEOUT_SECONDS", 20.0),
             socket_timeout_seconds=_int("AUTO_SAVINGS_SOCKET_TIMEOUT_SECONDS", 15),

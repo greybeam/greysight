@@ -7,6 +7,8 @@ dependencies = [
     "httpx==0.28.1",
     "adbc-driver-snowflake[dbapi]==1.11.0",
     "python-dotenv",
+    "duckdb==1.2.2",
+    "pytz==2024.1",
 ]
 
 [dependency-groups]

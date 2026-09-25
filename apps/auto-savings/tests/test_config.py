@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from auto_savings.config import WorkerConfig
@@ -72,4 +74,34 @@ def test_replica_index_must_be_within_num_replicas():
             supabase_service_role_key="k",
             num_replicas=3,
             replica_index=-1,
+        )
+
+
+def test_duckdb_backend_forbids_supabase_env() -> None:
+    with pytest.raises(ValueError, match="forbids SUPABASE"):
+        WorkerConfig(
+            supabase_url="https://x.supabase.co",
+            supabase_service_role_key="svc",
+            backend="duckdb",
+            duckdb_path=Path("/tmp/x.duckdb"),
+        )
+
+
+def test_duckdb_backend_requires_path() -> None:
+    with pytest.raises(ValueError, match="AUTO_SAVINGS_DUCKDB_PATH"):
+        WorkerConfig(
+            supabase_url="",
+            supabase_service_role_key="",
+            backend="duckdb",
+            duckdb_path=None,
+        )
+
+
+def test_supabase_backend_forbids_duckdb_path() -> None:
+    with pytest.raises(ValueError, match="only valid when"):
+        WorkerConfig(
+            supabase_url="https://x.supabase.co",
+            supabase_service_role_key="svc",
+            backend="supabase",
+            duckdb_path=Path("/tmp/x.duckdb"),
         )

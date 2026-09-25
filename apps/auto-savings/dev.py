@@ -41,7 +41,10 @@ def load_local_env(root: Path) -> bool:
 
 if __name__ == "__main__":
     load_local_env(REPO_ROOT)
-    # The worker entrypoint (auto_savings.main) is added in a later task.
+    if len(sys.argv) > 1:
+        from auto_savings.local_bootstrap import run as run_cli
+
+        raise SystemExit(run_cli(sys.argv[1:]))
     from auto_savings.main import run
 
     run()

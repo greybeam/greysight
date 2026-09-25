@@ -96,7 +96,11 @@ in [How Auto Savings works](docs/automated-savings-how-it-works.md).
 
 ### Try Auto Savings locally
 
-Auto Savings currently requires a Supabase backend. A fully local SQLite or DuckDB backend is planned for a future release.
+Auto Savings supports two backends: **Supabase** (recommended for
+multi-tenant deployments) and **DuckDB** (single-user local trial —
+see [docs/local-auto-savings.md](docs/local-auto-savings.md)). The
+Supabase walkthrough below is the multi-tenant path; DuckDB mode
+skips Supabase entirely.
 
 1. Follow the [Supabase setup](docs/local-development.md#supabase-setup), apply
    the migrations in [supabase/migrations](supabase/migrations), and copy
