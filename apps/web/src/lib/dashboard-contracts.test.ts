@@ -376,6 +376,23 @@ describe("parseDashboardView", () => {
     expect(parsed.detailTables.storage[0]?.monthlySpendLabel).toBe("$0.01");
   });
 
+  it("defaults missing warehouse waste on older prepared dashboard views", () => {
+    const legacyPayload: Record<string, unknown> = { ...preparedViewPayload };
+    delete legacyPayload.warehouse_waste;
+
+    const parsed = parseDashboardView(legacyPayload);
+
+    expect(parsed.warehouseWaste).toEqual({
+      basis: "estimated",
+      totalPeriodIdleSpend: 0,
+      totalPeriodIdleSpendLabel: "$0.00",
+      totalProjectedMonthlyIdleSpend: 0,
+      totalProjectedMonthlyIdleSpendLabel: "$0.00",
+      rows: [],
+      isEmpty: true,
+    });
+  });
+
   it("defaults missing capacity balance on older prepared dashboard views", () => {
     const legacyPayload: Record<string, unknown> = { ...preparedViewPayload };
     delete legacyPayload.capacity_balance;

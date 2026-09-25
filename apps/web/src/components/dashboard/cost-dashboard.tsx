@@ -51,6 +51,7 @@ import {
   type AiSpendDetailState,
 } from "./spend-sections";
 import { useSectionStatuses } from "./use-section-statuses";
+import { WasteEstimatorCard } from "./waste-estimator-card";
 
 export type CostDashboardRuntime = {
   accessToken: string | null;
@@ -1176,6 +1177,11 @@ function CostDashboardContent({
                       loadingMessage: loadingMessage ?? undefined,
                     })}
             />
+            {viewModel &&
+            dataReady &&
+            sectionStatuses.warehouse === "ready" ? (
+              <WasteEstimatorCard model={viewModel.warehouseWaste} />
+            ) : null}
             <AiSpendSection
               {...(sectionStatuses.overview === "idle"
                 ? { status: "idle" as const }

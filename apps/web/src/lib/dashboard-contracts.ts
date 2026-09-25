@@ -233,6 +233,25 @@ export type WarehouseSpendViewModel = {
   isEmpty: boolean;
 };
 
+export type WarehouseWasteRow = {
+  name: string;
+  idlePct: number | null;
+  periodIdleSpend: number;
+  periodIdleSpendLabel: string;
+  projectedMonthlyIdleSpend: number;
+  projectedMonthlyIdleSpendLabel: string;
+};
+
+export type WarehouseWasteViewModel = {
+  basis: SpendBasis;
+  totalPeriodIdleSpend: number;
+  totalPeriodIdleSpendLabel: string;
+  totalProjectedMonthlyIdleSpend: number;
+  totalProjectedMonthlyIdleSpendLabel: string;
+  rows: WarehouseWasteRow[];
+  isEmpty: boolean;
+};
+
 export type StorageDatabaseRow = {
   name: string;
   bytes: number;
@@ -335,6 +354,7 @@ export type DashboardView = {
   capacityBalance: CapacityBalanceViewModel;
   totalSpend: TotalSpendViewModel;
   warehouseSpend: WarehouseSpendViewModel;
+  warehouseWaste: WarehouseWasteViewModel;
   storageSpend: StorageSpendViewModel;
   serviceSpend: ServiceSpendViewModel;
   detailTables: DetailTablesViewModel;
@@ -542,6 +562,11 @@ export function parseDashboardView(payload: unknown): DashboardView {
     warehouseSpend: parseWarehouseSpendViewModel(
       readViewRecord(payload, "warehouse_spend", "warehouseSpend"),
     ),
+    warehouseWaste: hasViewValue(payload, "warehouse_waste", "warehouseWaste")
+      ? parseWarehouseWasteViewModel(
+          readViewRecord(payload, "warehouse_waste", "warehouseWaste"),
+        )
+      : emptyWarehouseWasteViewModel(header.currency),
     storageSpend: parseStorageSpendViewModel(
       readViewRecord(payload, "storage_spend", "storageSpend"),
       header.currency,
@@ -811,6 +836,21 @@ function emptyCapacityBalanceViewModel(
   };
 }
 
+function emptyWarehouseWasteViewModel(
+  currency: string,
+): WarehouseWasteViewModel {
+  const zero = formatZeroCurrencyLabel(currency);
+  return {
+    basis: "estimated",
+    totalPeriodIdleSpend: 0,
+    totalPeriodIdleSpendLabel: zero,
+    totalProjectedMonthlyIdleSpend: 0,
+    totalProjectedMonthlyIdleSpendLabel: zero,
+    rows: [],
+    isEmpty: true,
+  };
+}
+
 function parseWarehouseSpendViewModel(
   payload: Record<string, unknown>,
 ): WarehouseSpendViewModel {
@@ -1013,6 +1053,64 @@ function parseWarehouseIdleBarRow(payload: unknown): WarehouseIdleBarRow {
   return {
     ...parseRankedSpendRow(record),
     idlePct: readViewNullableNumber(record, "idle_pct", "idlePct"),
+  };
+}
+
+function parseWarehouseWasteRow(payload: unknown): WarehouseWasteRow {
+  const record = asViewRecord(payload);
+  return {
+    name: readViewString(record, "name"),
+    idlePct: readViewNullableNumber(record, "idle_pct", "idlePct"),
+    periodIdleSpend: readViewNumber(
+      record,
+      "period_idle_spend",
+      "periodIdleSpend",
+    ),
+    periodIdleSpendLabel: readViewString(
+      record,
+      "period_idle_spend_label",
+      "periodIdleSpendLabel",
+    ),
+    projectedMonthlyIdleSpend: readViewNumber(
+      record,
+      "projected_monthly_idle_spend",
+      "projectedMonthlyIdleSpend",
+    ),
+    projectedMonthlyIdleSpendLabel: readViewString(
+      record,
+      "projected_monthly_idle_spend_label",
+      "projectedMonthlyIdleSpendLabel",
+    ),
+  };
+}
+
+function parseWarehouseWasteViewModel(
+  payload: Record<string, unknown>,
+): WarehouseWasteViewModel {
+  return {
+    basis: readViewSpendBasis(payload, "basis"),
+    totalPeriodIdleSpend: readViewNumber(
+      payload,
+      "total_period_idle_spend",
+      "totalPeriodIdleSpend",
+    ),
+    totalPeriodIdleSpendLabel: readViewString(
+      payload,
+      "total_period_idle_spend_label",
+      "totalPeriodIdleSpendLabel",
+    ),
+    totalProjectedMonthlyIdleSpend: readViewNumber(
+      payload,
+      "total_projected_monthly_idle_spend",
+      "totalProjectedMonthlyIdleSpend",
+    ),
+    totalProjectedMonthlyIdleSpendLabel: readViewString(
+      payload,
+      "total_projected_monthly_idle_spend_label",
+      "totalProjectedMonthlyIdleSpendLabel",
+    ),
+    rows: readViewArray(payload, "rows").map(parseWarehouseWasteRow),
+    isEmpty: readViewBoolean(payload, "is_empty", "isEmpty"),
   };
 }
 

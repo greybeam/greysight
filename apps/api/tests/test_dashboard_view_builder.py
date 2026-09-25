@@ -14,6 +14,7 @@ from app.services.dashboard_view_builder import (
     _trailing_average_spend,
     _build_rate_index,
     _build_storage_rate_index,
+    _build_warehouse_waste,
     _credits_to_dollars,
     _format_bytes,
     _format_currency,
@@ -2285,3 +2286,227 @@ def test_warehouse_bars_reject_missing_attribution_field() -> None:
             start_date=date(2026, 6, 8),
             end_date=date(2026, 6, 8),
         )
+
+
+def _waste_convert(
+    credits: float,
+    usage_date: date,
+    service_type: str,
+    rating_type: str | None = None,
+) -> float:
+    del usage_date, service_type, rating_type
+    return credits * 2.0
+
+
+def test_warehouse_waste_dollarizes_via_rate_index() -> None:
+    view_range = DashboardViewRange(
+        mode="custom",
+        window_days=None,
+        start_date=date(2026, 6, 1),
+        end_date=date(2026, 6, 10),
+    )
+    model = _build_warehouse_waste(
+        warehouse_rows=[
+            {
+                "usage_date": date(2026, 6, 1),
+                "warehouse_name": "A",
+                "credits_used": 108.0,
+                "credits_used_compute": 100.0,
+                "credits_attributed_queries": 25.0,
+            },
+            {
+                "usage_date": date(2026, 6, 1),
+                "warehouse_name": "B",
+                "credits_used": 54.0,
+                "credits_used_compute": 50.0,
+                "credits_attributed_queries": 30.0,
+            },
+        ],
+        basis="estimated",
+        currency="USD",
+        convert=_waste_convert,
+        view_range=view_range,
+    )
+    # Window is 10 days, so monthly multiplier is 30/10 = 3.
+    # A idle credits 75 * $2 = $150 period, $450 monthly.
+    # B idle credits 20 * $2 = $40 period, $120 monthly.
+    assert [row.name for row in model.rows] == ["A", "B"]
+    assert model.rows[0].period_idle_spend == pytest.approx(150.0)
+    assert model.rows[0].projected_monthly_idle_spend == pytest.approx(450.0)
+    assert model.rows[0].idle_pct == pytest.approx(0.75)
+    assert model.rows[1].period_idle_spend == pytest.approx(40.0)
+    assert model.rows[1].projected_monthly_idle_spend == pytest.approx(120.0)
+    assert model.total_period_idle_spend == pytest.approx(190.0)
+    assert model.total_projected_monthly_idle_spend == pytest.approx(570.0)
+    assert model.is_empty is False
+
+
+def test_warehouse_waste_caps_rows_at_five() -> None:
+    view_range = DashboardViewRange(
+        mode="custom",
+        window_days=None,
+        start_date=date(2026, 6, 1),
+        end_date=date(2026, 6, 1),
+    )
+    warehouse_rows = [
+        {
+            "usage_date": date(2026, 6, 1),
+            "warehouse_name": f"WH{index}",
+            "credits_used": float(100 - index * 10),
+            "credits_used_compute": float(100 - index * 10),
+            "credits_attributed_queries": 0.0,
+        }
+        for index in range(8)
+    ]
+    model = _build_warehouse_waste(
+        warehouse_rows=warehouse_rows,
+        basis="estimated",
+        currency="USD",
+        convert=_waste_convert,
+        view_range=view_range,
+    )
+    assert [row.name for row in model.rows] == [
+        "WH0",
+        "WH1",
+        "WH2",
+        "WH3",
+        "WH4",
+    ]
+
+
+def test_warehouse_waste_empty_when_no_idle() -> None:
+    view_range = DashboardViewRange(
+        mode="custom",
+        window_days=None,
+        start_date=date(2026, 6, 1),
+        end_date=date(2026, 6, 1),
+    )
+    model = _build_warehouse_waste(
+        warehouse_rows=[
+            {
+                "usage_date": date(2026, 6, 1),
+                "warehouse_name": "BUSY",
+                "credits_used": 10.0,
+                "credits_used_compute": 10.0,
+                "credits_attributed_queries": 10.0,
+            }
+        ],
+        basis="estimated",
+        currency="USD",
+        convert=_waste_convert,
+        view_range=view_range,
+    )
+    assert model.is_empty is True
+    assert model.total_period_idle_spend == 0.0
+    assert model.rows == []
+
+
+def test_warehouse_waste_totals_cover_all_warehouses_not_just_displayed() -> None:
+    view_range = DashboardViewRange(
+        mode="custom",
+        window_days=None,
+        start_date=date(2026, 6, 1),
+        end_date=date(2026, 6, 1),
+    )
+    warehouse_rows = [
+        {
+            "usage_date": date(2026, 6, 1),
+            "warehouse_name": f"WH{index}",
+            "credits_used": float(100 - index * 10),
+            "credits_used_compute": float(100 - index * 10),
+            "credits_attributed_queries": 0.0,
+        }
+        for index in range(7)
+    ]
+    model = _build_warehouse_waste(
+        warehouse_rows=warehouse_rows,
+        basis="estimated",
+        currency="USD",
+        convert=_waste_convert,
+        view_range=view_range,
+    )
+    # Idle credits: 100+90+80+70+60+50+40 = 490; at $2/credit = $980.
+    assert len(model.rows) == 5
+    assert model.total_period_idle_spend == pytest.approx(980.0)
+    # 1-day window -> multiplier 30.
+    assert model.total_projected_monthly_idle_spend == pytest.approx(29400.0)
+
+
+def test_warehouse_waste_hides_fully_attributed_warehouses() -> None:
+    view_range = DashboardViewRange(
+        mode="custom",
+        window_days=None,
+        start_date=date(2026, 6, 1),
+        end_date=date(2026, 6, 1),
+    )
+    model = _build_warehouse_waste(
+        warehouse_rows=[
+            {
+                "usage_date": date(2026, 6, 1),
+                "warehouse_name": "BUSY",
+                "credits_used": 10.0,
+                "credits_used_compute": 10.0,
+                "credits_attributed_queries": 10.0,
+            },
+            {
+                "usage_date": date(2026, 6, 1),
+                "warehouse_name": "IDLE",
+                "credits_used": 10.0,
+                "credits_used_compute": 10.0,
+                "credits_attributed_queries": 4.0,
+            },
+        ],
+        basis="estimated",
+        currency="USD",
+        convert=_waste_convert,
+        view_range=view_range,
+    )
+    assert [row.name for row in model.rows] == ["IDLE"]
+    assert model.is_empty is False
+
+
+def test_warehouse_waste_null_attribution_collapses_warehouse() -> None:
+    view_range = DashboardViewRange(
+        mode="custom",
+        window_days=None,
+        start_date=date(2026, 6, 1),
+        end_date=date(2026, 6, 2),
+    )
+    model = _build_warehouse_waste(
+        warehouse_rows=[
+            {
+                "usage_date": date(2026, 6, 1),
+                "warehouse_name": "ADAPT",
+                "credits_used": 10.0,
+                "credits_used_compute": 10.0,
+                "credits_attributed_queries": 4.0,
+            },
+            {
+                "usage_date": date(2026, 6, 2),
+                "warehouse_name": "ADAPT",
+                "credits_used": 10.0,
+                "credits_used_compute": 10.0,
+                "credits_attributed_queries": None,
+            },
+            {
+                "usage_date": date(2026, 6, 1),
+                "warehouse_name": "IDLE",
+                "credits_used": 10.0,
+                "credits_used_compute": 10.0,
+                "credits_attributed_queries": 0.0,
+            },
+        ],
+        basis="estimated",
+        currency="USD",
+        convert=_waste_convert,
+        view_range=view_range,
+    )
+    # IDLE: 10 idle credits * $2 = $20; 2-day window -> multiplier 15 -> $300.
+    assert [row.name for row in model.rows] == ["IDLE", "ADAPT"]
+    assert model.rows[0].period_idle_spend == pytest.approx(20.0)
+    assert model.rows[0].projected_monthly_idle_spend == pytest.approx(300.0)
+    adapt = model.rows[1]
+    assert adapt.idle_pct is None
+    assert adapt.period_idle_spend == 0.0
+    # ADAPT's partial day-1 idle dollars must NOT leak into the total.
+    assert model.total_period_idle_spend == pytest.approx(20.0)

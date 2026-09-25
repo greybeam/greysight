@@ -35,6 +35,8 @@ from app.services.dashboard_view_models import (
     WarehouseIdleBarRow,
     WarehousePoint,
     WarehouseSpendViewModel,
+    WarehouseWasteRow,
+    WarehouseWasteViewModel,
 )
 
 DEFAULT_VIEW_WINDOW_DAYS = 30
@@ -438,6 +440,14 @@ def _build_dashboard_view_for_ranges(
         currency=currency,
         convert=convert,
     )
+    # warehouse_rows is already filtered to view_range.
+    warehouse_waste = _build_warehouse_waste(
+        warehouse_rows=warehouse_rows,
+        basis=basis,
+        currency=currency,
+        convert=convert,
+        view_range=view_range,
+    )
     storage_rates = _build_storage_rate_index(
         _dataset_rows(datasets, "rate_sheet_daily")
     )
@@ -491,6 +501,7 @@ def _build_dashboard_view_for_ranges(
         capacity_balance=capacity_balance,
         total_spend=total_spend,
         warehouse_spend=warehouse_spend,
+        warehouse_waste=warehouse_waste,
         storage_spend=storage_spend,
         service_spend=service_spend,
         detail_tables=DetailTablesViewModel(
@@ -692,6 +703,7 @@ def _empty_dashboard_view(
         capacity_balance=_empty_capacity_balance(currency),
         total_spend=_empty_total_spend(currency),
         warehouse_spend=_empty_warehouse_spend(currency),
+        warehouse_waste=_empty_warehouse_waste(currency),
         storage_spend=_empty_storage_spend(currency),
         service_spend=_empty_service_spend(),
         detail_tables=DetailTablesViewModel(
@@ -745,6 +757,18 @@ def _empty_warehouse_spend(currency: str) -> WarehouseSpendViewModel:
         ranked_users=[],
         warehouse_bars=[],
         user_bars=[],
+        is_empty=True,
+    )
+
+
+def _empty_warehouse_waste(currency: str) -> WarehouseWasteViewModel:
+    return WarehouseWasteViewModel(
+        basis="estimated",
+        total_period_idle_spend=0.0,
+        total_period_idle_spend_label=_format_currency(0.0, currency),
+        total_projected_monthly_idle_spend=0.0,
+        total_projected_monthly_idle_spend_label=_format_currency(0.0, currency),
+        rows=[],
         is_empty=True,
     )
 
@@ -1318,6 +1342,124 @@ def _build_warehouse_spend(
         warehouse_bars=warehouse_bars,
         user_bars=_build_ranked_bar_rows(ranked_users),
         is_empty=len(ranked_warehouses) == 0,
+    )
+
+
+WASTE_TABLE_ROW_LIMIT = 5
+
+
+def _build_warehouse_waste(
+    *,
+    warehouse_rows: list[DatasetRow],
+    basis: SpendBasis,
+    currency: str,
+    convert: ConvertCredits,
+    view_range: DashboardViewRange,
+) -> WarehouseWasteViewModel:
+    """Per-warehouse recoverable idle spend, dollarized and projected monthly.
+
+    Idle credits are re-derived here (not imported from cost_metrics) because
+    the view builder already owns per-row ``convert`` — running the credits
+    through the same rate index that priced ``warehouse_spend`` keeps the two
+    sections dollar-consistent to the cent.
+    """
+    compute_by_wh: dict[str, float] = {}
+    attributed_by_wh: dict[str, float | None] = {}
+    idle_dollars_by_wh: dict[str, float] = {}
+    for row in warehouse_rows:
+        warehouse_name = _string_field(row, "warehouse_name", "Unknown warehouse")
+        usage_date = _as_date(row["usage_date"])
+        compute_credits = _required_float_field(
+            row, "warehouse_spend_daily", "credits_used_compute"
+        )
+        if compute_credits < 0.0:
+            raise ValueError(
+                "warehouse_spend_daily credits_used_compute must be >= 0"
+            )
+        attributed = _required_nullable_float_field(
+            row, "warehouse_spend_daily", "credits_attributed_queries"
+        )
+        compute_by_wh[warehouse_name] = (
+            compute_by_wh.get(warehouse_name, 0.0) + compute_credits
+        )
+        current_attributed = attributed_by_wh.get(warehouse_name, 0.0)
+        if current_attributed is None or attributed is None:
+            attributed_by_wh[warehouse_name] = None
+        else:
+            attributed_by_wh[warehouse_name] = current_attributed + attributed
+
+        if attributed is not None:
+            idle_credits_row = compute_credits - attributed
+            if idle_credits_row < -_FLOAT_EPSILON:
+                raise ValueError(
+                    "warehouse_spend_daily credits_used_compute must be "
+                    ">= credits_attributed_queries"
+                )
+            idle_credits_row = max(idle_credits_row, 0.0)
+            idle_dollars_by_wh[warehouse_name] = idle_dollars_by_wh.get(
+                warehouse_name, 0.0
+            ) + convert(
+                idle_credits_row,
+                usage_date,
+                "WAREHOUSE_METERING",
+                "COMPUTE",
+            )
+
+    day_count = (view_range.end_date - view_range.start_date).days + 1
+    monthly_multiplier = 30.0 / day_count if day_count > 0 else 0.0
+
+    rows: list[WarehouseWasteRow] = []
+    for warehouse_name, compute in compute_by_wh.items():
+        if compute <= 0.0:
+            continue
+        attributed = attributed_by_wh.get(warehouse_name)
+        if attributed is None:
+            idle_pct = None
+            period_idle = 0.0
+        else:
+            idle_credits = max(compute - attributed, 0.0)
+            idle_pct = idle_credits / compute
+            period_idle = idle_dollars_by_wh.get(warehouse_name, 0.0)
+        projected_monthly = period_idle * monthly_multiplier
+        rows.append(
+            WarehouseWasteRow(
+                name=warehouse_name,
+                idle_pct=idle_pct,
+                period_idle_spend=period_idle,
+                period_idle_spend_label=_format_currency(period_idle, currency),
+                projected_monthly_idle_spend=projected_monthly,
+                projected_monthly_idle_spend_label=_format_currency(
+                    projected_monthly, currency
+                ),
+            )
+        )
+    rows.sort(key=lambda waste_row: (-waste_row.period_idle_spend, waste_row.name))
+
+    # Totals cover every warehouse, not just the displayed top N, so the KPI
+    # labels ("Idle spend this period", "Projected monthly waste") are true.
+    total_period = sum(waste_row.period_idle_spend for waste_row in rows)
+    total_monthly = sum(
+        waste_row.projected_monthly_idle_spend for waste_row in rows
+    )
+    # Fully attributed warehouses (0 idle) are not "recoverable waste" and are
+    # hidden. Null-attribution warehouses stay visible with idle_pct=None so the
+    # UI can render an em dash instead of silently dropping them.
+    display_rows = [
+        waste_row
+        for waste_row in rows
+        if waste_row.period_idle_spend > 0.0 or waste_row.idle_pct is None
+    ][:WASTE_TABLE_ROW_LIMIT]
+
+    return WarehouseWasteViewModel(
+        basis=basis,
+        total_period_idle_spend=total_period,
+        total_period_idle_spend_label=_format_currency(total_period, currency),
+        total_projected_monthly_idle_spend=total_monthly,
+        total_projected_monthly_idle_spend_label=_format_currency(
+            total_monthly, currency
+        ),
+        rows=display_rows,
+        is_empty=total_period <= 0.0,
     )
 
 
