@@ -64,6 +64,16 @@ class Settings(BaseSettings):
         le=300,
         validation_alias=AliasChoices("GREYSIGHT_AUTH_CACHE_TTL_SECONDS"),
     )
+    # Waste alert digest — see docs/waste-alerts.md
+    waste_alert_enabled: bool = False
+    waste_alert_webhook_url: str | None = None
+    waste_alert_monthly_threshold_usd: float = Field(default=100.0, ge=0)
+    # Inclusive window length; matches dashboard DEFAULT_VIEW_WINDOW_DAYS.
+    waste_alert_window_days: int = Field(default=30, gt=0, le=365)
+    waste_alert_cooldown_hours: int = Field(default=168, gt=0)
+    waste_alert_currency: str = "USD"
+    waste_alert_backend: Literal["memory", "supabase", "duckdb"] = "memory"
+    waste_alert_duckdb_path: str = "./greysight-waste-alerts.duckdb"
 
     @field_validator(
         "storage_price_usd_per_tb_month",

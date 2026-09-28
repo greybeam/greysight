@@ -6,6 +6,7 @@ from typing import Self
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.models.waste_alert_state import WasteAlertState
 
 DashboardRunSource = Literal["demo", "snowflake"]
 DashboardRunStatus = Literal[

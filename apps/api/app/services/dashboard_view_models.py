@@ -134,6 +134,25 @@ class WarehouseSpendViewModel(BaseModel):
     is_empty: bool
 
 
+class WarehouseWasteRow(BaseModel):
+    name: str
+    idle_pct: float | None
+    period_idle_spend: float
+    period_idle_spend_label: str
+    projected_monthly_idle_spend: float
+    projected_monthly_idle_spend_label: str
+
+
+class WarehouseWasteViewModel(BaseModel):
+    basis: SpendBasis
+    total_period_idle_spend: float
+    total_period_idle_spend_label: str
+    total_projected_monthly_idle_spend: float
+    total_projected_monthly_idle_spend_label: str
+    rows: list[WarehouseWasteRow]
+    is_empty: bool
+
+
 class StorageDatabaseRow(BaseModel):
     name: str
     bytes: float

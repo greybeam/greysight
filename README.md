@@ -26,6 +26,9 @@ Or run it yourself: using the quick start below.
 - **Cost observability:** Attribute Snowflake spend, inspect warehouse and query
   costs, and review usage trends from one dashboard.
 - **Auto Savings:** Reduce idle compute by suspending active warehouses that have no running queries.
+- **Waste alerts:** Scheduled Slack digest of warehouses whose projected
+  monthly idle spend crosses a configurable threshold, deduplicated per
+  warehouse. See [docs/waste-alerts.md](docs/waste-alerts.md).
 
 ## Quick start
 
@@ -169,6 +172,7 @@ credentials.
 - [Snowflake setup](docs/snowflake-setup.md)
 - [How Auto Savings works](docs/automated-savings-how-it-works.md)
 - [Auto Savings operations guide](docs/automated-savings.md)
+- [Waste alerts](docs/waste-alerts.md)
 - [Security model](docs/security-model.md)
 - [Deployment](docs/deployment.md)
 - [Dependency compatibility](docs/dependency-compatibility.md)
