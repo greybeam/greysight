@@ -146,6 +146,7 @@ def _rows(**overrides) -> list[dict]:
         "queued": 0,
         "quiescing": 0,
         "auto_suspend": 300,
+        "scaling_policy": "STANDARD",
         "auto_resume": "true",
         "resumed_on": NOW - timedelta(seconds=90),
         "created_on": CREATED_ON,
@@ -246,6 +247,9 @@ def test_authorizes_immediately_before_suspend_and_audits_acceptance():
         observed_min_cluster_count=1,
         observed_max_cluster_count=1,
         observed_at=NOW,
+        observed_size="X-Small",
+        observed_auto_suspend=300,
+        observed_scaling_policy="STANDARD",
     )
 
 
@@ -438,6 +442,31 @@ def test_unknown_cluster_counts_are_eligible_and_audited_as_null():
         event.observed_min_cluster_count,
         event.observed_max_cluster_count,
     ) == (None, None, None)
+
+
+def test_event_records_size_and_auto_suspend_for_savings_estimate():
+    store = TrackingStore()
+
+    _run(
+        store,
+        rows=_rows(size="Large", auto_suspend=120, scaling_policy="ECONOMY"),
+    )
+
+    [event] = store.events
+    assert (
+        event.observed_size,
+        event.observed_auto_suspend,
+        event.observed_scaling_policy,
+    ) == ("Large", 120, "ECONOMY")
+
+
+def test_unparseable_auto_suspend_is_audited_as_null():
+    store = TrackingStore()
+
+    _run(store, rows=_rows(auto_suspend="never"))
+
+    [event] = store.events
+    assert event.observed_auto_suspend is None
 
 
 def test_identity_mismatch_guardedly_deletes_stale_enrollment():

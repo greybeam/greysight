@@ -12,6 +12,10 @@ import {
   type AutomatedSavingsStatus,
   type WarehouseRow,
 } from "../../lib/automated-savings-api";
+import {
+  isAutoSavingsMockEnabled,
+  MOCK_ORG_ID,
+} from "../../lib/automated-savings-mock";
 import { queryKeys } from "../../lib/query-keys";
 import {
   useQueryIdentity,
@@ -28,6 +32,7 @@ import {
   OptInGate,
   UNKNOWN_ROLE_PLACEHOLDER,
 } from "./opt-in-gate";
+import { SavingsChart } from "./savings-chart";
 import { SuspensionEventsTable } from "./suspension-events-table";
 import { SuspensionsChart } from "./suspensions-chart";
 import { WarehouseTable } from "./warehouse-table";
@@ -89,10 +94,16 @@ function BlockingOptInModal({ children }: { children: React.ReactNode }) {
 
 export function AutomatedSavingsShell() {
   const account = useAccountChrome();
-  const orgId = account?.activeOrganizationId ?? null;
+  // Mock mode (local dev without Supabase) stands in an admin org when no real
+  // organization is signed in.
+  const useMockOrg = isAutoSavingsMockEnabled() && !account?.activeOrganizationId;
+  const orgId = useMockOrg
+    ? MOCK_ORG_ID
+    : (account?.activeOrganizationId ?? null);
   const accessToken = account?.accessToken ?? null;
-  const role =
-    account?.organizations.find((org) => org.id === orgId)?.role ?? null;
+  const role = useMockOrg
+    ? "owner"
+    : (account?.organizations.find((org) => org.id === orgId)?.role ?? null);
   const isAdmin = role === "owner" || role === "admin";
 
   const identity = useQueryIdentity();
@@ -476,6 +487,11 @@ export function AutomatedSavingsShell() {
 
             {status.agreed && hasEnabledConfig ? (
               <>
+                <SavingsChart
+                  key={`savings-${orgId}`}
+                  accessToken={accessToken}
+                  orgId={orgId}
+                />
                 <SuspensionsChart
                   key={`chart-${orgId}`}
                   accessToken={accessToken}

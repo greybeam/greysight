@@ -776,6 +776,8 @@ begin
               'automated_savings_delete_stale_enrollment',
               'automated_savings_worker_tenants',
               'automated_savings_daily_suspensions',
+              'automated_savings_daily_savings',
+              'automated_savings_tail_cluster_seconds',
               'automated_savings_events_page'
           )
           and grantee in ('PUBLIC', 'anon', 'authenticated')
@@ -794,6 +796,8 @@ begin
               'automated_savings_delete_stale_enrollment',
               'automated_savings_worker_tenants',
               'automated_savings_daily_suspensions',
+              'automated_savings_daily_savings',
+              'automated_savings_tail_cluster_seconds',
               'automated_savings_events_page'
           )
           and grantee not in ('postgres', 'service_role')
@@ -813,6 +817,8 @@ begin
               'automated_savings_delete_stale_enrollment',
               'automated_savings_worker_tenants',
               'automated_savings_daily_suspensions',
+              'automated_savings_daily_savings',
+              'automated_savings_tail_cluster_seconds',
               'automated_savings_events_page'
           )
           and (
@@ -852,6 +858,10 @@ begin
                  'uuid, text, timestamp with time zone, timestamp with time zone'),
                 ('automated_savings_worker_tenants', ''),
                 ('automated_savings_daily_suspensions', 'uuid, integer, date'),
+                ('automated_savings_daily_savings',
+                 'uuid, integer, date, timestamp with time zone, integer, integer, integer, integer, integer, integer, integer'),
+                ('automated_savings_tail_cluster_seconds',
+                 'double precision, integer, integer, double precision, double precision'),
                 ('automated_savings_events_page',
                  'uuid, integer, timestamp with time zone, bigint')
         ) expected(name, arguments)

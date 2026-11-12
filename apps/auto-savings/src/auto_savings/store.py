@@ -43,6 +43,9 @@ class SavingsEvent:
     observed_min_cluster_count: int | None
     observed_max_cluster_count: int | None
     observed_at: datetime
+    observed_size: str | None = None
+    observed_auto_suspend: int | None = None
+    observed_scaling_policy: str | None = None
 
 
 class StoreError(RuntimeError):
@@ -240,6 +243,9 @@ class SupabaseStore:
             "observed_min_cluster_count": event.observed_min_cluster_count,
             "observed_max_cluster_count": event.observed_max_cluster_count,
             "observed_at": event.observed_at.isoformat(),
+            "observed_size": event.observed_size,
+            "observed_auto_suspend": event.observed_auto_suspend,
+            "observed_scaling_policy": event.observed_scaling_policy,
         }
         try:
             with self._client() as client:

@@ -47,6 +47,7 @@ const toggleWarehouseMock = vi.fn();
 // surfacing their own error alerts and breaking role="alert" queries below.
 const fetchSuspensionStatsMock = vi.fn();
 const fetchSuspensionEventsMock = vi.fn();
+const fetchSavingsStatsMock = vi.fn();
 
 vi.mock("../../lib/automated-savings-api", async () => {
   const actual = await vi.importActual<
@@ -64,6 +65,7 @@ vi.mock("../../lib/automated-savings-api", async () => {
       fetchSuspensionStatsMock(...args),
     fetchSuspensionEvents: (...args: unknown[]) =>
       fetchSuspensionEventsMock(...args),
+    fetchSavingsStats: (...args: unknown[]) => fetchSavingsStatsMock(...args),
   };
 });
 
@@ -128,6 +130,16 @@ describe("AutomatedSavingsShell", () => {
     fetchSuspensionEventsMock.mockResolvedValue({
       events: [],
       nextCursor: null,
+    });
+    fetchSavingsStatsMock.mockResolvedValue({
+      days: 7,
+      pricePerCredit: 3,
+      totalDollars: 0,
+      totalAvoidedHours: 0,
+      totalSuspensions: 0,
+      assumedSettingsCount: 0,
+      warehouses: [],
+      buckets: [],
     });
   });
 
@@ -333,6 +345,7 @@ describe("AutomatedSavingsShell", () => {
     ).toBeInTheDocument();
     await waitFor(() => expect(fetchSuspensionStatsMock).toHaveBeenCalled());
     await waitFor(() => expect(fetchSuspensionEventsMock).toHaveBeenCalled());
+    await waitFor(() => expect(fetchSavingsStatsMock).toHaveBeenCalled());
     expect(screen.getByText(/1 of 1 enabled/i)).toBeInTheDocument();
     const details = screen.getByText("Warehouse configuration").closest("details");
     expect(details).not.toHaveAttribute("open");

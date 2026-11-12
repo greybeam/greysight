@@ -249,6 +249,9 @@ def _record_accepted_event(
         observed_min_cluster_count=snapshot.min_cluster_count,
         observed_max_cluster_count=snapshot.max_cluster_count,
         observed_at=now,
+        observed_size=snapshot.size,
+        observed_auto_suspend=snapshot.auto_suspend,
+        observed_scaling_policy=snapshot.scaling_policy,
     )
     try:
         store.record_event(event)
