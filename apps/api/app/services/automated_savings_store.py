@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Literal
@@ -61,6 +62,16 @@ class DailySuspensionsRow:
 
 
 @dataclass(frozen=True)
+class DailySavingsRow:
+    day: str
+    warehouse_name: str
+    suspension_count: int
+    avoided_seconds: float
+    avoided_credits: float
+    assumed_settings_count: int
+
+
+@dataclass(frozen=True)
 class EventRow:
     id: int
     created_at: str
@@ -95,6 +106,7 @@ class SupabaseAutomatedSavingsStore:
         self._daily_suspensions_url = (
             f"{base}/rest/v1/rpc/automated_savings_daily_suspensions"
         )
+        self._daily_savings_url = f"{base}/rest/v1/rpc/automated_savings_daily_savings"
         self._events_page_url = f"{base}/rest/v1/rpc/automated_savings_events_page"
         self._service_role_key = service_role_key
         self._timeout_seconds = timeout_seconds
@@ -275,6 +287,20 @@ class SupabaseAutomatedSavingsStore:
         )
         return [_parse_daily_suspensions_row(row) for row in rows]
 
+    def daily_savings(
+        self, organization_id: str, day_count: int, end_day: str, now: str
+    ) -> list[DailySavingsRow]:
+        rows = self._call_read_rpc(
+            self._daily_savings_url,
+            {
+                "p_organization_id": organization_id,
+                "p_day_count": day_count,
+                "p_end_day": end_day,
+                "p_now": now,
+            },
+        )
+        return [_parse_daily_savings_row(row) for row in rows]
+
     def list_events(
         self,
         organization_id: str,
@@ -349,6 +375,36 @@ def _parse_daily_suspensions_row(row: dict[str, Any]) -> DailySuspensionsRow:
         )
     except (KeyError, TypeError, ValueError):
         raise AutomatedSavingsStoreError(kind="malformed_row") from None
+
+
+def _parse_daily_savings_row(row: dict[str, Any]) -> DailySavingsRow:
+    try:
+        counts = _parse_daily_suspensions_row(row)
+        assumed = row["assumed_settings_count"]
+        if isinstance(assumed, bool) or not isinstance(assumed, int) or assumed < 0:
+            raise ValueError("assumed_settings_count must be a non-negative integer")
+        return DailySavingsRow(
+            day=counts.day,
+            warehouse_name=counts.warehouse_name,
+            suspension_count=counts.suspension_count,
+            avoided_seconds=_require_non_negative_number(row, "avoided_seconds"),
+            avoided_credits=_require_non_negative_number(row, "avoided_credits"),
+            assumed_settings_count=assumed,
+        )
+    except AutomatedSavingsStoreError:
+        raise
+    except (KeyError, TypeError, ValueError):
+        raise AutomatedSavingsStoreError(kind="malformed_row") from None
+
+
+def _require_non_negative_number(row: dict[str, Any], field: str) -> float:
+    value = row[field]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} must be a number")
+    number = float(value)
+    if not math.isfinite(number) or number < 0:
+        raise ValueError(f"{field} must be a finite non-negative number")
+    return number
 
 
 def _parse_event_row(row: dict[str, Any]) -> EventRow:

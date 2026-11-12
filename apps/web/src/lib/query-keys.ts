@@ -76,6 +76,12 @@ export const queryKeys = {
       params: Readonly<Record<string, QueryKeyParamValue>>,
     ) =>
       [...autoSavingsScope(userId, orgId), "suspension-stats", params] as const,
+    savings: (
+      userId: string,
+      orgId: string,
+      params: Readonly<Record<string, QueryKeyParamValue>>,
+    ) =>
+      [...autoSavingsScope(userId, orgId), "savings-stats", params] as const,
     events: (userId: string, orgId: string, cursor: string | null) =>
       [...autoSavingsScope(userId, orgId), "suspension-events", cursor] as const,
   },

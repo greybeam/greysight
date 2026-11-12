@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   agree,
   checkAccess,
+  fetchSavingsStats,
   fetchStatus,
   fetchWarehouses,
   parseSuspensionEvent,
@@ -269,5 +270,58 @@ describe("parseSuspensionStatsBucket", () => {
     expect(() => parseSuspensionStatsBucket(raw)).toThrow(
       "Malformed automated-savings API response",
     );
+  });
+});
+
+describe("fetchSavingsStats", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const valid = {
+    days: 7,
+    price_per_credit: 3,
+    total_dollars: 7.5,
+    total_avoided_hours: 1.5,
+    total_suspensions: 5,
+    assumed_settings_count: 1,
+    warehouses: ["WH1"],
+    buckets: [{ day: "2026-07-09", dollars: { WH1: 7.5 } }],
+  };
+
+  it("maps the savings contract to camelCase", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify(valid), { status: 200 }));
+
+    const stats = await fetchSavingsStats("org-1", 7, { accessToken: "t" });
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      "/api/automated-savings/org-1/stats/savings?days=7",
+    );
+    expect(stats).toEqual({
+      days: 7,
+      pricePerCredit: 3,
+      totalDollars: 7.5,
+      totalAvoidedHours: 1.5,
+      totalSuspensions: 5,
+      assumedSettingsCount: 1,
+      warehouses: ["WH1"],
+      buckets: [{ day: "2026-07-09", dollars: { WH1: 7.5 } }],
+    });
+  });
+
+  it("rejects negative dollar values", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ...valid,
+          buckets: [{ day: "2026-07-09", dollars: { WH1: -1 } }],
+        }),
+        { status: 200 },
+      ),
+    );
+
+    await expect(fetchSavingsStats("org-1", 7)).rejects.toThrow(/Malformed/);
   });
 });

@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from app.services.automated_savings_store import (
+    DailySavingsRow,
     AutomatedSavingsStoreError,
     DailySuspensionsRow,
     EventRow,
@@ -455,3 +456,75 @@ def test_read_rpc_http_failure_raises_store_error():
         _rpc_store(handler).daily_suspensions("org-1", 7, "2026-07-15")
     assert exc_info.value.kind == "http_status"
     assert exc_info.value.status_code == 503
+
+
+def test_daily_savings_calls_rpc_and_parses_rows():
+    captured = {}
+
+    def handler(request):
+        captured["url"] = str(request.url)
+        captured["json"] = json.loads(request.read())
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "day": "2026-07-14",
+                    "warehouse_name": "COMPUTE_WH",
+                    "suspension_count": 3,
+                    "avoided_seconds": 717,
+                    "avoided_credits": 0.19916,
+                    "assumed_settings_count": 1,
+                }
+            ],
+        )
+
+    rows = _rpc_store(handler).daily_savings(
+        "org-1", 7, "2026-07-15", "2026-07-15T12:00:00+00:00"
+    )
+
+    assert captured["url"].endswith("/rest/v1/rpc/automated_savings_daily_savings")
+    assert captured["json"] == {
+        "p_organization_id": "org-1",
+        "p_day_count": 7,
+        "p_end_day": "2026-07-15",
+        "p_now": "2026-07-15T12:00:00+00:00",
+    }
+    assert rows == [
+        DailySavingsRow(
+            day="2026-07-14",
+            warehouse_name="COMPUTE_WH",
+            suspension_count=3,
+            avoided_seconds=717.0,
+            avoided_credits=0.19916,
+            assumed_settings_count=1,
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"avoided_seconds": -1},
+        {"avoided_credits": "1.0"},
+        {"avoided_credits": True},
+        {"assumed_settings_count": 1.5},
+        {"suspension_count": -1},
+    ],
+)
+def test_daily_savings_rejects_malformed_rows(override):
+    row = {
+        "day": "2026-07-14",
+        "warehouse_name": "COMPUTE_WH",
+        "suspension_count": 1,
+        "avoided_seconds": 10,
+        "avoided_credits": 0.1,
+        "assumed_settings_count": 0,
+        **override,
+    }
+
+    def handler(request):
+        return httpx.Response(200, json=[row])
+
+    with pytest.raises(AutomatedSavingsStoreError) as excinfo:
+        _rpc_store(handler).daily_savings("org-1", 7, "2026-07-15", "x")
+    assert excinfo.value.kind == "malformed_row"

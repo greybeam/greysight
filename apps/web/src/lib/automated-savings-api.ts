@@ -1,4 +1,8 @@
 import resolveApiUrl, { authHeaders } from "./api-client";
+import {
+  isAutoSavingsMockEnabled,
+  mockAutoSavingsResponse,
+} from "./automated-savings-mock";
 import { DashboardApiError } from "./dashboard-errors";
 
 export type AutomatedSavingsApiOptions = {
@@ -110,6 +114,10 @@ async function fetchJson(
   init: RequestInit = {},
   options: AutomatedSavingsApiOptions = {},
 ): Promise<unknown> {
+  if (isAutoSavingsMockEnabled()) {
+    return mockAutoSavingsResponse(path, init);
+  }
+
   const headers = authHeaders(
     options.accessToken,
     Object.fromEntries(new Headers(init.headers)),
@@ -243,6 +251,22 @@ export type SuspensionStatsResponse = {
   days: number;
   warehouses: string[];
   buckets: SuspensionStatsBucket[];
+};
+
+export type SavingsStatsBucket = {
+  day: string;
+  dollars: Record<string, number>;
+};
+
+export type SavingsStatsResponse = {
+  days: number;
+  pricePerCredit: number;
+  totalDollars: number;
+  totalAvoidedHours: number;
+  totalSuspensions: number;
+  assumedSettingsCount: number;
+  warehouses: string[];
+  buckets: SavingsStatsBucket[];
 };
 
 export type SuspensionEvent = {
@@ -397,6 +421,48 @@ export async function fetchSuspensionStats(
     days: record.days,
     warehouses: record.warehouses.map(asNonEmptyString),
     buckets: record.buckets.map(parseSuspensionStatsBucket),
+  };
+}
+
+function asNonNegativeNumber(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error(MALFORMED);
+  }
+  return value;
+}
+
+export function parseSavingsStatsBucket(raw: unknown): SavingsStatsBucket {
+  const record = asRecord(raw);
+  const dollars: Record<string, number> = {};
+  for (const [key, value] of Object.entries(asRecord(record.dollars))) {
+    dollars[key] = asNonNegativeNumber(value);
+  }
+  return { day: asCalendarDay(record.day), dollars };
+}
+
+export async function fetchSavingsStats(
+  orgId: string,
+  days: number,
+  options: AutomatedSavingsApiOptions = {},
+): Promise<SavingsStatsResponse> {
+  const payload = await fetchJson(
+    `/api/automated-savings/${orgId}/stats/savings?days=${days}`,
+    {},
+    options,
+  );
+  const record = asRecord(payload);
+  if (!Array.isArray(record.warehouses) || !Array.isArray(record.buckets)) {
+    throw new Error(MALFORMED);
+  }
+  return {
+    days: asCount(record.days),
+    pricePerCredit: asNonNegativeNumber(record.price_per_credit),
+    totalDollars: asNonNegativeNumber(record.total_dollars),
+    totalAvoidedHours: asNonNegativeNumber(record.total_avoided_hours),
+    totalSuspensions: asCount(record.total_suspensions),
+    assumedSettingsCount: asCount(record.assumed_settings_count),
+    warehouses: record.warehouses.map(asNonEmptyString),
+    buckets: record.buckets.map(parseSavingsStatsBucket),
   };
 }
 

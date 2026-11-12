@@ -21,6 +21,7 @@ class WarehouseSnapshot:
     resumed_on: datetime | None
     created_on: datetime | None
     quiescing: int = 0
+    scaling_policy: str | None = None
     activity_valid: bool = True
     quiescing_valid: bool = False
 
@@ -59,6 +60,13 @@ def _validated_quiescing(value) -> tuple[int, bool]:
     if value == "":
         return 0, True
     return _validated_int(value, minimum=0)
+
+
+def _optional_str(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _as_bool(value) -> bool:
@@ -127,6 +135,7 @@ def parse_warehouses(rows: list[dict], *, now: datetime) -> list[WarehouseSnapsh
                 auto_resume=_as_bool(_ci_get(row, "auto_resume", False)),
                 resumed_on=_coerce_ts(_ci_get(row, "resumed_on")),
                 created_on=_coerce_ts(_ci_get(row, "created_on")),
+                scaling_policy=_optional_str(_ci_get(row, "scaling_policy")),
                 activity_valid=running_valid and queued_valid,
                 quiescing_valid=quiescing_valid,
             )

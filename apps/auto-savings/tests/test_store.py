@@ -61,6 +61,9 @@ def _direct_event() -> SavingsEvent:
         observed_min_cluster_count=None,
         observed_max_cluster_count=3,
         observed_at=NOW,
+        observed_size="Medium",
+        observed_auto_suspend=600,
+        observed_scaling_policy="ECONOMY",
     )
 
 
@@ -336,6 +339,9 @@ def test_direct_event_payload_omits_legacy_fields():
         "observed_min_cluster_count": None,
         "observed_max_cluster_count": 3,
         "observed_at": NOW.isoformat(),
+        "observed_size": "Medium",
+        "observed_auto_suspend": 600,
+        "observed_scaling_policy": "ECONOMY",
     }
 
 

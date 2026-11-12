@@ -62,6 +62,22 @@ class SuspensionStatsResponse(BaseModel):
     buckets: list[SuspensionStatsBucket]
 
 
+class SavingsStatsBucket(BaseModel):
+    day: str
+    dollars: dict[str, float]
+
+
+class SavingsStatsResponse(BaseModel):
+    days: int
+    price_per_credit: float
+    total_dollars: float
+    total_avoided_hours: float
+    total_suspensions: int
+    assumed_settings_count: int
+    warehouses: list[str]
+    buckets: list[SavingsStatsBucket]
+
+
 class SuspensionEventResponse(BaseModel):
     id: str
     created_at: str
@@ -166,6 +182,11 @@ def _status_response(settings_row, *, role_name: str | None = None) -> StatusRes
 _stats_cache = TtlCache(ttl_seconds=60.0, max_entries=256)
 
 _ALLOWED_STATS_DAYS = (7, 30)
+
+# Flat on-demand price assumption used for the estimated-savings view. The
+# counterfactual (how long each warehouse would otherwise have stayed up) lives
+# in the automated_savings_daily_savings RPC; this only converts credits to $.
+_ASSUMED_PRICE_PER_CREDIT = 3.0
 
 
 def _utc_today() -> date:
@@ -513,6 +534,69 @@ def get_suspension_stats(
         buckets.append(SuspensionStatsBucket(day=day_iso, counts=counts))
     response = SuspensionStatsResponse(
         days=days, warehouses=warehouses, buckets=buckets
+    )
+    _stats_cache.set(cache_key, response)
+    return response
+
+
+@router.get(
+    "/{organization_id}/stats/savings",
+    response_model=SavingsStatsResponse,
+)
+def get_savings_stats(
+    organization_id: str,
+    days: int = Query(7),
+    auth_context: AuthContext = Depends(require_auth_context),
+) -> SavingsStatsResponse:
+    require_org_membership(auth_context, organization_id)
+    if days not in _ALLOWED_STATS_DAYS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"days must be one of {list(_ALLOWED_STATS_DAYS)}.",
+        )
+
+    today = _utc_today()
+    cache_key = ("savings", organization_id, days, today.isoformat())
+    cached = _stats_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    store = _require_store()
+    try:
+        rows = store.daily_savings(
+            organization_id,
+            days,
+            today.isoformat(),
+            datetime.now(timezone.utc).isoformat(),
+        )
+    except AutomatedSavingsStoreError as exc:
+        _log_store_failure("daily_savings", exc)
+        raise HTTPException(
+            status_code=502, detail="Could not load savings stats."
+        ) from None
+
+    price = _ASSUMED_PRICE_PER_CREDIT
+    warehouses = sorted({row.warehouse_name for row in rows})
+    dollars_by_day_wh = {
+        (row.day, row.warehouse_name): row.avoided_credits * price for row in rows
+    }
+    start = today - timedelta(days=days - 1)
+    buckets = []
+    for offset in range(days):
+        day_iso = (start + timedelta(days=offset)).isoformat()
+        dollars = {
+            wh: round(dollars_by_day_wh.get((day_iso, wh), 0.0), 2) for wh in warehouses
+        }
+        buckets.append(SavingsStatsBucket(day=day_iso, dollars=dollars))
+    response = SavingsStatsResponse(
+        days=days,
+        price_per_credit=price,
+        total_dollars=round(sum(row.avoided_credits for row in rows) * price, 2),
+        total_avoided_hours=round(sum(row.avoided_seconds for row in rows) / 3600, 2),
+        total_suspensions=sum(row.suspension_count for row in rows),
+        assumed_settings_count=sum(row.assumed_settings_count for row in rows),
+        warehouses=warehouses,
+        buckets=buckets,
     )
     _stats_cache.set(cache_key, response)
     return response
